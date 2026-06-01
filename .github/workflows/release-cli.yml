@@ -1,0 +1,511 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on release branch
+        run: |
+          git fetch --no-tags origin '+refs/heads/release/*:refs/remotes/origin/release/*'
+          CONTAINING_RELEASE_BRANCHES="$(git branch -r --contains "$GITHUB_SHA" --list 'origin/release/*')"
+          if [ -z "$CONTAINING_RELEASE_BRANCHES" ]; then
+            echo "::error::Release tag must point to a commit on origin/release/**"
+            exit 1
+          fi
+          echo "::notice::Release source branch(es):"
+          echo "$CONTAINING_RELEASE_BRANCHES"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify tag version
+        run: |
+          PKG_VERSION="$(jq -r .version package.json)"
+          TAG_VERSION="${GITHUB_REF_NAME#cli-v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $TAG_VERSION 与 package.json $PKG_VERSION 不一致"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify CLI source
+        run: |
+          bun run typecheck
+          bun run test
+
+      - run: bun run build
+
+      - name: Smoke test npm CLI build
+        run: |
+          test -s dist/bin.cjs
+          test -s dist/index.cjs
+          test -s dist/index.d.ts
+
+          VERSION_OUT="$(node dist/bin.cjs --version)"
+          if [ "$VERSION_OUT" != "$(jq -r .version package.json)" ]; then
+            echo "::error::dist/bin.cjs --version 输出 $VERSION_OUT，与 package.json 不一致"
+            exit 1
+          fi
+
+          node dist/bin.cjs --help > /tmp/yoooclaw-help.txt
+          grep -q "Usage:" /tmp/yoooclaw-help.txt
+          grep -q "yoooclaw" /tmp/yoooclaw-help.txt
+
+  build-native-linux:
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Linux native binaries
+        run: bun scripts/build-native.ts --target linux-x64,linux-arm64
+
+      - name: Smoke test Linux native binary
+        run: ./dist-native/yoooclaw-linux-x64 --version
+
+      - name: Upload Linux native binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-native-linux
+          path: |
+            dist-native/yoooclaw-linux-x64
+            dist-native/yoooclaw-linux-arm64
+          if-no-files-found: error
+          compression-level: 0
+
+  build-native-darwin:
+    needs: preflight
+    runs-on: macos-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Validate Apple signing secrets
+        env:
+          APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          missing=()
+          for key in \
+            APPLE_DEVELOPER_ID_CERT_P12_BASE64 \
+            APPLE_DEVELOPER_ID_CERT_PASSWORD \
+            APPLE_NOTARY_APPLE_ID \
+            APPLE_NOTARY_TEAM_ID \
+            APPLE_NOTARY_PASSWORD
+          do
+            if [ -z "${!key}" ]; then
+              missing+=("$key")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::缺少 Apple 签名或公证 GitHub Secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Darwin native binaries
+        run: bun scripts/build-native.ts --target darwin-arm64,darwin-x64
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/yoooclaw-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
+
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_DEVELOPER_ID_CERT_P12_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_DEVELOPER_ID_CERT_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk '/Developer ID Application/ { print $2; exit }')"
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "::error::P12 中未找到 Developer ID Application 签名身份"
+            exit 1
+          fi
+
+          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign Darwin native binaries
+        run: |
+          for file in \
+            dist-native/yoooclaw-darwin-arm64 \
+            dist-native/yoooclaw-darwin-x64
+          do
+            codesign \
+              --force \
+              --options runtime \
+              --timestamp \
+              --keychain "$SIGNING_KEYCHAIN_PATH" \
+              --sign "$SIGNING_IDENTITY" \
+              "$file"
+            codesign --verify --strict --verbose=2 "$file"
+          done
+
+      - name: Notarize Darwin native binaries
+        env:
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          NOTARY_PROFILE="yoooclaw-notarytool"
+          NOTARY_STAGE="$RUNNER_TEMP/yoooclaw-notary"
+          ZIP_PATH="$RUNNER_TEMP/yoooclaw-darwin.zip"
+          RESULT_PATH="$RUNNER_TEMP/yoooclaw-notary-result.json"
+          LOG_PATH="$RUNNER_TEMP/yoooclaw-notary-log.json"
+
+          mkdir -p "$NOTARY_STAGE"
+          cp dist-native/yoooclaw-darwin-* "$NOTARY_STAGE/"
+          ditto -c -k --keepParent "$NOTARY_STAGE" "$ZIP_PATH"
+
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --keychain "$SIGNING_KEYCHAIN_PATH" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" \
+            --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD"
+
+          set +e
+          xcrun notarytool submit "$ZIP_PATH" \
+            --keychain-profile "$NOTARY_PROFILE" \
+            --keychain "$SIGNING_KEYCHAIN_PATH" \
+            --wait \
+            --output-format json > "$RESULT_PATH"
+          submit_code=$?
+          set -e
+
+          cat "$RESULT_PATH"
+          submission_id="$(jq -r '.id // empty' "$RESULT_PATH")"
+          status="$(jq -r '.status // empty' "$RESULT_PATH")"
+          if [ -n "$submission_id" ]; then
+            xcrun notarytool log "$submission_id" \
+              --keychain-profile "$NOTARY_PROFILE" \
+              --keychain "$SIGNING_KEYCHAIN_PATH" \
+              "$LOG_PATH" || true
+            [ ! -s "$LOG_PATH" ] || cat "$LOG_PATH"
+          fi
+          if [ "$submit_code" -ne 0 ] || [ "$status" != "Accepted" ]; then
+            echo "::error::Apple 公证失败，status=${status:-unknown}"
+            exit 1
+          fi
+
+          # Apple 会为 ZIP 内的独立二进制发布在线 ticket；独立二进制本身无法 staple。
+
+      - name: Upload signed and notarized Darwin native binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-native-darwin
+          path: |
+            dist-native/yoooclaw-darwin-arm64
+            dist-native/yoooclaw-darwin-x64
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Delete temporary signing keychain
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN_PATH:-}" ] && [ -e "$SIGNING_KEYCHAIN_PATH" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH"
+          fi
+
+  release:
+    needs:
+      - preflight
+      - build-native-linux
+      - build-native-darwin
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on release branch
+        run: |
+          git fetch --no-tags origin '+refs/heads/release/*:refs/remotes/origin/release/*'
+          CONTAINING_RELEASE_BRANCHES="$(git branch -r --contains "$GITHUB_SHA" --list 'origin/release/*')"
+          if [ -z "$CONTAINING_RELEASE_BRANCHES" ]; then
+            echo "::error::Release tag must point to a commit on origin/release/**"
+            exit 1
+          fi
+          echo "::notice::Release source branch(es):"
+          echo "$CONTAINING_RELEASE_BRANCHES"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve version & channel
+        run: |
+          PKG_VERSION="$(jq -r .version package.json)"
+          TAG_VERSION="${GITHUB_REF_NAME#cli-v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $TAG_VERSION 与 package.json $PKG_VERSION 不一致"
+            exit 1
+          fi
+          echo "VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
+          if [[ "$PKG_VERSION" == *-* ]]; then
+            echo "IS_BETA=1" >> "$GITHUB_ENV"
+            echo "::notice::预发布版本 cli-v$PKG_VERSION（仅 GitHub Release，跳过 npm publish）"
+          else
+            echo "IS_BETA=0" >> "$GITHUB_ENV"
+            echo "::notice::稳定版本 cli-v$PKG_VERSION（GitHub Release + npm）"
+          fi
+
+      - name: Verify stable release prerequisites
+        if: env.IS_BETA == '0'
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_CONFIG_TOKEN" ]; then
+            echo "::error::稳定版发布需要配置 NPM_TOKEN"
+            exit 1
+          fi
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::稳定版版本号必须是 x.y.z，当前为 $VERSION"
+            exit 1
+          fi
+
+          if NPM_VIEW_OUTPUT=$(npm view "@yoooclaw/cli@$VERSION" version 2>&1); then
+            echo "NPM_PACKAGE_EXISTS=1" >> "$GITHUB_ENV"
+            echo "::notice::@yoooclaw/cli@$VERSION 已存在于 npm，跳过重复发布"
+          elif ! grep -Eq '(^npm ERR! code E404|404)' <<< "$NPM_VIEW_OUTPUT"; then
+            echo "::error::无法确认 @yoooclaw/cli@$VERSION 是否已存在于 npm"
+            echo "$NPM_VIEW_OUTPUT"
+            exit 1
+          else
+            echo "NPM_PACKAGE_EXISTS=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - run: bun run build
+
+      - name: Smoke test npm CLI build
+        run: |
+          test -s dist/bin.cjs
+          test -s dist/index.cjs
+          test -s dist/index.d.ts
+
+          VERSION_OUT="$(node dist/bin.cjs --version)"
+          if [ "$VERSION_OUT" != "$VERSION" ]; then
+            echo "::error::dist/bin.cjs --version 输出 $VERSION_OUT，期望 $VERSION"
+            exit 1
+          fi
+
+          node dist/bin.cjs --help > /tmp/yoooclaw-help.txt
+          grep -q "Usage:" /tmp/yoooclaw-help.txt
+          grep -q "yoooclaw" /tmp/yoooclaw-help.txt
+
+      - name: Download native binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-native-*
+          path: dist-native
+          merge-multiple: true
+
+      - name: Smoke test native binaries
+        run: |
+          required=(
+            dist-native/yoooclaw-darwin-arm64
+            dist-native/yoooclaw-darwin-x64
+            dist-native/yoooclaw-linux-x64
+            dist-native/yoooclaw-linux-arm64
+          )
+          for file in "${required[@]}"; do
+            if [ ! -s "$file" ]; then
+              echo "::error::缺少 native 产物: $file"
+              exit 1
+            fi
+          done
+
+          chmod +x dist-native/yoooclaw-*
+          VERSION_OUT="$(./dist-native/yoooclaw-linux-x64 --version)"
+          if [ "$VERSION_OUT" != "$VERSION" ]; then
+            echo "::error::native --version 输出 $VERSION_OUT，期望 $VERSION"
+            exit 1
+          fi
+
+      - name: Compute checksums for native binaries
+        run: |
+          cd dist-native
+          sha256sum yoooclaw-* > checksums.txt
+          if [ "$(wc -l < checksums.txt | tr -d ' ')" != "4" ]; then
+            echo "::error::checksums.txt 应包含 4 个 native 产物"
+            exit 1
+          fi
+          cat checksums.txt
+
+      - run: |
+          rm -f ./*.tgz
+          bun pm pack
+
+      - name: Verify npm package artifact
+        run: |
+          shopt -s nullglob
+          tarballs=(./*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::期望生成 1 个 npm tarball，实际为 ${#tarballs[@]}"
+            printf '%s\n' "${tarballs[@]}"
+            exit 1
+          fi
+
+          tar -tzf "${tarballs[0]}" > /tmp/yoooclaw-tarball.txt
+          required=(
+            package/package.json
+            package/dist/bin.cjs
+            package/dist/index.cjs
+            package/dist/index.d.ts
+            package/skills/yoooclaw-notification-query/SKILL.md
+            package/skills/yoooclaw-lightrule-create/SKILL.md
+            package/skills/yoooclaw-tunnel-debug/SKILL.md
+          )
+          for path in "${required[@]}"; do
+            if ! grep -qx "$path" /tmp/yoooclaw-tarball.txt; then
+              echo "::error::npm tarball 缺少 $path"
+              exit 1
+            fi
+          done
+
+      - name: Publish to npm
+        if: env.IS_BETA == '0' && env.NPM_PACKAGE_EXISTS == '0'
+        run: bun publish --access public
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Repack npm tarball for GitHub Release
+        run: |
+          rm -f ./*.tgz
+          bun pm pack
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          tarballs=(./*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::GitHub Release 需要 1 个 npm tarball，实际为 ${#tarballs[@]}"
+            exit 1
+          fi
+
+          ARGS=(--generate-notes)
+          if [ "$IS_BETA" = "1" ]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "cli-v$VERSION" \
+            "${tarballs[0]}" \
+            dist-native/yoooclaw-darwin-arm64 \
+            dist-native/yoooclaw-darwin-x64 \
+            dist-native/yoooclaw-linux-x64 \
+            dist-native/yoooclaw-linux-arm64 \
+            dist-native/checksums.txt \
+            "${ARGS[@]}"
+
+      - name: Notify Feishu
+        if: success()
+        env:
+          HOOK_1: ${{ secrets.FEISHU_WEBHOOK_1 }}
+          HOOK_2: ${{ secrets.FEISHU_WEBHOOK_2 }}
+        run: |
+          CURRENT_TAG="cli-v${VERSION}"
+          PREV_TAG=$(git tag --list 'cli-v*' --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${CURRENT_TAG}"
+            LOG_ARGS=("$RANGE")
+          else
+            RANGE="最近 20 条"
+            LOG_ARGS=(-20 "$CURRENT_TAG")
+          fi
+
+          # 逐条输出：标题 + 缩进的提交正文（跳过 merge 与版本号提交）
+          CHANGES=$(git log --no-merges --pretty=format:'%H' "${LOG_ARGS[@]}" | while read -r h; do
+            subj=$(git log -1 --pretty=format:'%s' "$h")
+            if grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.].*)?$' <<< "$subj"; then
+              continue
+            fi
+            printf '• %s\n' "$subj"
+            git log -1 --pretty=format:'%b' "$h" \
+              | grep -v -i -E '^(Co-Authored-By|Signed-off-by|Co-developed-by|Reviewed-by):' \
+              | sed '/^[[:space:]]*$/d' \
+              | sed 's/^/    /'
+          done)
+          [ -z "$CHANGES" ] && CHANGES="（无业务改动）"
+
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${CURRENT_TAG}"
+          CHANNEL="稳定版"
+          [ "$IS_BETA" = "1" ] && CHANNEL="预发布"
+
+          TEXT="🚀 @yoooclaw/cli ${CURRENT_TAG}（${CHANNEL}）已发布
+
+          📝 改动（${RANGE}）：
+          ${CHANGES}
+
+          🔗 ${URL}"
+
+          PAYLOAD=$(jq -nc --arg t "$TEXT" '{msg_type:"text", content:{text:$t}}')
+
+          for hook in "$HOOK_1" "$HOOK_2"; do
+            [ -z "$hook" ] && continue
+            if ! curl -fsS -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$hook"; then
+              echo "::warning::Feishu webhook 推送失败"
+            fi
+            echo
+          done

@@ -1,0 +1,69 @@
+{
+  "name": "@yoooclaw/cli",
+  "version": "0.0.8",
+  "type": "module",
+  "description": "yoooclaw 独立 CLI：本地守护进程接收手机通知、Relay 隧道、灯效规则评估，Agent-Native",
+  "bin": {
+    "yoooclaw": "dist/bin.cjs",
+    "yc": "dist/bin.cjs"
+  },
+  "main": "dist/index.cjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "build:js": "bun scripts/build.ts",
+    "build:native": "bun scripts/build-native.ts",
+    "build:native:current": "bun scripts/build-native.ts --target current",
+    "dev": "tsc --noEmit --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run test/services.test.ts test/smoke.test.ts test/relay-dispatcher.test.ts test/cli.config.test.ts test/cli.auth.test.ts test/cli.data.test.ts",
+    "test:e2e": "vitest run test/cli.daemon.e2e.test.ts test/cli.lifecycle.e2e.test.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build",
+    "release:patch": "bun scripts/bump.ts patch",
+    "release:minor": "bun scripts/bump.ts minor",
+    "release:beta": "bun scripts/bump.ts beta"
+  },
+  "keywords": [
+    "yoooclaw",
+    "cli",
+    "daemon",
+    "notifications",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YoooClaw/cli.git"
+  },
+  "author": "developer@yoooclaw.com",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.12.0",
+    "bun": ">=1.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "openclaw": "2026.3.28",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "ws": "^8.19.0"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  }
+}

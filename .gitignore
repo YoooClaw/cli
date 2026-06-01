@@ -1,0 +1,15 @@
+# 依赖
+node_modules
+
+# 构建产物
+dist
+dist-native
+*.tgz
+*.tsbuildinfo
+
+# 环境变量与密钥
+.env
+.env.local
+
+# 系统
+.DS_Store
