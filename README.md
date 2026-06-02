@@ -109,6 +109,23 @@ yoooclaw skills install
 
 ## Agent 技能
 
+> **推荐搭配 [YoooClaw/skills](https://github.com/YoooClaw/skills) 一起用。** 该仓库分发的 `yoooclaw-cli` Skill 把命令路由、`--format` 输出契约、daemon 依赖与错误处理打包成一份给 Agent 的「使用说明书」，让 Codex / Claude Code 等开箱即懂怎么调 `yoooclaw`。先装 CLI，再装 Skill：
+
+```bash
+# 1. 安装 CLI（前置）
+npm install -g @yoooclaw/cli
+
+# 2. 安装 yoooclaw-cli Skill —— Codex + Claude Code
+npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent codex --agent claude-code --copy --yes
+
+# 只装其中一个 agent：把 --agent 改成单个即可
+npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent claude-code --copy --yes
+```
+
+> Hermes Agent 用 `hermes skills install https://raw.githubusercontent.com/YoooClaw/skills/main/yoooclaw-cli/SKILL.md`。装好后重启 Agent 会话即可被发现。
+
+### 本仓库随包内置 Skill
+
 随包发布 [skills/](skills/) 下的 SKILL.md，教 Agent 直接调 `yoooclaw` 命令。在 openclaw 插件里由 `openclaw.plugin.json` 自动注册；独立 CLI 形态下用 `yoooclaw skills install` 软链到 Agent 的 skills 发现目录。
 
 | Skill                         | 说明                                                                                                            |
