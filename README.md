@@ -63,14 +63,14 @@ yc --help
 
 ```bash
 # 自动检测平台、下载、校验 sha256、写到 ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/Yoooclaw/openclaw-plugin/master/packages/cli/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh | sh
 
 # 指定版本 / 安装目录 / 覆盖
-curl -fsSL https://raw.githubusercontent.com/Yoooclaw/openclaw-plugin/master/packages/cli/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh \
   | sh -s -- --version 0.0.5 --dir ~/bin --force
 ```
 
-支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。也可从 [GitHub Releases](https://github.com/Yoooclaw/openclaw-plugin/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
+支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 
 > `yoooclaw update self` 会按当前安装来源给出对应升级命令（npm 走 `npm update -g`，二进制走 install.sh）。
 

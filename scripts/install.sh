@@ -2,7 +2,7 @@
 # @yoooclaw/cli install script
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/Yoooclaw/openclaw-plugin/master/packages/cli/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --version 0.0.5
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/bin
 #
@@ -18,7 +18,7 @@
 
 set -eu
 
-REPO="Yoooclaw/openclaw-plugin"
+REPO="YoooClaw/cli"
 VERSION=""
 INSTALL_DIR=""
 FORCE=0
