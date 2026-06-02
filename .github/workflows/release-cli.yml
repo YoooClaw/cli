@@ -275,6 +275,11 @@ jobs:
       - build-native-darwin
     runs-on: ubuntu-latest
     environment: production
+    # job 级注入：覆盖显式 build 与 `bun publish` 触发的 prepublishOnly 重建，
+    # 否则 publish 期间的重建会因缺 env 把灯效凭据烤成空串。
+    env:
+      LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+      LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -346,9 +351,6 @@ jobs:
         run: bun install --frozen-lockfile
 
       - run: bun run build
-        env:
-          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
-          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Smoke test npm CLI build
         run: |
