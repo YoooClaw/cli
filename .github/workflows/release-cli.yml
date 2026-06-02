@@ -53,6 +53,9 @@ jobs:
           bun run test
 
       - run: bun run build
+        env:
+          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Smoke test npm CLI build
         run: |
@@ -85,6 +88,9 @@ jobs:
 
       - name: Build Linux native binaries
         run: bun scripts/build-native.ts --target linux-x64,linux-arm64
+        env:
+          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Smoke test Linux native binary
         run: ./dist-native/yoooclaw-linux-x64 --version
@@ -140,6 +146,9 @@ jobs:
 
       - name: Build Darwin native binaries
         run: bun scripts/build-native.ts --target darwin-arm64,darwin-x64
+        env:
+          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Import Developer ID certificate
         env:
@@ -266,6 +275,11 @@ jobs:
       - build-native-darwin
     runs-on: ubuntu-latest
     environment: production
+    # job 级注入：覆盖显式 build 与 `bun publish` 触发的 prepublishOnly 重建，
+    # 否则 publish 期间的重建会因缺 env 把灯效凭据烤成空串。
+    env:
+      LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+      LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
