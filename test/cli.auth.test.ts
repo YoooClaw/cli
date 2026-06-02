@@ -114,7 +114,7 @@ describe("auth gateway token", () => {
   });
 
   it("token-rotate 生成新 token 并写入 credentials", async () => {
-    await runCli(["config", "init", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     const res = await runCli(["auth", "token-rotate"], { home });
     expect(res.json.ok).toBe(true);
     expect(typeof res.json.token).toBe("string");
@@ -123,7 +123,7 @@ describe("auth gateway token", () => {
   });
 
   it("token-rotate --length 太短报 INVALID_ARGUMENT", async () => {
-    await runCli(["config", "init", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     const res = await runCli(["auth", "token-rotate", "--length", "8"], { home });
     expect(res.exitCode).toBe(1);
     expect(res.json.error.code).toBe("YOOOCLAW_INVALID_ARGUMENT");

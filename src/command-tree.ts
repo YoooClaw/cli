@@ -60,11 +60,12 @@ export const COMMAND_TREE: ServiceSpec[] = [
     subcommands: [
       {
         name: "init",
-        summary: "交互式首次向导，生成 config + gateway token",
+        summary: "交互式首次向导，生成 config + gateway token 并启动 daemon",
         options: [
           { flags: "--non-interactive", summary: "跳过向导（配合 --from-file）" },
           { flags: "--from-file <path>", summary: "从 JSON 文件导入配置（- 为 stdin）" },
           { flags: "--force", summary: "已存在 config 时覆盖" },
+          { flags: "--no-start", summary: "只生成配置，不自动启动 daemon" },
         ],
       },
       {
