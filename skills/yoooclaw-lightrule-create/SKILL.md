@@ -57,6 +57,7 @@ yoooclaw lightrule delete <name> --yes         # 删除
 ## 错误处理
 
 - `YOOOCLAW_DAEMON_NOT_RUNNING`：先 `yoooclaw daemon start` 再重试。
-- 创建失败常见为 `VALIDATION_FAILED`（segments 不合法）或 `INVALID_PARAMS`（缺 name/description）：
-  读 `error.message`（含具体校验项）后修正 JSON 重新提交。
+- 创建失败通常表现为 `YOOOCLAW_INVALID_ARGUMENT`，`error.message` 中会带底层
+  `VALIDATION_FAILED`（segments 不合法）或 `INVALID_PARAMS`（缺 name/description）；
+  按具体校验项修正 JSON 后重新提交。
 - 规则名重复：换 `name` 或先 `delete`。
