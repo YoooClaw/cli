@@ -20,7 +20,6 @@ import { RecordingStorage } from "./storage.js";
 import { downloadRecordingFiles } from "./downloader.js";
 import { isAsrConfigured, runTranscriptionWorkflow } from "./asr.js";
 import { canStartTranscription } from "./state-machine.js";
-import { deleteAccountOssFile } from "./account-oss.js";
 
 export interface RecordingStatusEvent {
   recordingId: string;
@@ -301,16 +300,6 @@ export async function triggerTranscription(
     logger.info(
       `[asr-trigger] 转写完成: ${recordingId}, summary="${result.summary}"`,
     );
-
-    // ASR 成功后删除 OSS 上的音频文件（imp-account-user-controllers-api §5.7）
-    const ossAudioUrl = entry.metadata.oss_audio_url?.trim();
-    if (ossAudioUrl) {
-      void deleteAccountOssFile(ossAudioUrl, logger).catch((err) => {
-        logger.warn(
-          `[asr-trigger] OSS 音频清理异常 (非致命): ${recordingId}, ${err?.message ?? err}`,
-        );
-      });
-    }
   } else {
     const error = result.error ?? "ASR 转写失败";
     storage.updateStatus(recordingId, "transcribe_failed");

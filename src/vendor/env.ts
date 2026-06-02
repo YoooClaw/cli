@@ -68,7 +68,6 @@ interface EnvUrls {
   relayTunnelUrl: string;
   modelProxyLongRecordingSubmitTaskUrl: string;
   modelProxyLongRecordingQueryTaskResultBaseUrl: string;
-  accountFileDeleteUrl: string;
   gatewayConnectStatusUrl: string;
   /** jvsclaw 实例就绪/密文换 apiKey 接口（复用插件现有接口 host）。 */
   clawManagerInstanceReadyUrl: string;
@@ -108,7 +107,6 @@ function buildEnvUrls(host: string): EnvUrls {
     appNameMapUrl: `${https}/api/application-config/app-package/config-all`,
     modelProxyLongRecordingSubmitTaskUrl: `${https}/api/model-proxy/long-recording/submit-task`,
     modelProxyLongRecordingQueryTaskResultBaseUrl: `${https}/api/model-proxy/long-recording/query-task-result`,
-    accountFileDeleteUrl: `${https}/api/account/file/delete`,
     gatewayConnectStatusUrl: `${https}/api/message/messageBridge/plugin/gateway-connect-status`,
     clawManagerInstanceReadyUrl: `${https}/claw-manager/internal/claw-manager/instance/ready`,
   };
