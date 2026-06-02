@@ -53,6 +53,9 @@ jobs:
           bun run test
 
       - run: bun run build
+        env:
+          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Smoke test npm CLI build
         run: |
@@ -85,6 +88,9 @@ jobs:
 
       - name: Build Linux native binaries
         run: bun scripts/build-native.ts --target linux-x64,linux-arm64
+        env:
+          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Smoke test Linux native binary
         run: ./dist-native/yoooclaw-linux-x64 --version
@@ -140,6 +146,9 @@ jobs:
 
       - name: Build Darwin native binaries
         run: bun scripts/build-native.ts --target darwin-arm64,darwin-x64
+        env:
+          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Import Developer ID certificate
         env:
@@ -337,6 +346,9 @@ jobs:
         run: bun install --frozen-lockfile
 
       - run: bun run build
+        env:
+          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
+          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
 
       - name: Smoke test npm CLI build
         run: |

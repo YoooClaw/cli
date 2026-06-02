@@ -33,17 +33,28 @@ const ALL_TARGETS: Target[] = [
 const manifest = pkg as { version?: string };
 const version = manifest.version ?? "unknown";
 
-async function loadPluginHostEnv(): Promise<Record<string, string>> {
+// 与 build.ts 同源：构建期注入的 Relay host + 灯效凭据，避免 native 二进制
+// 因 env 缺失而在 sendLightEffect 时报 LIGHT_SEND_FAILED。
+const INJECTED_ENV_KEYS = [
+  "OPENCLAW_HOST_PRODUCTION",
+  "OPENCLAW_HOST_TEST",
+  "OPENCLAW_HOST_DEVELOPMENT",
+  "LIGHT_APP_KEY",
+  "LIGHT_TEMPLATE_ID",
+] as const;
+
+async function loadPluginBuildEnv(): Promise<Record<string, string>> {
   // 独立 CLI 仓自带 .env；CI 中不存在时回退 process.env。
   const envPath = join(import.meta.dir, "..", ".env");
   if (!existsSync(envPath)) return {};
   const raw = await readFile(envPath, "utf-8");
   const out: Record<string, string> = {};
+  const wanted = new Set<string>(INJECTED_ENV_KEYS);
   for (const line of raw.split("\n")) {
     const eq = line.indexOf("=");
     if (eq < 1 || line.trimStart().startsWith("#")) continue;
     const key = line.slice(0, eq).trim();
-    if (key.startsWith("OPENCLAW_HOST_")) out[key] = line.slice(eq + 1).trim();
+    if (wanted.has(key)) out[key] = line.slice(eq + 1).trim();
   }
   return out;
 }
@@ -82,7 +93,7 @@ function parseTargetsArg(): Target[] {
   return resolved;
 }
 
-async function buildOne(target: Target, hostEnv: Record<string, string>): Promise<string> {
+async function buildOne(target: Target, buildEnv: Record<string, string>): Promise<string> {
   const outDir = "dist-native";
   const outName = `yoooclaw-${target.os}-${target.arch}${target.os === "windows" ? ".exe" : ""}`;
   const outPath = join(outDir, outName);
@@ -92,8 +103,8 @@ async function buildOne(target: Target, hostEnv: Record<string, string>): Promis
     __CLI_VERSION__: JSON.stringify(version),
     __CLI_DIST__: JSON.stringify("native"),
   };
-  for (const key of ["OPENCLAW_HOST_PRODUCTION", "OPENCLAW_HOST_TEST", "OPENCLAW_HOST_DEVELOPMENT"]) {
-    defines[`process.env.${key}`] = JSON.stringify(hostEnv[key] ?? process.env[key] ?? "");
+  for (const key of INJECTED_ENV_KEYS) {
+    defines[`process.env.${key}`] = JSON.stringify(buildEnv[key] ?? process.env[key] ?? "");
   }
 
   const args = [
@@ -125,11 +136,11 @@ async function main(): Promise<void> {
   console.log(`[native] CLI v${version} -> ${targets.length} target(s)`);
 
   await rm("dist-native", { recursive: true, force: true });
-  const hostEnv = await loadPluginHostEnv();
+  const buildEnv = await loadPluginBuildEnv();
 
   const built: string[] = [];
   for (const target of targets) {
-    built.push(await buildOne(target, hostEnv));
+    built.push(await buildOne(target, buildEnv));
   }
 
   console.log(`[native] 完成 ${built.length} 个产物：`);
