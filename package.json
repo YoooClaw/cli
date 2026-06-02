@@ -1,6 +1,6 @@
 {
   "name": "@yoooclaw/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "yoooclaw 独立 CLI：本地守护进程接收手机通知、Relay 隧道、灯效规则评估，Agent-Native",
   "bin": {
