@@ -18,15 +18,22 @@ import {
 } from "../config/store.js";
 import { defaultConfig, defaultEvaluator, type YoooclawConfig } from "../config/schema.js";
 import { writeGatewayToken, generateToken, resolveApiKey, setApiKey } from "../credentials/store.js";
+import { daemonStart } from "./daemon.js";
 
 interface InitOpts {
   nonInteractive?: boolean;
   fromFile?: string;
   force?: boolean;
+  start?: boolean; // commander：--no-start → false，跳过自动拉起 daemon
 }
 
 /** 手机端配置摘要 + 关键路径，作为 init 的返回结果。 */
-function phoneSummary(ctx: CliContext, config: YoooclawConfig, token: string) {
+function phoneSummary(
+  ctx: CliContext,
+  config: YoooclawConfig,
+  token: string,
+  daemon: DaemonStartSummary,
+) {
   const apiKey = resolveApiKey();
   return {
     ok: true,
@@ -36,6 +43,8 @@ function phoneSummary(ctx: CliContext, config: YoooclawConfig, token: string) {
       bind: config.daemon.bind,
       port: config.daemon.port,
       localUrl: `http://${config.daemon.bind}:${config.daemon.port}`,
+      started: daemon.started,
+      pid: daemon.pid,
     },
     relay: {
       url: config.relay.url,
@@ -44,10 +53,21 @@ function phoneSummary(ctx: CliContext, config: YoooclawConfig, token: string) {
     },
     gatewayToken: token,
     configPath: ctx.paths.config,
-    hint: apiKey.value
-      ? "已就绪：yc daemon start 后，daemon 会用 api-key 连上 Relay；手机 App 绑定同一账号即可收发"
-      : "Relay 尚未设置 api-key：运行 yc auth set-api-key <ock_…> 后再 yc daemon start",
+    hint: initHint(daemon, Boolean(apiKey.value)),
   };
+}
+
+/** 按 daemon 是否拉起、是否已有 api-key 给出下一步提示。 */
+function initHint(daemon: DaemonStartSummary, apiKeyPresent: boolean): string {
+  if (!daemon.started) {
+    const reason = daemon.error ? `（自动启动失败：${daemon.error}）` : "";
+    return apiKeyPresent
+      ? `配置已就绪${reason}：运行 yc daemon start 启动 daemon，连上 Relay 后手机 App 绑定同一账号即可收发`
+      : `配置已就绪${reason}：运行 yc auth set-api-key <ock_…> 设置 Relay api-key，再 yc daemon start 启动 daemon`;
+  }
+  return apiKeyPresent
+    ? "已就绪：daemon 已启动并用 api-key 连上 Relay；手机 App 绑定同一账号即可收发"
+    : "daemon 已启动，但 Relay 尚未设置 api-key：运行 yc auth set-api-key <ock_…> 后 yc daemon restart 即可连上 Relay";
 }
 
 export async function configInit(
@@ -105,7 +125,34 @@ export async function configInit(
   saveConfig(ctx.paths, config);
   writeGatewayToken(config, token);
 
-  return phoneSummary(ctx, config, token);
+  // init 即用：直接把 daemon 拉起来，省去用户再单独跑一次 yc daemon start。
+  // --no-start 可跳过（例如只想生成配置、稍后手动启动）。
+  let daemon: DaemonStartSummary = { started: false };
+  if (opts.start !== false) {
+    daemon = await startDaemonForInit(ctx);
+  }
+
+  return phoneSummary(ctx, config, token, daemon);
+}
+
+interface DaemonStartSummary {
+  started: boolean;
+  pid?: number;
+  alreadyRunning?: boolean;
+  error?: string;
+}
+
+/** init 收尾时拉起 daemon；失败不阻断 init（配置已落盘），把结果带回摘要由用户决定下一步。 */
+async function startDaemonForInit(ctx: CliContext): Promise<DaemonStartSummary> {
+  try {
+    const res = (await daemonStart(ctx, [], {})) as { pid?: number };
+    return { started: true, pid: res.pid };
+  } catch (err) {
+    if (err instanceof YoooclawError && err.code === "YOOOCLAW_DAEMON_ALREADY_RUNNING") {
+      return { started: true, alreadyRunning: true, pid: err.details?.pid as number | undefined };
+    }
+    return { started: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 interface ShowOpts {

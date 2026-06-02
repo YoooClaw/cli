@@ -24,7 +24,7 @@ function importFile(partial: unknown = {}): string {
 
 describe("config", () => {
   it("init 生成 config + gateway token", async () => {
-    const res = await runCli(["config", "init", "--from-file", importFile()], { home });
+    const res = await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     expect(res.exitCode).toBe(0);
     expect(res.json.ok).toBe(true);
     expect(res.json.profile).toBe("default");
@@ -35,14 +35,14 @@ describe("config", () => {
   });
 
   it("已初始化再 init 报 ALREADY_EXISTS，--force 可覆盖", async () => {
-    await runCli(["config", "init", "--from-file", importFile()], { home });
-    const blocked = await runCli(["config", "init", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
+    const blocked = await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     expect(blocked.exitCode).toBe(1);
     expect(blocked.json.ok).toBe(false);
     expect(blocked.json.error.code).toBe("YOOOCLAW_ALREADY_EXISTS");
 
     const forced = await runCli(
-      ["config", "init", "--from-file", importFile(), "--force"],
+      ["config", "init", "--from-file", importFile(), "--force", "--no-start"],
       { home },
     );
     expect(forced.exitCode).toBe(0);
@@ -62,7 +62,7 @@ describe("config", () => {
   });
 
   it("show 返回结构化 config（默认不含明文 secret 值）", async () => {
-    await runCli(["config", "init", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     const res = await runCli(["config", "show"], { home });
     expect(res.exitCode).toBe(0);
     expect(res.json.version).toBe(1);
@@ -72,7 +72,7 @@ describe("config", () => {
   });
 
   it("set/unset 按点号路径生效并落盘", async () => {
-    await runCli(["config", "init", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     const set = await runCli(["config", "set", "daemon.port", "28123"], { home });
     expect(set.json).toMatchObject({ ok: true, key: "daemon.port", value: 28123 });
 
@@ -84,7 +84,7 @@ describe("config", () => {
   });
 
   it("set 非法数字 / version 字段报 INVALID_ARGUMENT", async () => {
-    await runCli(["config", "init", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     const bad = await runCli(["config", "set", "daemon.port", "abc"], { home });
     expect(bad.exitCode).toBe(1);
     expect(bad.json.error.code).toBe("YOOOCLAW_INVALID_ARGUMENT");
@@ -105,7 +105,7 @@ describe("profile", () => {
 
   it("（用 config init --profile 建出 work）→ use → list 反映切换", async () => {
     const created = await runCli(
-      ["config", "init", "--profile", "work", "--from-file", importFile()],
+      ["config", "init", "--profile", "work", "--from-file", importFile(), "--no-start"],
       { home },
     );
     expect(created.exitCode).toBe(0);
@@ -139,7 +139,7 @@ describe("profile", () => {
   });
 
   it("delete --yes 删除非 active profile", async () => {
-    await runCli(["config", "init", "--profile", "tmp", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--profile", "tmp", "--from-file", importFile(), "--no-start"], { home });
     const del = await runCli(["profile", "delete", "tmp", "--yes"], { home });
     expect(del.json).toMatchObject({ ok: true, deleted: "tmp" });
     expect(existsSync(profileDir(home, "tmp"))).toBe(false);
@@ -160,7 +160,7 @@ describe("全局 flags", () => {
   });
 
   it("--profile 路由到对应 profile，互不影响", async () => {
-    await runCli(["config", "init", "--profile", "work", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--profile", "work", "--from-file", importFile(), "--no-start"], { home });
     expect(existsSync(join(profileDir(home, "work"), "config.json"))).toBe(true);
     // default 仍未初始化
     const def = await runCli(["config", "show"], { home });
@@ -179,7 +179,7 @@ describe("doctor", () => {
   });
 
   it("init 后 gateway-token 检查转 ok", async () => {
-    await runCli(["config", "init", "--from-file", importFile()], { home });
+    await runCli(["config", "init", "--from-file", importFile(), "--no-start"], { home });
     const res = await runCli(["doctor"], { home });
     const token = res.json.checks.find((c: any) => c.name === "gateway-token");
     expect(token.status).toBe("ok");

@@ -104,4 +104,48 @@ describe("daemon 生命周期", () => {
     expect(start.json.ok).toBe(true);
     expect(start.json.pid).not.toBe(999999);
   });
+
+  it("config init 默认自动拉起 daemon", async () => {
+    // 用一个未初始化的新 profile，避免命中 beforeEach 写好的 default config。
+    const port = await freePort();
+    const importPath = join(home, "init-import.json");
+    writeFileSync(
+      importPath,
+      JSON.stringify({
+        daemon: { bind: "127.0.0.1", port },
+        relay: { enabled: false },
+      }),
+      "utf-8",
+    );
+
+    const init = runCliSubprocess(
+      ["config", "init", "--profile", "fresh", "--from-file", importPath],
+      { home },
+    );
+    try {
+      expect(init.exitCode).toBe(0);
+      expect(init.json.daemon).toMatchObject({ started: true });
+      expect(typeof init.json.daemon.pid).toBe("number");
+      expect(existsSync(join(profileDir(home, "fresh"), "daemon.lock"))).toBe(true);
+
+      const status = runCliSubprocess(["daemon", "status", "--profile", "fresh"], { home });
+      expect(status.json).toMatchObject({ ok: true, server: "yoooclaw" });
+      expect(status.json.pid).toBe(init.json.daemon.pid);
+    } finally {
+      runCliSubprocess(["daemon", "stop", "--profile", "fresh"], { home });
+    }
+  });
+
+  it("config init --no-start 只生成配置不启动 daemon", () => {
+    const importPath = join(home, "init-import-nostart.json");
+    writeFileSync(importPath, JSON.stringify({ relay: { enabled: false } }), "utf-8");
+
+    const init = runCliSubprocess(
+      ["config", "init", "--profile", "fresh", "--from-file", importPath, "--no-start"],
+      { home },
+    );
+    expect(init.exitCode).toBe(0);
+    expect(init.json.daemon.started).toBe(false);
+    expect(existsSync(join(profileDir(home, "fresh"), "daemon.lock"))).toBe(false);
+  });
 });
