@@ -36,9 +36,10 @@ function wrapAction(handler: CommandHandler) {
     try {
       ctx = buildContext(globals);
       const result = await handler(ctx, positionals, opts);
-      renderResult(result, { format: ctx.format });
+      // doctor / update self 保留局部 --json 作为全局 --format json 的兼容别名。
+      renderResult(result, { format: opts.json === true ? "json" : ctx.format });
     } catch (err) {
-      const format = ctx?.format ?? "json";
+      const format = opts.json === true ? "json" : ctx?.format ?? "json";
       renderError(err, { format });
       process.exitCode = err instanceof YoooclawError ? err.exitCode : 1;
     }

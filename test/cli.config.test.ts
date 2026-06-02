@@ -184,6 +184,12 @@ describe("doctor", () => {
     const token = res.json.checks.find((c: any) => c.name === "gateway-token");
     expect(token.status).toBe("ok");
   });
+
+  it("--json 作为 --format json 的兼容别名", async () => {
+    const res = await runCli(["doctor", "--format", "pretty", "--json"], { home });
+    expect(res.json.ok).toBe(true);
+    expect(res.stdout.trim().split("\n")).toHaveLength(1);
+  });
 });
 
 describe("migrate from-openclaw", () => {

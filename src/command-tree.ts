@@ -113,7 +113,7 @@ export const COMMAND_TREE: ServiceSpec[] = [
       { name: "set-default-api-key <label>", summary: "切换 default api-key 🟢" },
       {
         name: "token-rotate",
-        summary: "生成新 gateway token 并热重载 🟡",
+        summary: "生成新 gateway token；daemon 在跑时随后 restart 生效 🟢",
         options: [{ flags: "--length <n>", summary: "token 字节长度", default: "32" }],
       },
       { name: "status", summary: "显示鉴权状态（本地检查，不调 daemon）🟢" },
@@ -216,7 +216,7 @@ export const COMMAND_TREE: ServiceSpec[] = [
   },
   {
     name: "recording",
-    summary: "录音管理 🟢/🟡",
+    summary: "录音查询与 ASR 配置 🟢",
     subcommands: [
       {
         name: "list",
@@ -307,7 +307,7 @@ export const COMMAND_TREE: ServiceSpec[] = [
         name: "create",
         summary: "创建规则（--from-file / --intent ...）",
         options: [
-          { flags: "--from-file <path>", summary: "从 JSON/YAML 读规则（- 为 stdin）" },
+          { flags: "--from-file <path>", summary: "从 JSON 读规则（- 为 stdin）" },
           { flags: "--name <text>", summary: "规则名" },
           { flags: "--intent <text>", summary: "自然语言意图描述" },
           { flags: "--light-action <json>", summary: "命中后的 light 动作 JSON" },
@@ -318,7 +318,7 @@ export const COMMAND_TREE: ServiceSpec[] = [
         name: "update <id>",
         summary: "更新现有规则",
         options: [
-          { flags: "--from-file <path>", summary: "从 JSON/YAML 读规则（- 为 stdin）" },
+          { flags: "--from-file <path>", summary: "从 JSON 读规则（- 为 stdin）" },
           { flags: "--name <text>", summary: "规则名" },
           { flags: "--intent <text>", summary: "自然语言意图描述" },
           { flags: "--light-action <json>", summary: "命中后的 light 动作 JSON" },
@@ -380,7 +380,7 @@ export const COMMAND_TREE: ServiceSpec[] = [
     shortcuts: [
       {
         name: "+test",
-        summary: "端到端联通性自检（echo 回环）",
+        summary: "daemon 本地 ingest + 鉴权自检（echo 回环）",
         options: [{ flags: "--client <label>", summary: "用指定 clientLabel 的 api-key 做回环写入" }],
       },
     ],
@@ -403,10 +403,10 @@ export const COMMAND_TREE: ServiceSpec[] = [
     subcommands: [
       {
         name: "test",
-        summary: "模拟手机端调 daemon /notifications，验证连通/鉴权/relay 🟡",
+        summary: "模拟手机端调 daemon /notifications，验证本地连通与鉴权 🟡",
         options: [
           { flags: "--from-phone-ip <ip>", summary: "模拟来源 IP" },
-          { flags: "--via-relay", summary: "强制走 Relay 隧道" },
+          { flags: "--via-relay", summary: "复用 tunnel +test 本地回环路径" },
         ],
       },
     ],
@@ -468,7 +468,7 @@ export const COMMAND_TREE: ServiceSpec[] = [
   },
   {
     name: "doctor",
-    summary: "环境自检：Node/目录/keychain/daemon/relay 🟢/🟡",
+    summary: "本地环境自检：Node/目录/keychain/config/daemon 🟢",
     options: [
       { flags: "--json", summary: "JSON 输出（给脚本用）" },
       { flags: "--fix", summary: "自动修复可修复的问题" },
