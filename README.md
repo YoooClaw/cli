@@ -9,9 +9,11 @@ yoooclaw 独立 CLI 工具 —— 自带后台守护进程（daemon），不依�
 
 ## 安装与命令
 
-两种分发渠道，二者**功能一致**，按需选择：
+两种分发渠道，二者**功能一致**，按需选择。
 
-### A. npm（需要 Node ≥ 22.12.0）
+**平台支持**：macOS / Linux 两种渠道都支持；**Windows 走 npm 渠道**（需 Node ≥ 22.12.0），原生二进制暂未提供 Windows 目标。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
+
+### A. npm（需要 Node ≥ 22.12.0，Windows 用此渠道）
 
 ```bash
 # 免安装（每次拉最新版）
@@ -37,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/Yoooclaw/openclaw-plugin/master/pac
   | sh -s -- --version 0.0.5 --dir ~/bin --force
 ```
 
-支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。Windows 暂走 npm。
+支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。**Windows 暂无原生二进制，请用上面的 npm 渠道。**
 
 二进制也可以从 [GitHub Releases](https://github.com/Yoooclaw/openclaw-plugin/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 

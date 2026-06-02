@@ -94,17 +94,33 @@ export async function daemonStop(ctx: CliContext): Promise<unknown> {
     removeLock(ctx.paths);
     throw new YoooclawError("YOOOCLAW_DAEMON_NOT_RUNNING", "daemon 未运行");
   }
-  try {
-    process.kill(lock.pid, "SIGTERM");
-  } catch {
-    /* 进程可能刚退出 */
+
+  // Windows 上 Node 没有真正的 POSIX 信号：process.kill(pid, "SIGTERM") 等价于
+  // TerminateProcess，daemon 的 shutdown() 优雅退出钩子（隧道断开、移除 lock）不会跑。
+  // 因此 Windows 优先打 HTTP /daemon/stop 让 daemon 自己走优雅退出，失败再回退到硬杀。
+  const graceful = process.platform === "win32"
+    ? "stop-endpoint"
+    : "SIGTERM";
+  if (graceful === "stop-endpoint") {
+    try {
+      await new DaemonClient(ctx.paths).post("/daemon/stop");
+    } catch {
+      /* daemon 可能拒绝鉴权或刚退出；继续轮询 + 回退硬杀 */
+    }
+  } else {
+    try {
+      process.kill(lock.pid, "SIGTERM");
+    } catch {
+      /* 进程可能刚退出 */
+    }
   }
+
   // 等待优雅退出，最多 10s
   for (let i = 0; i < 100; i += 1) {
     await sleep(100);
     if (!isProcessAlive(lock.pid)) {
       removeLock(ctx.paths);
-      return { ok: true, stopped: lock.pid, signal: "SIGTERM" };
+      return { ok: true, stopped: lock.pid, signal: graceful };
     }
   }
   try {
