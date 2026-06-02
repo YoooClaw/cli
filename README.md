@@ -6,7 +6,7 @@
 
 yoooclaw 独立 CLI 工具 —— **自带后台守护进程（daemon），不依赖 openclaw 客户端在线**，为人类与 AI Agent 而生。本地接收手机通知、Relay 隧道、录音 ASR、灯效规则评估，统一 `--format` 输出，随包发布 Agent Skill 开箱即用。
 
-设计对齐飞书 [lark-cli](https://github.com/larksuite/cli)：Service-oriented 命令树、三层命令体系、Agent-Native。
+Service-oriented 命令树、三层命令体系、Agent-Native。
 
 [安装](#安装与快速开始) · [Agent 技能](#agent-技能) · [鉴权](#鉴权) · [命令体系](#三层命令体系) · [进阶](#进阶用法) · [安全](#安全与风险提示) · [贡献](#开发与贡献)
 
@@ -22,20 +22,20 @@ yoooclaw 独立 CLI 工具 —— **自带后台守护进程（daemon），不�
 
 ## 能力一览
 
-| 领域 | 能力 | daemon |
-| --- | --- | --- |
-| 📱 通知 Notification | 按时间/应用/发送人/关键词查询，今日/最近摘要，多维聚合统计 | 🟢 |
-| 🔄 同步 Sync | 扫描未处理通知、按日期取详情、提交批次，供记忆系统消费 | 🟢 |
-| 🎙️ 录音 Recording | 列举与查询录音、ASR 转写配置（api / local）、状态事件流跟随 | 🟢 |
-| 🖼️ 图片 Image | 列举与查询图片、本地路径 / 缩略图解析 | 🟢 |
-| 💡 灯效 Light | 下发灯效指令到硬件（段 / 预设 / 规则三选一），连通性自检 | 🟡 |
-| 📐 灯效规则 Lightrule | 「通知 → 灯效」持久规则的增删改查、启用 / 停用 | 🟡 |
-| ⏰ 监控 Monitor | cron 驱动的定时通知监控任务 | 🟡 |
-| 🔌 隧道 Tunnel | Relay 隧道状态、强制重连、本地 ingest 回环自检 | 🟡 |
-| 🛡️ 网关 Gateway | 模拟手机端调 daemon，校验本地连通与鉴权 | 🟢/🟡 |
-| 📋 日志 Log | daemon 日志检索与 error 级筛选 | 🟢 |
-| ⚙️ 基础设施 | config / profile / auth / daemon / migrate / update / doctor | 🟢/🔵 |
-| 🧩 技能 Skills | 把随包 SKILL.md 安装到 Agent 可发现目录 | 🟢 |
+| 领域                  | 能力                                                         | daemon |
+| --------------------- | ------------------------------------------------------------ | ------ |
+| 📱 通知 Notification  | 按时间/应用/发送人/关键词查询，今日/最近摘要，多维聚合统计   | 🟢     |
+| 🔄 同步 Sync          | 扫描未处理通知、按日期取详情、提交批次，供记忆系统消费       | 🟢     |
+| 🎙️ 录音 Recording     | 列举与查询录音、ASR 转写配置（api / local）、状态事件流跟随  | 🟢     |
+| 🖼️ 图片 Image         | 列举与查询图片、本地路径 / 缩略图解析                        | 🟢     |
+| 💡 灯效 Light         | 下发灯效指令到硬件（段 / 预设 / 规则三选一），连通性自检     | 🟡     |
+| 📐 灯效规则 Lightrule | 「通知 → 灯效」持久规则的增删改查、启用 / 停用               | 🟡     |
+| ⏰ 监控 Monitor       | cron 驱动的定时通知监控任务                                  | 🟡     |
+| 🔌 隧道 Tunnel        | Relay 隧道状态、强制重连、本地 ingest 回环自检               | 🟡     |
+| 🛡️ 网关 Gateway       | 模拟手机端调 daemon，校验本地连通与鉴权                      | 🟢/🟡  |
+| 📋 日志 Log           | daemon 日志检索与 error 级筛选                               | 🟢     |
+| ⚙️ 基础设施           | config / profile / auth / daemon / migrate / update / doctor | 🟢/🔵  |
+| 🧩 技能 Skills        | 把随包 SKILL.md 安装到 Agent 可发现目录                      | 🟢     |
 
 > daemon 标记：🟢 不需要 daemon · 🟡 需要 daemon 在跑 · 🔵 管理 daemon 自身。
 
@@ -111,11 +111,11 @@ yoooclaw skills install
 
 随包发布 [skills/](skills/) 下的 SKILL.md，教 Agent 直接调 `yoooclaw` 命令。在 openclaw 插件里由 `openclaw.plugin.json` 自动注册；独立 CLI 形态下用 `yoooclaw skills install` 软链到 Agent 的 skills 发现目录。
 
-| Skill | 说明 |
-| --- | --- |
-| `yoooclaw-notification-query` | 流式查询手机通知原始数据：「看看最近的通知」「谁找过我」「总结今天的消息」。纯读磁盘、不需要 daemon |
-| `yoooclaw-lightrule-create` | 从自然语言或 stdin 创建/管理「通知 → 灯效」持久规则，由 daemon 在 ingest 后评估命中并触发灯效（🟡） |
-| `yoooclaw-tunnel-debug` | 排查手机端推送链路：组合 auth / daemon / tunnel / gateway 状态定位本地配置、ingest 鉴权与 Relay WebSocket（🟡） |
+| Skill                         | 说明                                                                                                            |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `yoooclaw-notification-query` | 流式查询手机通知原始数据：「看看最近的通知」「谁找过我」「总结今天的消息」。纯读磁盘、不需要 daemon             |
+| `yoooclaw-lightrule-create`   | 从自然语言或 stdin 创建/管理「通知 → 灯效」持久规则，由 daemon 在 ingest 后评估命中并触发灯效（🟡）             |
+| `yoooclaw-tunnel-debug`       | 排查手机端推送链路：组合 auth / daemon / tunnel / gateway 状态定位本地配置、ingest 鉴权与 Relay WebSocket（🟡） |
 
 ```bash
 yoooclaw skills list                 # 列出随包发布的内置 Skill
@@ -131,16 +131,16 @@ yoooclaw skills install --copy       # 复制而非软链（Windows 无管理员
 
 yoooclaw 的鉴权围绕两类凭据：**api-key**（account 级，签名手机端上行 ingest）与 **gateway token**（本地 daemon HTTP 鉴权）。多数命令为本地检查（🟢），`auth check` 会端到端调 daemon（🟡）。
 
-| 命令 | 说明 |
-| --- | --- |
-| `auth set-api-key <key>` | 设置/轮换 account 级 default api-key（`-` 从 stdin 读） |
-| `auth add-api-key <key>` | 新增一条 multi-key api-key，可带 `--label` / `--default` |
-| `auth list-api-keys` | 列出 api-key 条目（key 自动遮罩） |
-| `auth set-default-api-key <label>` | 切换 default api-key |
-| `auth remove-api-key <label>` | 删除指定 label 的 api-key |
-| `auth token-rotate` | 生成新 gateway token；daemon 在跑时随后 restart 生效 |
-| `auth status` | 显示鉴权状态（本地检查，不调 daemon） |
-| `auth check` | 端到端鉴权体检（调 daemon `/daemon/status`） |
+| 命令                               | 说明                                                     |
+| ---------------------------------- | -------------------------------------------------------- |
+| `auth set-api-key <key>`           | 设置/轮换 account 级 default api-key（`-` 从 stdin 读）  |
+| `auth add-api-key <key>`           | 新增一条 multi-key api-key，可带 `--label` / `--default` |
+| `auth list-api-keys`               | 列出 api-key 条目（key 自动遮罩）                        |
+| `auth set-default-api-key <label>` | 切换 default api-key                                     |
+| `auth remove-api-key <label>`      | 删除指定 label 的 api-key                                |
+| `auth token-rotate`                | 生成新 gateway token；daemon 在跑时随后 restart 生效     |
+| `auth status`                      | 显示鉴权状态（本地检查，不调 daemon）                    |
+| `auth check`                       | 端到端鉴权体检（调 daemon `/daemon/status`）             |
 
 ```bash
 # 从 stdin 安全写入 default api-key，并存入 OS keychain
@@ -202,12 +202,12 @@ echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 
 ### 全局 flags
 
-| flag | 说明 |
-| --- | --- |
-| `--profile <name>` | 切换 profile（默认 `default`） |
-| `--format <fmt>` | `json\|pretty\|table\|ndjson`（TTY 默认 pretty，管道默认 json） |
-| `--quiet` | 抑制进度日志，只输出最终结果 |
-| `--no-color` | 关闭终端颜色 |
+| flag               | 说明                                                            |
+| ------------------ | --------------------------------------------------------------- |
+| `--profile <name>` | 切换 profile（默认 `default`）                                  |
+| `--format <fmt>`   | `json\|pretty\|table\|ndjson`（TTY 默认 pretty，管道默认 json） |
+| `--quiet`          | 抑制进度日志，只输出最终结果                                    |
+| `--no-color`       | 关闭终端颜色                                                    |
 
 ### 输出格式
 
@@ -223,7 +223,14 @@ echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 成功与失败共用同一通道（stdout）与可预测结构；失败额外以非零退出码表达：
 
 ```json
-{ "ok": false, "error": { "code": "YOOOCLAW_DAEMON_NOT_RUNNING", "message": "...", "hint": "..." } }
+{
+  "ok": false,
+  "error": {
+    "code": "YOOOCLAW_DAEMON_NOT_RUNNING",
+    "message": "...",
+    "hint": "..."
+  }
+}
 ```
 
 错误码统一前缀 `YOOOCLAW_*`（见 [src/errors.ts](src/errors.ts)）。
@@ -272,19 +279,19 @@ node dist/bin.cjs --help
 
 ### 源码结构
 
-| 文件 | 职责 |
-| --- | --- |
-| [src/bin.ts](src/bin.ts) | 可执行入口（package.json#bin） |
-| [src/index.ts](src/index.ts) | 程序化入口 `run(argv)` + 核心模块导出 |
-| [src/command-tree.ts](src/command-tree.ts) | 命令树声明（单一事实来源） |
-| [src/program.ts](src/program.ts) | 据命令树构建 commander 程序 + action 包装 |
-| [src/context.ts](src/context.ts) | 全局 flags → CliContext，profile 解析 |
-| [src/output/format.ts](src/output/format.ts) | `--format` 统一序列化 + 错误 schema |
-| [src/errors.ts](src/errors.ts) | `YOOOCLAW_*` 错误码 + `YoooclawError` |
-| [src/paths.ts](src/paths.ts) | `~/.yoooclaw/` 目录布局解析 |
+| 文件                                                             | 职责                                                                 |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [src/bin.ts](src/bin.ts)                                         | 可执行入口（package.json#bin）                                       |
+| [src/index.ts](src/index.ts)                                     | 程序化入口 `run(argv)` + 核心模块导出                                |
+| [src/command-tree.ts](src/command-tree.ts)                       | 命令树声明（单一事实来源）                                           |
+| [src/program.ts](src/program.ts)                                 | 据命令树构建 commander 程序 + action 包装                            |
+| [src/context.ts](src/context.ts)                                 | 全局 flags → CliContext，profile 解析                                |
+| [src/output/format.ts](src/output/format.ts)                     | `--format` 统一序列化 + 错误 schema                                  |
+| [src/errors.ts](src/errors.ts)                                   | `YOOOCLAW_*` 错误码 + `YoooclawError`                                |
+| [src/paths.ts](src/paths.ts)                                     | `~/.yoooclaw/` 目录布局解析                                          |
 | [src/daemon/recording-bridge.ts](src/daemon/recording-bridge.ts) | daemon 形态的 `recordings.sync` 覆盖、ASR fallback 与 in-flight 去重 |
-| [src/daemon/relay-dispatcher.ts](src/daemon/relay-dispatcher.ts) | Relay 入站帧到 `StandaloneRuntime` 的进程内分发 |
-| [src/commands/skills.ts](src/commands/skills.ts) | 内置 Skill 列举 / 安装到 Agent skills 目录 |
+| [src/daemon/relay-dispatcher.ts](src/daemon/relay-dispatcher.ts) | Relay 入站帧到 `StandaloneRuntime` 的进程内分发                      |
+| [src/commands/skills.ts](src/commands/skills.ts)                 | 内置 Skill 列举 / 安装到 Agent skills 目录                           |
 
 ## License
 
