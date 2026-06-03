@@ -2,8 +2,8 @@
  * daemon /light/send 实际投递路径。
  *
  * 把 { segments | preset | rule } 解析成最终的 segments + repeat_times，再调
- * phone-notifications 的 sendLightEffect 走云 API（需要 LIGHT_APP_KEY /
- * LIGHT_TEMPLATE_ID 进程环境变量 + OPENCLAW_HOST_* 决定的 apiUrl）。
+ * phone-notifications 的 sendLightEffect 走云 API（appKey / templateId 写死在
+ * sender.ts；apiUrl 由 OPENCLAW_HOST_* 决定）。
  *
  * 优先级：rule > preset > segments。用户显式传 --repeat / --repeat-times 时
  * 会覆盖 rule/preset 自带的 repeat_times。

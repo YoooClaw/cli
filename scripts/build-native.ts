@@ -33,14 +33,12 @@ const ALL_TARGETS: Target[] = [
 const manifest = pkg as { version?: string };
 const version = manifest.version ?? "unknown";
 
-// 与 build.ts 同源：构建期注入的 Relay host + 灯效凭据，避免 native 二进制
-// 因 env 缺失而在 sendLightEffect 时报 LIGHT_SEND_FAILED。
+// 与 build.ts 同源：构建期注入的 Relay host。
+// （灯效 API 的 appKey / templateId 已写死在 sender.ts，不再走 env 注入。）
 const INJECTED_ENV_KEYS = [
   "OPENCLAW_HOST_PRODUCTION",
   "OPENCLAW_HOST_TEST",
   "OPENCLAW_HOST_DEVELOPMENT",
-  "LIGHT_APP_KEY",
-  "LIGHT_TEMPLATE_ID",
 ] as const;
 
 async function loadPluginBuildEnv(): Promise<Record<string, string>> {
