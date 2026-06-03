@@ -23,20 +23,17 @@ const version = manifest.version ?? "unknown";
 const externalNames = Object.keys(manifest.dependencies ?? {});
 const external = externalNames.flatMap((name) => [name, `${name}/*`]);
 
-// 复用 phone-notifications 那套 Relay：从插件 .env 读取 host + 灯效凭据，
-// 注入与插件相同的 process.env.*。这样 schema.ts 的 DEFAULT_RELAY_URL 在构建期
-// 就被替换为生产 relay 地址；灯效 API 的 appKey / templateId 也内联进产物，
-// 避免 `yc light` 走 daemon → sendLightEffect 时因 env 缺失而报 LIGHT_SEND_FAILED。
+// 复用 phone-notifications 那套 Relay：从插件 .env 读取 host，注入与插件相同的
+// process.env.*。这样 schema.ts 的 DEFAULT_RELAY_URL 在构建期就被替换为生产 relay
+// 地址。（灯效 API 的 appKey / templateId 已写死在 sender.ts，不再走 env 注入。）
 const INJECTED_ENV_KEYS = [
   "OPENCLAW_HOST_PRODUCTION",
   "OPENCLAW_HOST_TEST",
   "OPENCLAW_HOST_DEVELOPMENT",
-  "LIGHT_APP_KEY",
-  "LIGHT_TEMPLATE_ID",
 ] as const;
 
 async function loadPluginEnv(): Promise<Record<string, string>> {
-  // 独立 CLI 仓自带 .env（本地构建注入 Relay host + 灯效凭据）；CI 中不存在时回退 process.env。
+  // 独立 CLI 仓自带 .env（本地构建注入 Relay host）；CI 中不存在时回退 process.env。
   const envPath = join(import.meta.dir, "..", ".env");
   if (!existsSync(envPath)) return {};
   const raw = await readFile(envPath, "utf-8");

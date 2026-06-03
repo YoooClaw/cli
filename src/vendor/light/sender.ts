@@ -21,19 +21,19 @@ export async function sendLightEffect(
   title?: string,
 ): Promise<SendLightResult> {
   const apiUrl = getEnvUrls().lightApiUrl;
-  const appKey = process.env.LIGHT_APP_KEY;
-  const templateId = process.env.LIGHT_TEMPLATE_ID;
+  // 后端要求 appKey / templateId 写死在代码里（不再从 env 注入）
+  const appKey = "phone-notifications";
+  const templateId = "1990771146010017800";
   const resolvedTitle = resolveLightTitle(title, reason, segments);
 
   logger?.info(
     `Light sender: apiUrl=${apiUrl ?? "UNSET"}, appKey=${appKey ? appKey.substring(0, 8) + "…" : "UNSET"}, templateId=${templateId ?? "UNSET"}, apiKey=${apiKey ? apiKey.substring(0, 20) + "…" : "EMPTY"}, title=${resolvedTitle}, reason=${reason ?? ""}, segments=${JSON.stringify(segments)}`,
   );
 
-  if (!apiUrl || !appKey || !templateId) {
+  if (!apiUrl) {
     return {
       ok: false,
-      error:
-        "灯效 API 未配置，请确认构建时已封装 OPENCLAW_HOST_* / LIGHT_APP_KEY / LIGHT_TEMPLATE_ID",
+      error: "灯效 API 未配置，请确认构建时已封装 OPENCLAW_HOST_*",
     };
   }
 
