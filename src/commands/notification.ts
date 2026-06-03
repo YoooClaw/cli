@@ -65,6 +65,7 @@ interface StatsOpts {
   from?: string;
   to?: string;
   app?: string;
+  sender?: string;
   client?: string;
   dim?: string;
 }
@@ -72,26 +73,150 @@ interface StatsOpts {
 const HOUR_KEY = (n: StoredNotification): string =>
   String(new Date(n.timestamp).getHours()).padStart(2, "0");
 
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_TIME_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+interface StatsBoundary {
+  raw: string;
+  exactTs: number | null;
+  startTs: number;
+  endTs: number;
+  minDateKey: string;
+  maxDateKey: string;
+}
+
+interface StatsRange {
+  from: string;
+  to: string;
+  fromTs: number | null;
+  toTs: number | null;
+  fromDateKey: string;
+  toDateKey: string;
+}
+
+function parseDateParts(value: string): { year: number; month: number; day: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(year, month - 1, day);
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month - 1 ||
+    d.getDate() !== day
+  ) {
+    return null;
+  }
+  return { year, month, day };
+}
+
+function localDateTimestamp(
+  parts: { year: number; month: number; day: number },
+  endOfDay: boolean,
+): number {
+  return new Date(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
+  ).getTime();
+}
+
+function minDateKey(...keys: string[]): string {
+  return keys.sort()[0];
+}
+
+function maxDateKey(...keys: string[]): string {
+  return keys.sort().at(-1)!;
+}
+
+function parseStatsBoundary(value: string, optionName: "--from" | "--to"): StatsBoundary {
+  if (DATE_ONLY_RE.test(value)) {
+    const parts = parseDateParts(value);
+    if (!parts) {
+      throw new YoooclawError(
+        "YOOOCLAW_INVALID_ARGUMENT",
+        `${optionName} 必须是合法日期 YYYY-MM-DD`,
+      );
+    }
+    const startTs = localDateTimestamp(parts, false);
+    const endTs = localDateTimestamp(parts, true);
+    return {
+      raw: value,
+      exactTs: null,
+      startTs,
+      endTs,
+      minDateKey: value,
+      maxDateKey: value,
+    };
+  }
+
+  if (!ISO_TIME_RE.test(value)) {
+    throw new YoooclawError(
+      "YOOOCLAW_INVALID_ARGUMENT",
+      `${optionName} 必须是 YYYY-MM-DD 或 ISO 8601 时间，例如 2026-06-02 或 2026-06-02T09:00:00+08:00`,
+    );
+  }
+  const exactTs = Date.parse(value);
+  if (Number.isNaN(exactTs)) {
+    throw new YoooclawError("YOOOCLAW_INVALID_ARGUMENT", `${optionName} 不是合法时间`);
+  }
+
+  const declaredDateKey = value.slice(0, 10);
+  const localDateKey = formatDate(new Date(exactTs));
+  return {
+    raw: value,
+    exactTs,
+    startTs: exactTs,
+    endTs: exactTs,
+    minDateKey: minDateKey(declaredDateKey, localDateKey),
+    maxDateKey: maxDateKey(declaredDateKey, localDateKey),
+  };
+}
+
+function buildStatsRange(fromRaw: string | undefined, toRaw: string | undefined): StatsRange {
+  const from = parseStatsBoundary(fromRaw ?? daysAgo(7), "--from");
+  const to = parseStatsBoundary(toRaw ?? today(), "--to");
+  if (from.startTs > to.endTs) {
+    throw new YoooclawError("YOOOCLAW_INVALID_ARGUMENT", "--from 不能晚于 --to");
+  }
+  return {
+    from: from.raw,
+    to: to.raw,
+    fromTs: from.exactTs,
+    toTs: to.exactTs,
+    fromDateKey: from.minDateKey,
+    toDateKey: to.maxDateKey,
+  };
+}
+
 export async function notificationStats(
   ctx: CliContext,
   _args: unknown[],
   opts: StatsOpts,
 ): Promise<unknown> {
-  const from = opts.from ?? daysAgo(7);
-  const to = opts.to ?? today();
+  const range = buildStatsRange(opts.from, opts.to);
   const dim = opts.dim ?? "all";
   const allowed = ["date", "app", "sender", "hour", "client", "all"];
   if (!allowed.includes(dim)) {
     throw new YoooclawError("YOOOCLAW_INVALID_ARGUMENT", `--dim 只能是 ${allowed.join("|")}`);
   }
   const options: NotificationQueryOptions = {
+    from: range.from,
+    to: range.to,
     app: opts.app,
+    sender: opts.sender,
     client: opts.client,
     limit: MAX_LIMIT,
-    fromTs: null,
-    toTs: null,
-    fromDateKey: from,
-    toDateKey: to,
+    fromTs: range.fromTs,
+    toTs: range.toTs,
+    fromDateKey: range.fromDateKey,
+    toDateKey: range.toDateKey,
   };
   const items = await queryNotifications(ctx.paths, options);
 
@@ -105,7 +230,7 @@ export async function notificationStats(
   return {
     ok: true,
     total: items.length,
-    range: { from, to },
+    range: { from: range.from, to: range.to },
     dim,
     ...(dim === "all" ? dims : { [dim]: dims[dim as keyof typeof dims] }),
   };

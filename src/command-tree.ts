@@ -177,9 +177,10 @@ export const COMMAND_TREE: ServiceSpec[] = [
         name: "stats",
         summary: "按维度聚合统计",
         options: [
-          { flags: "--from <date>", summary: "YYYY-MM-DD，默认 7 天前" },
-          { flags: "--to <date>", summary: "YYYY-MM-DD，默认今天" },
+          { flags: "--from <time>", summary: "YYYY-MM-DD 或 ISO 8601，默认 7 天前" },
+          { flags: "--to <time>", summary: "YYYY-MM-DD 或 ISO 8601，默认今天" },
           { flags: "--app <name>", summary: "仅统计指定应用" },
+          { flags: "--sender <name>", summary: "仅统计指定发送人/标题" },
           { flags: "--client <label>", summary: "按 clientLabel 过滤；all 为全部" },
           { flags: "--dim <dim>", summary: "date|app|sender|hour|client|all", default: "all" },
         ],

@@ -41,12 +41,13 @@ yoooclaw notification search \
 # 聚合摘要（topApps / topSenders / 最近样例），适合"帮我总结"
 yoooclaw notification summary --top 10 --sample 30 --format json
 
-# 维度统计（date|app|sender|hour|all）
+# 维度统计（date|app|sender|hour|client|all）
 yoooclaw notification stats --from 2026-05-14 --to 2026-05-21 --dim all --format json
+yoooclaw notification stats --from 2026-05-21T00:00:00+08:00 --to 2026-05-21T23:59:59+08:00 --sender 张三 --dim sender --format json
 ```
 
 - `--app` 支持中英文别名：`微信/wechat`、`飞书/feishu/lark`、`钉钉/dingtalk`、`企业微信/wecom` 等。
-- `--from/--to` 用 ISO 8601 含时区（`2026-05-01T09:00:00+08:00`）。`stats` 的 `--from/--to` 用 `YYYY-MM-DD`。
+- `search` / `summary` 的 `--from/--to` 用 ISO 8601 含时区（`2026-05-01T09:00:00+08:00`）。`stats` 的 `--from/--to` 支持 `YYYY-MM-DD` 或 ISO 8601。
 
 ## 流式处理 ndjson 的样板
 

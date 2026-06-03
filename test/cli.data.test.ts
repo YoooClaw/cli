@@ -87,6 +87,40 @@ describe("notification search", () => {
     expect(res.json.app.find((a: any) => a.key === "微信").count).toBe(2);
   });
 
+  it("stats 支持 ISO 8601 时区时间范围", async () => {
+    const fullDay = await runCli([
+      "notification",
+      "stats",
+      "--from",
+      `${DAY}T00:00:00+08:00`,
+      "--to",
+      `${DAY}T23:59:59+08:00`,
+    ], { home });
+    expect(fullDay.exitCode).toBe(0);
+    expect(fullDay.json.ok).toBe(true);
+    expect(fullDay.json.total).toBe(3);
+
+    const precise = await runCli([
+      "notification",
+      "stats",
+      "--from",
+      `${DAY}T11:30:00+08:00`,
+      "--to",
+      `${DAY}T12:30:00+08:00`,
+      "--dim",
+      "sender",
+    ], { home });
+    expect(precise.json.total).toBe(1);
+    expect(precise.json.sender).toEqual([{ key: "Bob", count: 1 }]);
+  });
+
+  it("stats --sender 按发送人/标题过滤", async () => {
+    const res = await runCli(["notification", "stats", "--from", DAY, "--to", DAY, "--sender", "Alice", "--dim", "sender"], { home });
+    expect(res.exitCode).toBe(0);
+    expect(res.json.total).toBe(1);
+    expect(res.json.sender).toEqual([{ key: "Alice", count: 1 }]);
+  });
+
   it("stats 非法 --dim 报 INVALID_ARGUMENT", async () => {
     const res = await runCli(["notification", "stats", "--dim", "bogus"], { home });
     expect(res.exitCode).toBe(1);
