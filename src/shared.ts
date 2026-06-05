@@ -33,8 +33,9 @@ export { NotificationStorage } from "./vendor/notification/storage.js";
 export { registerNotificationInterfaces } from "./vendor/plugin/notifications.js";
 export { RecordingStorage } from "./vendor/recording/storage.js";
 export { registerRecordingInterfaces } from "./vendor/plugin/recordings.js";
-export { handleRecordingSync } from "./vendor/recording/handler.js";
+export { handleRecordingSync, triggerTranscription } from "./vendor/recording/handler.js";
 export type { RecordingStatusEvent } from "./vendor/recording/handler.js";
+export { canStartTranscription } from "./vendor/recording/state-machine.js";
 export { validateAsrConfig } from "./vendor/recording/asr.js";
 export type {
   AsrConfig,

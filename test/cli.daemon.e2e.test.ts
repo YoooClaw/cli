@@ -6,9 +6,9 @@
  * L4：模拟手机端，直接 fetch daemon HTTP（/health 公开、/notifications 经 api-key 鉴权）。
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cleanHome, makeHome, profileDir, runCli } from "./helpers/cli.js";
+import { cleanHome, makeHome, profileDir, runCli, seedRecordings } from "./helpers/cli.js";
 import { startDaemon, type DaemonHandle } from "./helpers/daemon.js";
 
 const SEGMENT = { mode: "steady", duration_s: 5, brightness: 192, color: { r: 255, g: 0, b: 0 } };
@@ -221,6 +221,61 @@ describe("L4 手机端 ingest（api-key 鉴权）", () => {
     const search = await runCli(["notification", "search", "--client", "phone-a"], { home });
     expect(search.json.length).toBeGreaterThanOrEqual(1);
     expect(search.json.some((n: any) => n.clientLabel === "phone-a")).toBe(true);
+  });
+});
+
+describe("L4 录音重试（CLI ASR fallback）", () => {
+  let home: string;
+  let daemon: DaemonHandle;
+
+  beforeAll(async () => {
+    home = makeHome();
+    const recordingsDir = join(profileDir(home), "recordings");
+    mkdirSync(recordingsDir, { recursive: true });
+    writeFileSync(
+      join(recordingsDir, "asr-config.json"),
+      JSON.stringify({ mode: "api", api: { language: "auto" } }, null, 2),
+      "utf-8",
+    );
+    seedRecordings(home, [
+      {
+        id: "rec_retry",
+        clientLabel: "phone-a",
+        metadata: {
+          name: "失败录音",
+          duration_sec: 1,
+          file_size_bytes: 544 * 1024,
+          created_at: "2026-06-04T17:16:50+08:00",
+          oss_audio_url: "https://example.invalid/rec_retry.ogg",
+          markers: [],
+        },
+        status: "transcribe_failed",
+        audioFile: "audio/rec_retry.ogg",
+        lastError: "上一次转写失败",
+        ingestedAt: "2026-06-04T17:16:50+08:00",
+        updatedAt: "2026-06-04T17:17:00+08:00",
+      },
+    ]);
+    daemon = await startDaemon({ home });
+  });
+  afterAll(async () => {
+    await daemon.stop();
+    cleanHome(home);
+  });
+
+  it("recordings.retranscribe 不带 asr 时读取 CLI 本地配置", async () => {
+    const res = await fetch(`${daemon.baseUrl}/gateway/recordings.retranscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordingId: "rec_retry" }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      data: { ok: true, recordingId: "rec_retry", message: "转写已重新触发" },
+    });
   });
 });
 

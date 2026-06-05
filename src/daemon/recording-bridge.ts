@@ -8,14 +8,16 @@
  *   - 同时 mode=api 时若用户没填 apiKey，要回退到 account 级 ock- key（resolveApiKey）。
  *
  * 用法：daemon main.ts 先调 registerRecordingInterfaces 装上 list/status/rename/... 一类查询/管理方法，
- * 再调本模块 `overrideRecordingSync` 覆盖 sync 这一项（runtime.gatewayMethods 是 Map，后写覆盖）。
+ * 再调本模块 `overrideRecordingSync` 覆盖 sync / retranscribe（runtime.gatewayMethods 是 Map，后写覆盖）。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  canStartTranscription,
   handleRecordingSync,
   RecordingStorage,
+  triggerTranscription,
   validateAsrConfig,
   type AsrConfig,
   type RecordingMetadata,
@@ -39,6 +41,11 @@ export interface RecordingSyncDeps {
 interface SyncParams {
   recordingId?: unknown;
   recording?: RecordingMetadata;
+  asr?: AsrConfig;
+}
+
+interface RetranscribeParams {
+  recordingId?: unknown;
   asr?: AsrConfig;
 }
 
@@ -98,7 +105,7 @@ const TERMINAL_SUCCESS_STATUSES = new Set<string>(["synced", "transcribed"]);
 /** 单条 in-flight 的兜底超时：5 分钟内若没收到终态事件，强制释放（避免句柄泄漏）。 */
 const INFLIGHT_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** 覆盖注册 recordings.sync gateway + POST /recordings HTTP。 */
+/** 覆盖注册 recordings.sync / recordings.retranscribe gateway + POST /recordings HTTP。 */
 export function overrideRecordingSync(deps: RecordingSyncDeps): void {
   const { runtime, storage, logger, fallbackApiKey, asrConfigDir, notifyStatus } = deps;
   const readFallbackApiKey = (): string | undefined =>
@@ -111,6 +118,14 @@ export function overrideRecordingSync(deps: RecordingSyncDeps): void {
    * daemon 层加 in-flight 标记后，第二条直接 short-circuit，仅返回当前 storage 状态。
    */
   const inFlight = new Map<string, NodeJS.Timeout>();
+
+  function resolveConfiguredAsr(callerAsr: AsrConfig | undefined): AsrConfig | undefined {
+    return resolveAsrConfig(
+      callerAsr,
+      loadLocalAsrConfig(asrConfigDir),
+      readFallbackApiKey(),
+    );
+  }
 
   function markInFlight(recordingId: string): void {
     clearTimeout(inFlight.get(recordingId));
@@ -185,8 +200,7 @@ export function overrideRecordingSync(deps: RecordingSyncDeps): void {
       };
     }
 
-    const localAsr = loadLocalAsrConfig(asrConfigDir);
-    const asr = resolveAsrConfig(params.asr, localAsr, readFallbackApiKey());
+    const asr = resolveConfiguredAsr(params.asr);
     if (asr && !params.asr) {
       logger.info(
         `[recording-sync] 使用本地 asr-config.json（mode=${asr.mode}${
@@ -207,6 +221,61 @@ export function overrideRecordingSync(deps: RecordingSyncDeps): void {
     return { ok: true, data: result };
   }
 
+  function retranscribe(params: RetranscribeParams): (
+    | { ok: true; data: { ok: true; recordingId: string; message: string } }
+    | { ok: false; code: string; message: string }
+  ) {
+    const recordingId = trimToString(params.recordingId);
+    if (!recordingId) {
+      return { ok: false, code: "INVALID_PARAMS", message: "recordingId is required" };
+    }
+
+    if (params.asr) {
+      const err = validateAsrConfig(params.asr);
+      if (err) return { ok: false, code: "ASR_NOT_CONFIGURED", message: err };
+    }
+
+    const asr = resolveConfiguredAsr(params.asr);
+    const asrError = validateAsrConfig(asr);
+    if (asrError) {
+      return { ok: false, code: "ASR_NOT_CONFIGURED", message: asrError };
+    }
+
+    const entry = storage.findById(recordingId);
+    if (!entry) {
+      return { ok: false, code: "NOT_FOUND", message: `Recording not found: ${recordingId}` };
+    }
+
+    if (!canStartTranscription(entry.status)) {
+      return {
+        ok: false,
+        code: "INVALID_STATE",
+        message: `Recording status does not allow retranscribe: ${entry.status}`,
+      };
+    }
+
+    if (asr && !params.asr) {
+      logger.info(
+        `[recording-retranscribe] 使用本地 asr-config.json（mode=${asr.mode}${
+          asr.mode === "api" && asr.api?.apiKey ? ", key=ock-***" : ""
+        }）`,
+      );
+    }
+
+    triggerTranscription(recordingId, storage, asr!, logger, {
+      notifyStatus: wrappedNotifyStatus,
+    }).catch((err) => {
+      logger.error(
+        `[recording-retranscribe] 重试转写失败: ${recordingId}, ${err?.message ?? err}`,
+      );
+    });
+
+    return {
+      ok: true,
+      data: { ok: true, recordingId, message: "转写已重新触发" },
+    };
+  }
+
   runtime.registerGatewayMethod("recordings.sync", async ({ params, respond }) => {
     const outcome = await doSync((params ?? {}) as SyncParams);
     if (outcome.ok) {
@@ -214,6 +283,15 @@ export function overrideRecordingSync(deps: RecordingSyncDeps): void {
         code: "SYNC_FAILED",
         message: outcome.data.error ?? "Unknown error",
       });
+    } else {
+      respond(false, null, { code: outcome.code, message: outcome.message });
+    }
+  });
+
+  runtime.registerGatewayMethod("recordings.retranscribe", ({ params, respond }) => {
+    const outcome = retranscribe((params ?? {}) as RetranscribeParams);
+    if (outcome.ok) {
+      respond(true, outcome.data);
     } else {
       respond(false, null, { code: outcome.code, message: outcome.message });
     }
@@ -245,7 +323,7 @@ export function overrideRecordingSync(deps: RecordingSyncDeps): void {
     },
   });
 
-  logger.info("daemon 已覆盖 recordings.sync + POST /recordings（注入本地 ASR 配置）");
+  logger.info("daemon 已覆盖 recordings.sync / recordings.retranscribe + POST /recordings（注入本地 ASR 配置）");
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown | undefined> {
