@@ -13,7 +13,7 @@ const COMMON = {
   version,
   license: "MIT",
   author: "developer@yoooclaw.com",
-  repository: { type: "git", url: "https://github.com/YoooClaw/cli.git" },
+  repository: { type: "git", url: "git+https://github.com/YoooClaw/cli.git" },
   publishConfig: { access: "public" },
 };
 

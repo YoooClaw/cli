@@ -370,11 +370,13 @@ jobs:
 
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "::notice::$name@$version 已存在，跳过"
+              npm access public "$name"
               return
             fi
 
             echo "::notice::发布 $name@$version --tag $NPM_TAG"
             npm publish "./$dir" --access public --tag "$NPM_TAG"
+            npm access public "$name"
           }
 
           for dir in dist-npm/cli-*; do
@@ -398,20 +400,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          args=(--generate-notes)
-          if [ "$PRERELEASE" = "1" ]; then
-            args+=(--prerelease)
-          fi
-
-          gh release create "cli-v$VERSION" \
+          assets=(
             dist-native/yoooclaw-darwin-arm64 \
             dist-native/yoooclaw-darwin-x64 \
             dist-native/yoooclaw-linux-arm64 \
             dist-native/yoooclaw-linux-x64 \
             dist-native/yoooclaw-win32-x64.exe \
             dist-native/checksums.txt \
-            release-tarballs/*.tgz \
-            "${args[@]}"
+            release-tarballs/*.tgz
+          )
+
+          if gh release view "cli-v$VERSION" >/dev/null 2>&1; then
+            gh release upload "cli-v$VERSION" "${assets[@]}" --clobber
+          else
+            args=(--generate-notes)
+            if [ "$PRERELEASE" = "1" ]; then
+              args+=(--prerelease)
+            fi
+            gh release create "cli-v$VERSION" "${assets[@]}" "${args[@]}"
+          fi
 
       - name: Notify Feishu
         if: success()
