@@ -30,6 +30,9 @@ if (mode === "platform") {
     // os/cpu 让 npm 只在匹配平台安装本子包；files 限定只发布二进制。
     os: [npmOs],
     cpu: [npmCpu],
+    // npm only preserves executable mode reliably for files declared as bins.
+    // Use a non-primary name so the launcher package keeps owning yc/yoooclaw.
+    bin: { "yc-native": `bin/${binName}` },
     files: [`bin/${binName}`],
   });
 } else if (mode === "main") {

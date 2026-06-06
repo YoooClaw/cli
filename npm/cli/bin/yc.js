@@ -8,6 +8,7 @@
 // 设计与 esbuild / turbo 一致：主包不含二进制，只含这个极薄 launcher。
 
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 
 function resolveBinary() {
   const platform = process.platform; // darwin | linux | win32
@@ -32,6 +33,14 @@ if (!bin) {
       "请尝试重新安装： npm i -g @yoooclaw/cli\n",
   );
   process.exit(1);
+}
+
+if (process.platform !== "win32") {
+  try {
+    fs.chmodSync(bin, 0o755);
+  } catch {
+    // Best effort only: spawnSync will surface the real error if execution still fails.
+  }
 }
 
 const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });

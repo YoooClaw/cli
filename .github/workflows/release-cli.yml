@@ -384,6 +384,14 @@ jobs:
           done
           publish_pkg dist-npm/cli
 
+      - name: Deprecate broken beta.0
+        if: env.VERSION == '0.2.0-beta.1'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          message="@yoooclaw/cli 0.2.0-beta.0 的平台二进制缺少 executable bit，请升级到 0.2.0-beta.1。"
+          npm deprecate "@yoooclaw/cli@0.2.0-beta.0" "$message"
+
       - name: Compute checksums
         run: |
           cd dist-native
