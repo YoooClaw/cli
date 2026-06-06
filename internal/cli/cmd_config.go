@@ -7,11 +7,37 @@ import (
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
+	"github.com/YoooClaw/cli/internal/daemon"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/prompt"
 	"github.com/spf13/cobra"
 )
+
+// startDaemonForInit 在 init 收尾拉起 daemon；失败/已在运行都不阻断 init。
+func startDaemonForInit(ctx *clictx.Context) map[string]any {
+	if st := daemon.State(ctx.Paths); st.Running {
+		return map[string]any{"started": true, "alreadyRunning": true, "pid": st.Lock.PID}
+	}
+	lock, err := daemon.Spawn(ctx, daemon.StartOpts{})
+	if err != nil {
+		return map[string]any{"started": false, "error": err.Error()}
+	}
+	return map[string]any{"started": true, "pid": lock.PID}
+}
+
+func initHint(started, apiKeyPresent bool) string {
+	if !started {
+		if apiKeyPresent {
+			return "配置已就绪：运行 yc daemon start 启动 daemon"
+		}
+		return "配置已就绪：运行 yc auth set-api-key <ock_…> 设置 api-key，再 yc daemon start"
+	}
+	if apiKeyPresent {
+		return "已就绪：daemon 已启动；手机 App 绑定同一账号即可收发（Relay 隧道 Phase 3 接入）"
+	}
+	return "daemon 已启动，但尚未设置 api-key：运行 yc auth set-api-key <ock_…> 后 yc daemon restart"
+}
 
 func newConfigCmd() *cobra.Command {
 	c := &cobra.Command{Use: "config", Short: "配置管理 🟢"}
@@ -117,13 +143,14 @@ func initCore(ctx *clictx.Context, o initOpts) (any, error) {
 		return nil, err
 	}
 
-	// daemon 自动拉起在 Phase 2 接入；此处只生成配置并报告未启动。
+	// init 即用：默认把 daemon 拉起来；--no-start 跳过。失败不阻断 init（配置已落盘）。
 	apiKey := creds.ResolveAPIKey()
-	daemonInfo := map[string]any{"started": false, "note": "daemon 自动启动将在 Phase 2 接入；当前可手动 yc daemon start（Phase 2）"}
-	hint := "配置已就绪：Phase 2 接入 daemon 后即可 yc daemon start 并连上 Relay"
-	if apiKey.Value == "" {
-		hint = "配置已就绪：运行 yc auth set-api-key <ock_…> 设置 Relay api-key"
+	daemonInfo := map[string]any{"started": false}
+	if !o.noStart {
+		daemonInfo = startDaemonForInit(ctx)
 	}
+	started, _ := daemonInfo["started"].(bool)
+	hint := initHint(started, apiKey.Value != "")
 	return map[string]any{
 		"ok":      true,
 		"profile": ctx.Profile,

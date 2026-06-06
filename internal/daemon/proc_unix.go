@@ -18,3 +18,14 @@ func isProcessAlive(pid int) bool {
 	}
 	return errors.Is(err, syscall.EPERM)
 }
+
+// detachSysProcAttr 让 fork 出的 daemon 子进程脱离当前会话（独立进程组）。
+func detachSysProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setsid: true}
+}
+
+// terminate 向进程发送 SIGTERM（优雅）。
+func terminate(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }
+
+// forceKill 向进程发送 SIGKILL（强杀）。
+func forceKill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }

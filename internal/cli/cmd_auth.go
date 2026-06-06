@@ -212,7 +212,16 @@ func authTokenRotate(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, 
 	return map[string]any{"ok": true, "token": token, "source": written.Source, "location": written.Location, "hint": hot}, nil
 }
 
-func authCheck(_ *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	// 端到端体检需要 daemon HTTP client，Phase 2 接入。
-	return nil, errs.NotImplemented("auth check")
+func authCheck(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+	if err := daemon.AssertRunning(ctx.Paths); err != nil {
+		return nil, err
+	}
+	status, body, err := daemon.NewClient(ctx.Paths).Request("GET", "/daemon/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok": status >= 200 && status < 300, "profile": ctx.Profile,
+		"daemonReachable": true, "status": status, "daemon": body,
+	}, nil
 }

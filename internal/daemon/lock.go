@@ -4,6 +4,8 @@
 package daemon
 
 import (
+	"os"
+
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/paths"
 )
@@ -44,3 +46,16 @@ func State(p paths.Paths) RunningState {
 	alive := isProcessAlive(lock.PID)
 	return RunningState{Running: alive, Lock: lock, Stale: !alive}
 }
+
+// WriteLock 写锁文件。
+func WriteLock(p paths.Paths, lock Lock) error {
+	return fsutil.WriteJSON(p.DaemonLock, lock, fsutil.ConfigFileMode)
+}
+
+// RemoveLock 删除锁文件。
+func RemoveLock(p paths.Paths) {
+	_ = os.Remove(p.DaemonLock)
+}
+
+// IsProcessAlive 导出探活（供 daemon 命令判断目标进程）。
+func IsProcessAlive(pid int) bool { return isProcessAlive(pid) }
