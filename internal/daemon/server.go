@@ -173,6 +173,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleIngest(w, r, authCtx, "notifications")
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
+	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
+		s.handleMonitors(w, r, path)
+	case strings.HasPrefix(path, "/tunnel/"):
+		s.handleTunnel(w, r, path)
 	default:
 		writeJSON(w, 404, map[string]any{"ok": false, "error": map[string]any{"code": errs.CodeNotFound, "message": "未知路径：" + path}})
 	}

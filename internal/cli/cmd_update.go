@@ -91,7 +91,7 @@ func updateSelf(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) 
 	ctxReq, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctxReq, http.MethodGet, updateRegistry+"/"+url(updatePackage), nil)
+	req, err := http.NewRequestWithContext(ctxReq, http.MethodGet, updateRegistry+"/"+encodePkgName(updatePackage), nil)
 	if err != nil {
 		return nil, errs.New(errs.CodeNetworkError, "构造 npm 请求失败")
 	}
@@ -133,7 +133,7 @@ func updateSelf(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) 
 	}, nil
 }
 
-// url 对 @scope/name 做最简 path 编码（@ 与 / 需转义）。
-func url(pkg string) string {
+// encodePkgName 对 @scope/name 做最简 path 编码（/ 转义）。
+func encodePkgName(pkg string) string {
 	return strings.ReplaceAll(pkg, "/", "%2F")
 }
