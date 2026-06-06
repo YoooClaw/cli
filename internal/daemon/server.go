@@ -175,6 +175,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleIngest(w, r, authCtx, "items")
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
 		s.handleMonitors(w, r, path)
+	case path == "/light/send" && r.Method == http.MethodPost:
+		s.handleLightSend(w, r)
+	case strings.HasPrefix(path, "/gateway/lightrules."):
+		s.handleLightrules(w, r, path)
 	case strings.HasPrefix(path, "/tunnel/"):
 		s.handleTunnel(w, r, path)
 	default:
