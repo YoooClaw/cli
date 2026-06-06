@@ -370,13 +370,13 @@ jobs:
 
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "::notice::$name@$version 已存在，跳过"
-              npm access public "$name"
+              npm access set status=public "$name"
               return
             fi
 
             echo "::notice::发布 $name@$version --tag $NPM_TAG"
             npm publish "./$dir" --access public --tag "$NPM_TAG"
-            npm access public "$name"
+            npm access set status=public "$name"
           }
 
           for dir in dist-npm/cli-*; do
