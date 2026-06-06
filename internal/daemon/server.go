@@ -19,14 +19,16 @@ import (
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/notif"
+	"github.com/YoooClaw/cli/internal/recording"
+	"github.com/YoooClaw/cli/internal/relay"
 	"github.com/YoooClaw/cli/internal/version"
 )
 
 // ProtocolVersion 是手机端协议协商版本。
 const ProtocolVersion = 1
 
-// Capabilities 是本 build 支持的能力（Phase 2 标准 HTTP，relay/recordings/images 待后续）。
-var Capabilities = []string{"notifications", "multi-apikey"}
+// Capabilities 是本 build 支持的 daemon/Relay 能力。
+var Capabilities = []string{"notifications", "recordings", "images", "lightrules", "multi-apikey"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -77,6 +79,11 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	if err := storage.Init(); err != nil {
 		return err
 	}
+	recordingStorage := recording.NewStorage(ctx.Paths.Recordings, logger)
+	if err := recordingStorage.Init(); err != nil {
+		return err
+	}
+	recordingEventLog := recording.NewEventLog(ctx.Paths.Recordings)
 	ignored := map[string]bool{}
 	for _, a := range cfg.Notification.IgnoredApps {
 		ignored[a] = true
@@ -84,7 +91,9 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 
 	srv := &server{
 		ctx: ctx, cfg: cfg, logger: logger, st: st, storage: storage,
-		token: token, credentialSet: credentialSet, ignored: ignored, bind: bind,
+		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
+		recordingInFlight: map[string]time.Time{},
+		token:             token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 	}
 
 	// 监听；端口被占自动 +1（最多 64 次）。
@@ -100,13 +109,30 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	}
 	logger.Info(fmt.Sprintf("yoooclaw daemon 启动：%s:%d（profile=%s, pid=%d）", bind, actualPort, ctx.Profile, os.Getpid()))
 	if cfg.Relay.Enabled {
-		logger.Warn("Relay 已启用，但本 build 暂未实现隧道（Phase 3）；当前仅直连 HTTP")
+		if len(credentialSet.Entries) == 0 {
+			logger.Warn("Relay 已启用但未设置 api-key；当前仅直连 HTTP")
+		} else {
+			srv.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
+				TunnelURL:          cfg.Relay.URL,
+				HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(actualPort),
+				HTTPToken:          token,
+				HeartbeatSec:       cfg.Relay.HeartbeatSec,
+				ReconnectBackoffMs: cfg.Relay.ReconnectBackoffMs,
+				StateDir:           ctx.Paths.Dir,
+				Logger:             logger,
+			})
+			result := srv.tunnelSupervisor.Apply(credentialSet)
+			logger.Info(fmt.Sprintf("Relay tunnels applied: started=%v unchanged=%v", result.Started, result.Unchanged))
+		}
 	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	srv.shutdown = func(reason string) {
 		logger.Info("daemon 退出（" + reason + "）")
+		if srv.tunnelSupervisor != nil {
+			srv.tunnelSupervisor.StopAll(reason)
+		}
 		_ = httpSrv.Close()
 		RemoveLock(ctx.Paths)
 		os.Exit(0)
@@ -126,17 +152,22 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 }
 
 type server struct {
-	ctx           *clictx.Context
-	cfg           config.Config
-	logger        *Logger
-	st            *runtimeState
-	storage       *notif.Storage
-	token         string
-	credentialSet creds.CredentialSet
-	ignored       map[string]bool
-	bind          string
-	port          int
-	shutdown      func(string)
+	ctx               *clictx.Context
+	cfg               config.Config
+	logger            *Logger
+	st                *runtimeState
+	storage           *notif.Storage
+	recordingStorage  *recording.Storage
+	recordingEventLog *recording.EventLog
+	recordingMu       sync.Mutex
+	recordingInFlight map[string]time.Time
+	tunnelSupervisor  *relay.Supervisor
+	token             string
+	credentialSet     creds.CredentialSet
+	ignored           map[string]bool
+	bind              string
+	port              int
+	shutdown          func(string)
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -168,17 +199,49 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go func() { time.Sleep(50 * time.Millisecond); s.shutdown("stop-endpoint") }()
 	case path == "/daemon/reload" && r.Method == http.MethodPost:
 		s.credentialSet = creds.ResolveAPIKeyEntries()
-		writeJSON(w, 200, map[string]any{"ok": true, "running": true, "reloaded": true, "mode": s.credentialSet.Mode})
+		relayResult := relay.ApplyResult{}
+		if s.cfg.Relay.Enabled {
+			if s.tunnelSupervisor == nil && len(s.credentialSet.Entries) > 0 {
+				s.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
+					TunnelURL:          s.cfg.Relay.URL,
+					HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(s.port),
+					HTTPToken:          s.token,
+					HeartbeatSec:       s.cfg.Relay.HeartbeatSec,
+					ReconnectBackoffMs: s.cfg.Relay.ReconnectBackoffMs,
+					StateDir:           s.ctx.Paths.Dir,
+					Logger:             s.logger,
+				})
+			}
+			if s.tunnelSupervisor != nil {
+				relayResult = s.tunnelSupervisor.Apply(s.credentialSet)
+			}
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok": true, "running": true, "reloaded": true, "mode": s.credentialSet.Mode,
+			"defaultLabel": defaultEntryLabel(s.credentialSet), "warnings": s.credentialSet.Warnings,
+			"started": relayResult.Started, "stopped": relayResult.Stopped,
+			"restarted": relayResult.Restarted, "unchanged": relayResult.Unchanged,
+		})
 	case path == "/notifications" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "notifications")
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
+	case path == "/recordings" && r.Method == http.MethodPost:
+		s.handleRecordingHTTP(w, r, authCtx)
+	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
+		s.handleRecordingGateway(w, r, path, authCtx)
+	case path == "/images" && r.Method == http.MethodPost:
+		s.handleImageHTTP(w, r, authCtx)
+	case path == "/gateway/images.sync" && r.Method == http.MethodPost:
+		s.handleImageGateway(w, r, authCtx)
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
 		s.handleMonitors(w, r, path)
 	case path == "/light/send" && r.Method == http.MethodPost:
 		s.handleLightSend(w, r)
 	case strings.HasPrefix(path, "/gateway/lightrules."):
 		s.handleLightrules(w, r, path)
+	case strings.HasPrefix(path, "/gateway/") && r.Method == http.MethodPost:
+		s.handleGatewayCompat(w, r, path)
 	case strings.HasPrefix(path, "/tunnel/"):
 		s.handleTunnel(w, r, path)
 	default:
@@ -193,6 +256,12 @@ type authResult struct {
 
 func (s *server) authContext(r *http.Request, path string) (authResult, bool) {
 	bearer := bearerValue(r)
+	internalRelay := r.Header.Get(relay.InternalHTTPHeader) == "1"
+	internalLabel := strings.TrimSpace(r.Header.Get(relay.InternalClientLabelHeader))
+	gatewayTokenOK := s.token == "" || bearer == s.token
+	if internalRelay && internalLabel != "" && gatewayTokenOK {
+		return authResult{clientLabel: internalLabel, authKind: "relay-api-key"}, true
+	}
 	if s.token != "" && bearer == s.token {
 		return authResult{clientLabel: "local", authKind: "gateway-token"}, true
 	}
@@ -277,17 +346,50 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 	if s.credentialSet.DefaultEntry != nil {
 		defaultLabel = s.credentialSet.DefaultEntry.Label
 	}
+	relayStatus := s.relayStatusPayload()
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "server": "yoooclaw", "version": version.Version, "pid": os.Getpid(),
 		"profile": s.ctx.Profile, "bind": s.bind, "port": s.port, "startedAt": s.st.startedAt,
 		"lastIngestAt": nilIfEmptyStr(lastIngest), "ingestCount": ingestCount,
-		"relay": map[string]any{
-			"mode": "standalone-http", "connected": false, "url": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
-			"note": "本 build 未实现 Relay 隧道（Phase 3），仅直连 HTTP",
-		},
+		"relay":          relayStatus,
+		"tunnels":        relayStatus["tunnels"],
 		"credentialMode": s.credentialSet.Mode, "defaultLabel": defaultLabel,
 		"credentialWarnings": s.credentialSet.Warnings,
 	})
+}
+
+func (s *server) relayStatusPayload() map[string]any {
+	if s.tunnelSupervisor != nil {
+		status := s.tunnelSupervisor.Status()
+		connected := false
+		reconnectAttempt := 0
+		lastDisconnectReason := ""
+		for _, tunnel := range status.Tunnels {
+			if tunnel.Default || status.DefaultLabel == "" {
+				connected = tunnel.Connected
+				reconnectAttempt = tunnel.ReconnectAttempt
+				lastDisconnectReason = tunnel.LastDisconnectReason
+				break
+			}
+		}
+		note := any(nil)
+		if !connected {
+			note = "Relay 重连中"
+		}
+		return map[string]any{
+			"mode": "relay", "connected": connected, "url": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
+			"reconnectAttempt": reconnectAttempt, "lastDisconnectReason": nilIfEmptyStr(lastDisconnectReason),
+			"note": note, "tunnels": status.Tunnels,
+		}
+	}
+	note := "Relay 未启用，走直连 HTTP"
+	if s.cfg.Relay.Enabled {
+		note = "Relay 已启用但当前 CredentialSet 没有可用 api-key"
+	}
+	return map[string]any{
+		"mode": "standalone-http", "connected": false, "url": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
+		"reconnectAttempt": 0, "note": note, "tunnels": []any{},
+	}
 }
 
 // ── helpers ──
@@ -354,4 +456,11 @@ func nilIfEmptyStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+func defaultEntryLabel(set creds.CredentialSet) any {
+	if set.DefaultEntry == nil {
+		return nil
+	}
+	return set.DefaultEntry.Label
 }

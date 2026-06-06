@@ -10,6 +10,7 @@ import (
 
 	"github.com/YoooClaw/cli/internal/monitor"
 	"github.com/YoooClaw/cli/internal/notif"
+	"github.com/YoooClaw/cli/internal/relay"
 )
 
 // handleMonitors 处理 /monitors 与 /monitors/<name>[/enable|disable]。
@@ -57,30 +58,78 @@ func (s *server) handleMonitors(w http.ResponseWriter, r *http.Request, path str
 	}
 }
 
-// handleTunnel 处理 /tunnel/*。本 build 无 Relay 隧道（Phase 3），返回 standalone 语义。
+// handleTunnel 处理 /tunnel/*。
 func (s *server) handleTunnel(w http.ResponseWriter, r *http.Request, path string) {
-	note := "Relay 隧道未实现（Phase 3）；当前仅直连 HTTP"
 	switch path {
 	case "/tunnel/status":
+		relayStatus := s.relayStatusPayload()
+		client := strings.TrimSpace(r.URL.Query().Get("client"))
+		if client != "" && client != "all" {
+			relayStatus["tunnels"] = filterRelayTunnels(relayStatus["tunnels"], client)
+		}
 		writeJSON(w, 200, map[string]any{
-			"ok": true, "mode": "standalone-http", "credentialMode": s.credentialSet.Mode,
-			"connected": false, "relayUrl": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
-			"note": note, "tunnels": []any{},
+			"ok": true, "mode": relayStatus["mode"], "credentialMode": s.credentialSet.Mode,
+			"defaultLabel": defaultEntryLabel(s.credentialSet),
+			"connected":    relayStatus["connected"], "relayUrl": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
+			"reconnectAttempt": relayStatus["reconnectAttempt"], "lastDisconnectReason": relayStatus["lastDisconnectReason"],
+			"note": relayStatus["note"], "tunnels": relayStatus["tunnels"],
 		})
 	case "/tunnel/reconnect":
-		writeJSON(w, 200, map[string]any{"ok": true, "mode": "standalone-http", "reconnected": false, "note": note})
+		if s.tunnelSupervisor == nil {
+			relayStatus := s.relayStatusPayload()
+			writeJSON(w, 200, map[string]any{"ok": true, "mode": relayStatus["mode"], "reconnected": false, "note": relayStatus["note"]})
+			return
+		}
+		var body struct {
+			Client string `json:"client"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		client := strings.TrimSpace(body.Client)
+		if client == "all" {
+			client = ""
+		}
+		reconnected, missing := s.tunnelSupervisor.Reconnect(client)
+		if missing != "" {
+			writeJSON(w, 404, errBody("YOOOCLAW_TUNNEL_LABEL_NOT_FOUND", "隧道不存在："+missing))
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "mode": "relay", "reconnected": true, "labels": reconnected})
 	case "/tunnel/test":
-		// 回环自检：直接本地 ingest 一条 echo 通知。
-		_ = r
+		var body struct {
+			Client string `json:"client"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		clientLabel := strings.TrimSpace(body.Client)
+		if clientLabel == "" || clientLabel == "all" {
+			clientLabel = "local"
+		}
 		res := s.storage.Ingest([]notif.RawNotification{{
 			ID: "echo_local_" + time.Now().Format("20060102150405"), App: "yoooclaw.selftest",
 			Title: "tunnel +test", Body: "echo", Timestamp: time.Now().Format(time.RFC3339),
-		}}, "local")
+		}}, clientLabel)
 		ok := res.Ingested > 0 || res.DedupedByID > 0 || res.DedupedByContent > 0
-		writeJSON(w, 200, map[string]any{"ok": ok, "mode": "standalone-http", "loopback": map[string]any{"ok": ok}})
+		writeJSON(w, 200, map[string]any{"ok": ok, "mode": s.relayStatusPayload()["mode"], "clientLabel": clientLabel, "loopback": map[string]any{"ok": ok}})
 	default:
 		writeJSON(w, 404, errBody("YOOOCLAW_NOT_FOUND", "未知路径："+path))
 	}
+}
+
+func filterRelayTunnels(value any, label string) any {
+	tunnels, ok := value.([]relay.TunnelStatus)
+	if !ok {
+		return value
+	}
+	out := make([]relay.TunnelStatus, 0, len(tunnels))
+	for _, tunnel := range tunnels {
+		if tunnel.Label == label {
+			out = append(out, tunnel)
+		}
+	}
+	return out
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, out any) bool {
