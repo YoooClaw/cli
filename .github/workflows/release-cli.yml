@@ -354,7 +354,7 @@ jobs:
         run: |
           mkdir -p release-tarballs
           for dir in dist-npm/cli-* dist-npm/cli; do
-            npm pack "$dir" --pack-destination release-tarballs --json
+            npm pack "./$dir" --pack-destination release-tarballs --json
           done
 
       - name: Publish npm packages
@@ -374,7 +374,7 @@ jobs:
             fi
 
             echo "::notice::发布 $name@$version --tag $NPM_TAG"
-            npm publish "$dir" --access public --tag "$NPM_TAG"
+            npm publish "./$dir" --access public --tag "$NPM_TAG"
           }
 
           for dir in dist-npm/cli-*; do
