@@ -1,0 +1,109 @@
+// Package paths 解析 ~/.yoooclaw/ 目录布局（对齐 TS 版 src/paths.ts）。
+//
+//	~/.yoooclaw/
+//	  credentials.json            account 级共享凭据（跨 profile 且与插件共享）
+//	  active-profile              当前 active profile 名（文本）
+//	  profiles/<profile>/
+//	    config.json
+//	    credentials.json          instance 级密文
+//	    daemon.lock / daemon.log
+//	    notifications/ recordings/ images/ light-rules/ state/
+package paths
+
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// DefaultProfile 是缺省 profile 名。
+const DefaultProfile = "default"
+
+// RootDir 返回 CLI 根数据目录。可用 YOOOCLAW_HOME 覆盖（测试 / 多实例隔离）。
+func RootDir() string {
+	if h := strings.TrimSpace(os.Getenv("YOOOCLAW_HOME")); h != "" {
+		return h
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".yoooclaw")
+}
+
+// SharedCredentialsPath 返回 account 级共享凭据文件（顶层，跨 profile + 插件共享）。
+func SharedCredentialsPath() string {
+	return filepath.Join(RootDir(), "credentials.json")
+}
+
+// ActiveProfilePath 返回记录当前 active profile 的文本文件路径。
+func ActiveProfilePath() string {
+	return filepath.Join(RootDir(), "active-profile")
+}
+
+// ProfileDir 返回某个 profile 的目录。
+func ProfileDir(profile string) string {
+	return filepath.Join(RootDir(), "profiles", profile)
+}
+
+// ProfilesRoot 返回 profiles/ 根目录。
+func ProfilesRoot() string {
+	return filepath.Join(RootDir(), "profiles")
+}
+
+// Paths 是某个 profile 下的全部关键路径。
+type Paths struct {
+	Profile       string
+	Dir           string
+	Config        string
+	Credentials   string
+	DaemonLock    string
+	DaemonLog     string
+	Notifications string
+	Recordings    string
+	Images        string
+	LightRules    string
+	State         string
+}
+
+// For 解析某个 profile 下的全部关键路径。
+func For(profile string) Paths {
+	dir := ProfileDir(profile)
+	return Paths{
+		Profile:       profile,
+		Dir:           dir,
+		Config:        filepath.Join(dir, "config.json"),
+		Credentials:   filepath.Join(dir, "credentials.json"),
+		DaemonLock:    filepath.Join(dir, "daemon.lock"),
+		DaemonLog:     filepath.Join(dir, "daemon.log"),
+		Notifications: filepath.Join(dir, "notifications"),
+		Recordings:    filepath.Join(dir, "recordings"),
+		Images:        filepath.Join(dir, "images"),
+		LightRules:    filepath.Join(dir, "light-rules"),
+		State:         filepath.Join(dir, "state"),
+	}
+}
+
+// ListProfileNames 列出已存在的 profile 名（profiles/ 下的目录），按名排序。
+func ListProfileNames() []string {
+	root := ProfilesRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ReadActiveProfile 读取 active-profile 文件内容（不存在或空返回 ""）。
+func ReadActiveProfile() string {
+	raw, err := os.ReadFile(ActiveProfilePath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}

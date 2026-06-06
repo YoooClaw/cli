@@ -4,8 +4,13 @@ node_modules
 # 构建产物
 dist
 dist-native
+dist-npm
 *.tgz
 *.tsbuildinfo
+
+# Go（本地散落的二进制；go vendor 用 /vendor 顶层，勿用裸 vendor 误伤 src/vendor）
+/yc
+/vendor/
 
 # 环境变量与密钥
 .env
