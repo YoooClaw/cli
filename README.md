@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm version](https://img.shields.io/npm/v/@yoooclaw/cli.svg)](https://www.npmjs.com/package/@yoooclaw/cli)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.12-blue.svg)](https://nodejs.org/)
+[![Go native](https://img.shields.io/badge/native-Go-00ADD8.svg)](https://go.dev/)
 
 yoooclaw 独立 CLI 工具 —— **自带后台守护进程（daemon），不依赖 openclaw 客户端在线**，为人类与 AI Agent 而生。本地接收手机通知、Relay 隧道、录音 ASR、灯效规则评估，统一 `--format` 输出，随包发布 Agent Skill 开箱即用。
 
@@ -16,9 +16,9 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 - **Agent-Native** —— 随包 [Skill](skills/) 开箱即用，Agent 零额外配置直接调 `yoooclaw` 命令
 - **三层命令体系** —— Shortcuts（人/AI 友好）→ Service Commands（结构化）→ Raw API（全覆盖），按粒度选择
 - **纯读磁盘的查询** —— 通知 / 录音 / 图片查询直接读 `~/.yoooclaw`，不需要 daemon 在跑
-- **统一输出契约** —— `--format json|pretty|table|ndjson`，成功失败同通道、结构可预测、非零退出码表达失败
+- **统一输出契约** —— `--format json|pretty|table|ndjson`，成功失败同通道、结构可预测；本地 CLI 错误返回非零退出码，Raw/daemon HTTP 响应请同时检查 `ok` / HTTP status
 - **凭据安全** —— OS keychain 优先存储，多 api-key 管理，gateway token 鉴权本地 ingest
-- **零依赖二进制** —— 原生单文件（内嵌 Bun runtime）或 npm 渠道，macOS / Linux / Windows 全平台
+- **Go 原生二进制** —— npm 薄 launcher + 平台子包，或直接安装原生 binary；macOS / Linux / Windows 全平台
 
 ## 能力一览
 
@@ -26,7 +26,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 | --------------------- | ------------------------------------------------------------ | ------ |
 | 📱 通知 Notification  | 按时间/应用/发送人/关键词查询，今日/最近摘要，多维聚合统计   | 🟢     |
 | 🔄 同步 Sync          | 扫描未处理通知、按日期取详情、提交批次，供记忆系统消费       | 🟢     |
-| 🎙️ 录音 Recording     | 列举与查询录音、ASR 转写配置（api / local）、状态事件流跟随  | 🟢     |
+| 🎙️ 录音 Recording     | 列举与查询录音、ASR 转写配置（api/model-proxy；local 已停用）、状态事件流跟随 | 🟢     |
 | 🖼️ 图片 Image         | 列举与查询图片、本地路径 / 缩略图解析                        | 🟢     |
 | 💡 灯效 Light         | 下发灯效指令到硬件（段 / 预设 / 规则三选一），连通性自检     | 🟡     |
 | 📐 灯效规则 Lightrule | 「通知 → 灯效」持久规则的增删改查、启用 / 停用               | 🟡     |
@@ -41,11 +41,11 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 
 ## 安装与快速开始
 
-两种分发渠道，二者**功能一致**，按需选择。
+两种分发渠道，二者**功能一致**，按需选择。npm 包现在是极薄 Node launcher，真正执行的是 optionalDependencies 安装的 Go 原生二进制；直接安装渠道则跳过 Node，直接下载同一套 Go binary。
 
-**平台支持**：macOS / Linux 两种渠道都支持；**Windows 走 npm 渠道**（需 Node ≥ 22.12.0），原生二进制暂未提供 Windows 目标。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
+**平台支持**：npm 渠道支持 `darwin/linux` 的 `x64+arm64` 与 `win32-x64`（launcher 需 Node ≥ 18）；`install.sh` / GitHub Release 直装支持 `darwin/linux` 的 `x64+arm64`。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
 
-### 渠道 A — npm（需要 Node ≥ 22.12.0，Windows 用此渠道）
+### 渠道 A — npm（薄 Node launcher + 平台 Go 二进制）
 
 ```bash
 # 免安装（每次拉最新版）
@@ -59,7 +59,7 @@ yc --help
 
 ### 渠道 B — 原生二进制（无需 Node）
 
-单文件可执行（内嵌 Bun runtime），首次安装 ~60–90 MB，冷启动与 Node 相当。
+单文件 Go 可执行，冷启动和资源占用都比旧 TS/Bun 形态更轻。
 
 ```bash
 # 自动检测平台、下载、校验 sha256、写到 ~/.local/bin
@@ -67,10 +67,10 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
 
 # 指定版本 / 安装目录 / 覆盖
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh \
-  | sh -s -- --version 0.0.5 --dir ~/bin --force
+  | sh -s -- --version 0.2.0-beta.2 --dir ~/bin --force
 ```
 
-支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
+直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。Windows Go binary 目前随 npm 平台子包发布。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 
 > `yoooclaw update self` 会按当前安装来源给出对应升级命令（npm 走 `npm update -g`，二进制走 install.sh）。
 
@@ -202,7 +202,7 @@ yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw lightrule create --from-file -          # 从 stdin 提交规则定义
-yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules @rules.json
+yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
 
 ### 3. Raw API
@@ -211,7 +211,7 @@ yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules @ru
 
 ```bash
 yoooclaw api GET /daemon/status
-yoooclaw api POST /notifications --data @payload.json --header "x-client-label:phone-a"
+yoooclaw api POST /images --data @image.json
 echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 ```
 
@@ -237,7 +237,7 @@ echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 
 ### 输出契约
 
-成功与失败共用同一通道（stdout）与可预测结构；失败额外以非零退出码表达：
+成功与失败共用同一通道（stdout）与可预测结构。本地 CLI 校验 / 运行时错误会额外以非零退出码表达；`api` 这类 Raw HTTP 命令会尽量保留 daemon 原始响应，脚本里应同时检查 `ok` 与 HTTP status：
 
 ```json
 {
@@ -250,7 +250,7 @@ echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 }
 ```
 
-错误码统一前缀 `YOOOCLAW_*`（见 [src/errors.ts](src/errors.ts)）。
+错误码统一前缀 `YOOOCLAW_*`（见 [internal/errs/errors.go](internal/errs/errors.go)）。
 
 ### 多 profile
 
@@ -264,7 +264,7 @@ yoooclaw --profile work notification +today
 
 ### 录音与 Relay
 
-独立 daemon 复用 `@yoooclaw/phone-notifications` 的录音存储、状态机与 ASR 调度，并通过 `RelayClient + RelayDispatcher` 接收手机端 `recordings.sync` / `POST /recordings`。
+独立 daemon 用 Go 版录音存储、状态机、OSS 下载与 ASR 调度，并通过 `RelayClient + RelayDispatcher` 接收手机端 `recordings.sync` / `POST /recordings`。
 
 ```bash
 yoooclaw recording events --since 1h --limit 50
@@ -275,7 +275,7 @@ yoooclaw recording events --id <recording-id> --watch
 
 ### 数据目录
 
-`~/.yoooclaw/`（可用 `YOOOCLAW_HOME` 覆盖，便于测试 / 多实例）。布局见 [src/paths.ts](src/paths.ts) 与 PRD「数据模型」。
+`~/.yoooclaw/`（可用 `YOOOCLAW_HOME` 覆盖，便于测试 / 多实例）。布局见 [internal/paths/paths.go](internal/paths/paths.go) 与 PRD「数据模型」。
 
 ## 安全与风险提示
 
@@ -286,29 +286,33 @@ yoooclaw recording events --id <recording-id> --watch
 ## 开发与贡献
 
 ```bash
-bun run build       # bun 打包 dist/bin.cjs + dist/index.cjs，tsc 出类型
-bun run typecheck
-bun run test
-node dist/bin.cjs --help
+go test ./...
+go vet ./...
+scripts/build-go.sh --current
+dist-native/yoooclaw-darwin-arm64 --help
 ```
 
-完整文档见 [packages/docs/src/cli](../docs/src/cli)。欢迎提 Issue / PR；较大改动建议先开 Issue 讨论。
+完整文档见 [yc-docs/src/cli](https://github.com/YoooClaw/yc-docs/tree/master/src/cli)。欢迎提 Issue / PR；较大改动建议先开 Issue 讨论。
 
 ### 源码结构
 
-| 文件                                                             | 职责                                                                 |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [src/bin.ts](src/bin.ts)                                         | 可执行入口（package.json#bin）                                       |
-| [src/index.ts](src/index.ts)                                     | 程序化入口 `run(argv)` + 核心模块导出                                |
-| [src/command-tree.ts](src/command-tree.ts)                       | 命令树声明（单一事实来源）                                           |
-| [src/program.ts](src/program.ts)                                 | 据命令树构建 commander 程序 + action 包装                            |
-| [src/context.ts](src/context.ts)                                 | 全局 flags → CliContext，profile 解析                                |
-| [src/output/format.ts](src/output/format.ts)                     | `--format` 统一序列化 + 错误 schema                                  |
-| [src/errors.ts](src/errors.ts)                                   | `YOOOCLAW_*` 错误码 + `YoooclawError`                                |
-| [src/paths.ts](src/paths.ts)                                     | `~/.yoooclaw/` 目录布局解析                                          |
-| [src/daemon/recording-bridge.ts](src/daemon/recording-bridge.ts) | daemon 形态的 `recordings.sync` 覆盖、ASR fallback 与 in-flight 去重 |
-| [src/daemon/relay-dispatcher.ts](src/daemon/relay-dispatcher.ts) | Relay 入站帧到 `StandaloneRuntime` 的进程内分发                      |
-| [src/commands/skills.ts](src/commands/skills.ts)                 | 内置 Skill 列举 / 安装到 Agent skills 目录                           |
+| 文件 / 目录                                         | 职责 |
+| --------------------------------------------------- | ---- |
+| [cmd/yc/main.go](cmd/yc/main.go)                    | Go binary 入口 |
+| [internal/cli/root.go](internal/cli/root.go)        | cobra root、全局 flags、service 命令接线 |
+| [internal/cli/handler.go](internal/cli/handler.go)  | handler 包装、输出与错误渲染 |
+| [internal/output/output.go](internal/output/output.go) | `--format` 统一序列化 |
+| [internal/errs/errors.go](internal/errs/errors.go)  | `YOOOCLAW_*` 错误码 |
+| [internal/paths/paths.go](internal/paths/paths.go)  | `~/.yoooclaw/` 目录布局解析 |
+| [internal/daemon/server.go](internal/daemon/server.go) | daemon HTTP server、鉴权、Relay 装配 |
+| [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
+| [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | Relay 入站帧到 daemon HTTP/gateway 的进程内分发 |
+| [internal/recording](internal/recording)            | 录音 OSS 下载、状态机、ASR、转写稿存储 |
+| [internal/image](internal/image)                    | 图片 OSS 下载与索引 |
+| [internal/light](internal/light)                    | 灯效线协议、预设、发送器 |
+| [internal/skills](internal/skills)                  | 内置 Skill 列举 / 安装到 Agent skills 目录 |
+
+`src/` 中的旧 TypeScript 代码仍保留为协议对拍与迁移参考；当前发布产物由 Go 代码和 `scripts/build-go.sh` 生成。
 
 ## License
 

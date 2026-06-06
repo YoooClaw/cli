@@ -43,13 +43,16 @@ func storePath(p paths.Paths) string {
 func List(p paths.Paths) []Task {
 	raw, err := os.ReadFile(storePath(p))
 	if err != nil {
-		return nil
+		return []Task{}
 	}
 	var wrapper struct {
 		Monitors []Task `json:"monitors"`
 	}
 	if json.Unmarshal(raw, &wrapper) != nil {
-		return nil
+		return []Task{}
+	}
+	if wrapper.Monitors == nil {
+		return []Task{}
 	}
 	return wrapper.Monitors
 }

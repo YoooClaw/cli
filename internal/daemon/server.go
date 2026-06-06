@@ -327,14 +327,18 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request, auth authR
 		}
 	}
 	result := s.storage.Ingest(filtered, auth.clientLabel)
-	s.st.mu.Lock()
-	s.st.lastIngest = time.Now().UTC().Format(time.RFC3339)
-	s.st.ingestCount += result.Ingested
-	s.st.mu.Unlock()
+	s.recordIngest(result)
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "received": result.Received, "ingested": result.Ingested,
 		"dedupedById": result.DedupedByID, "dedupedByContent": result.DedupedByContent, "invalid": result.Invalid,
 	})
+}
+
+func (s *server) recordIngest(result notif.IngestResult) {
+	s.st.mu.Lock()
+	defer s.st.mu.Unlock()
+	s.st.lastIngest = time.Now().UTC().Format(time.RFC3339)
+	s.st.ingestCount += result.Ingested
 }
 
 func (s *server) handleStatus(w http.ResponseWriter) {

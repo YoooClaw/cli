@@ -106,16 +106,29 @@ func (s *server) handleTunnel(w http.ResponseWriter, r *http.Request, path strin
 		clientLabel := strings.TrimSpace(body.Client)
 		if clientLabel == "" || clientLabel == "all" {
 			clientLabel = "local"
+		} else if !s.hasCredentialLabel(clientLabel) {
+			writeJSON(w, 404, errBody("YOOOCLAW_TUNNEL_LABEL_NOT_FOUND", "隧道不存在："+clientLabel))
+			return
 		}
 		res := s.storage.Ingest([]notif.RawNotification{{
 			ID: "echo_local_" + time.Now().Format("20060102150405"), App: "yoooclaw.selftest",
 			Title: "tunnel +test", Body: "echo", Timestamp: time.Now().Format(time.RFC3339),
 		}}, clientLabel)
+		s.recordIngest(res)
 		ok := res.Ingested > 0 || res.DedupedByID > 0 || res.DedupedByContent > 0
 		writeJSON(w, 200, map[string]any{"ok": ok, "mode": s.relayStatusPayload()["mode"], "clientLabel": clientLabel, "loopback": map[string]any{"ok": ok}})
 	default:
 		writeJSON(w, 404, errBody("YOOOCLAW_NOT_FOUND", "未知路径："+path))
 	}
+}
+
+func (s *server) hasCredentialLabel(label string) bool {
+	for _, entry := range s.credentialSet.Entries {
+		if entry.Label == label {
+			return true
+		}
+	}
+	return false
 }
 
 func filterRelayTunnels(value any, label string) any {
