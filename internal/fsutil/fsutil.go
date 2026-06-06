@@ -93,3 +93,54 @@ func Exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// CopyDir 递归复制 src 到 dst（保留文件权限位）。
+func CopyDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, DirMode)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), DirMode); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
+}
+
+// CountFiles 递归统计 dir 下的条目数（含目录，对齐 TS readdirSync recursive 语义）。
+func CountFiles(dir string) int {
+	count := 0
+	_ = filepath.WalkDir(dir, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path != dir {
+			count++
+		}
+		return nil
+	})
+	return count
+}

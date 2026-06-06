@@ -31,6 +31,10 @@ func newRootCmd() *cobra.Command {
 		newProfileCmd(),
 		newAuthCmd(),
 		newNotificationCmd(),
+		newLogCmd(),
+		newMigrateCmd(),
+		newUpdateCmd(),
+		newSkillsCmd(),
 		newDoctorCmd(),
 	)
 	return root
