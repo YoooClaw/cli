@@ -27,94 +27,54 @@ jobs:
           echo "::notice::Release source branch(es):"
           echo "$CONTAINING_RELEASE_BRANCHES"
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Verify tag version
         run: |
-          PKG_VERSION="$(jq -r .version package.json)"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
           TAG_VERSION="${GITHUB_REF_NAME#cli-v}"
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::tag $TAG_VERSION 与 package.json $PKG_VERSION 不一致"
             exit 1
           fi
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Verify CLI source
+      - name: Verify Go source
         run: |
-          bun run typecheck
-          bun run test
+          go test ./...
+          go vet ./...
 
-      - run: bun run build
-        env:
-          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
-          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
-
-      - name: Smoke test npm CLI build
-        run: |
-          test -s dist/bin.cjs
-          test -s dist/index.cjs
-          test -s dist/index.d.ts
-
-          VERSION_OUT="$(node dist/bin.cjs --version)"
-          if [ "$VERSION_OUT" != "$(jq -r .version package.json)" ]; then
-            echo "::error::dist/bin.cjs --version 输出 $VERSION_OUT，与 package.json 不一致"
-            exit 1
-          fi
-
-          node dist/bin.cjs --help > /tmp/yoooclaw-help.txt
-          grep -q "Usage:" /tmp/yoooclaw-help.txt
-          grep -q "yoooclaw" /tmp/yoooclaw-help.txt
-
-  build-native-linux:
-    needs: preflight
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build Linux native binaries
-        run: bun scripts/build-native.ts --target linux-x64,linux-arm64
-        env:
-          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
-          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
-
-      - name: Smoke test Linux native binary
-        run: ./dist-native/yoooclaw-linux-x64 --version
-
-      - name: Upload Linux native binaries
-        uses: actions/upload-artifact@v7
-        with:
-          name: cli-native-linux
-          path: |
-            dist-native/yoooclaw-linux-x64
-            dist-native/yoooclaw-linux-arm64
-          if-no-files-found: error
-          compression-level: 0
-
-  build-native-darwin:
+  build-release:
     needs: preflight
     runs-on: macos-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: 22
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#cli-v}"
+          if [ "$VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $TAG_VERSION 与 package.json $VERSION 不一致"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Validate Apple signing secrets
         env:
@@ -141,14 +101,24 @@ jobs:
             exit 1
           fi
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Build Go npm distribution
+        run: scripts/build-go.sh "$VERSION"
 
-      - name: Build Darwin native binaries
-        run: bun scripts/build-native.ts --target darwin-arm64,darwin-x64
-        env:
-          LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
-          LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
+      - name: Smoke test current macOS binary
+        run: |
+          case "$(uname -m)" in
+            arm64) bin="dist-native/yoooclaw-darwin-arm64" ;;
+            x86_64) bin="dist-native/yoooclaw-darwin-x64" ;;
+            *)
+              echo "::error::Unsupported macOS runner arch: $(uname -m)"
+              exit 1
+              ;;
+          esac
+          VERSION_OUT="$("$bin" --version)"
+          if [ "$VERSION_OUT" != "$VERSION" ]; then
+            echo "::error::$bin --version 输出 $VERSION_OUT，期望 $VERSION"
+            exit 1
+          fi
 
       - name: Import Developer ID certificate
         env:
@@ -187,7 +157,7 @@ jobs:
 
           echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
 
-      - name: Sign Darwin native binaries
+      - name: Sign Darwin binaries
         run: |
           for file in \
             dist-native/yoooclaw-darwin-arm64 \
@@ -203,7 +173,18 @@ jobs:
             codesign --verify --strict --verbose=2 "$file"
           done
 
-      - name: Notarize Darwin native binaries
+          cp dist-native/yoooclaw-darwin-arm64 dist-npm/cli-darwin-arm64/bin/yc
+          cp dist-native/yoooclaw-darwin-x64 dist-npm/cli-darwin-x64/bin/yc
+          chmod +x dist-npm/cli-darwin-arm64/bin/yc dist-npm/cli-darwin-x64/bin/yc
+
+          for file in \
+            dist-npm/cli-darwin-arm64/bin/yc \
+            dist-npm/cli-darwin-x64/bin/yc
+          do
+            codesign --verify --strict --verbose=2 "$file"
+          done
+
+      - name: Notarize Darwin binaries
         env:
           APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
           APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
@@ -249,15 +230,54 @@ jobs:
             exit 1
           fi
 
-          # Apple 会为 ZIP 内的独立二进制发布在线 ticket；独立二进制本身无法 staple。
+      - name: Verify npm package layout
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const version = process.env.VERSION;
+          const root = 'dist-npm';
+          const dirs = fs.readdirSync(root).sort();
+          const expected = [
+            'cli',
+            'cli-darwin-arm64',
+            'cli-darwin-x64',
+            'cli-linux-arm64',
+            'cli-linux-x64',
+            'cli-win32-x64',
+          ];
+          for (const dir of expected) {
+            if (!dirs.includes(dir)) throw new Error(`missing ${dir}`);
+            const pkg = JSON.parse(fs.readFileSync(path.join(root, dir, 'package.json'), 'utf8'));
+            if (pkg.version !== version) throw new Error(`${pkg.name} version ${pkg.version} != ${version}`);
+          }
+          const main = JSON.parse(fs.readFileSync(path.join(root, 'cli', 'package.json'), 'utf8'));
+          for (const dep of [
+            '@yoooclaw/cli-darwin-arm64',
+            '@yoooclaw/cli-darwin-x64',
+            '@yoooclaw/cli-linux-arm64',
+            '@yoooclaw/cli-linux-x64',
+            '@yoooclaw/cli-win32-x64',
+          ]) {
+            if (main.optionalDependencies?.[dep] !== version) {
+              throw new Error(`optional dependency ${dep} is not pinned to ${version}`);
+            }
+          }
+          NODE
 
-      - name: Upload signed and notarized Darwin native binaries
-        uses: actions/upload-artifact@v7
+      - name: Upload native binaries
+        uses: actions/upload-artifact@v4
         with:
-          name: cli-native-darwin
-          path: |
-            dist-native/yoooclaw-darwin-arm64
-            dist-native/yoooclaw-darwin-x64
+          name: cli-native
+          path: dist-native/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload npm packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-npm
+          path: dist-npm/
           if-no-files-found: error
           compression-level: 0
 
@@ -269,209 +289,144 @@ jobs:
           fi
 
   release:
-    needs:
-      - preflight
-      - build-native-linux
-      - build-native-darwin
+    needs: build-release
     runs-on: ubuntu-latest
     environment: production
-    # job 级注入：覆盖显式 build 与 `bun publish` 触发的 prepublishOnly 重建，
-    # 否则 publish 期间的重建会因缺 env 把灯效凭据烤成空串。
-    env:
-      LIGHT_APP_KEY: ${{ secrets.LIGHT_APP_KEY }}
-      LIGHT_TEMPLATE_ID: ${{ secrets.LIGHT_TEMPLATE_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Ensure tag commit is on release branch
-        run: |
-          git fetch --no-tags origin '+refs/heads/release/*:refs/remotes/origin/release/*'
-          CONTAINING_RELEASE_BRANCHES="$(git branch -r --contains "$GITHUB_SHA" --list 'origin/release/*')"
-          if [ -z "$CONTAINING_RELEASE_BRANCHES" ]; then
-            echo "::error::Release tag must point to a commit on origin/release/**"
-            exit 1
-          fi
-          echo "::notice::Release source branch(es):"
-          echo "$CONTAINING_RELEASE_BRANCHES"
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Resolve version & channel
-        run: |
-          PKG_VERSION="$(jq -r .version package.json)"
-          TAG_VERSION="${GITHUB_REF_NAME#cli-v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::tag $TAG_VERSION 与 package.json $PKG_VERSION 不一致"
-            exit 1
-          fi
-          echo "VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
-          if [[ "$PKG_VERSION" == *-* ]]; then
-            echo "IS_BETA=1" >> "$GITHUB_ENV"
-            echo "::notice::预发布版本 cli-v$PKG_VERSION（仅 GitHub Release，跳过 npm publish）"
-          else
-            echo "IS_BETA=0" >> "$GITHUB_ENV"
-            echo "::notice::稳定版本 cli-v$PKG_VERSION（GitHub Release + npm）"
-          fi
-
-      - name: Verify stable release prerequisites
-        if: env.IS_BETA == '0'
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NPM_CONFIG_TOKEN" ]; then
-            echo "::error::稳定版发布需要配置 NPM_TOKEN"
-            exit 1
-          fi
-
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::稳定版版本号必须是 x.y.z，当前为 $VERSION"
-            exit 1
-          fi
-
-          if NPM_VIEW_OUTPUT=$(npm view "@yoooclaw/cli@$VERSION" version 2>&1); then
-            echo "NPM_PACKAGE_EXISTS=1" >> "$GITHUB_ENV"
-            echo "::notice::@yoooclaw/cli@$VERSION 已存在于 npm，跳过重复发布"
-          elif ! grep -Eq '(^npm ERR! code E404|404)' <<< "$NPM_VIEW_OUTPUT"; then
-            echo "::error::无法确认 @yoooclaw/cli@$VERSION 是否已存在于 npm"
-            echo "$NPM_VIEW_OUTPUT"
-            exit 1
-          else
-            echo "NPM_PACKAGE_EXISTS=0" >> "$GITHUB_ENV"
-          fi
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - run: bun run build
-
-      - name: Smoke test npm CLI build
-        run: |
-          test -s dist/bin.cjs
-          test -s dist/index.cjs
-          test -s dist/index.d.ts
-
-          VERSION_OUT="$(node dist/bin.cjs --version)"
-          if [ "$VERSION_OUT" != "$VERSION" ]; then
-            echo "::error::dist/bin.cjs --version 输出 $VERSION_OUT，期望 $VERSION"
-            exit 1
-          fi
-
-          node dist/bin.cjs --help > /tmp/yoooclaw-help.txt
-          grep -q "Usage:" /tmp/yoooclaw-help.txt
-          grep -q "yoooclaw" /tmp/yoooclaw-help.txt
+          registry-url: https://registry.npmjs.org
 
       - name: Download native binaries
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
-          pattern: cli-native-*
+          name: cli-native
           path: dist-native
-          merge-multiple: true
 
-      - name: Smoke test native binaries
+      - name: Download npm packages
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-npm
+          path: dist-npm
+
+      - name: Resolve version and channel
         run: |
-          required=(
-            dist-native/yoooclaw-darwin-arm64
-            dist-native/yoooclaw-darwin-x64
-            dist-native/yoooclaw-linux-x64
-            dist-native/yoooclaw-linux-arm64
-          )
-          for file in "${required[@]}"; do
-            if [ ! -s "$file" ]; then
-              echo "::error::缺少 native 产物: $file"
-              exit 1
-            fi
-          done
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#cli-v}"
+          if [ "$VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $TAG_VERSION 与 package.json $VERSION 不一致"
+            exit 1
+          fi
 
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "NPM_TAG=beta" >> "$GITHUB_ENV"
+            echo "PRERELEASE=1" >> "$GITHUB_ENV"
+          else
+            echo "NPM_TAG=latest" >> "$GITHUB_ENV"
+            echo "PRERELEASE=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Verify npm token
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::发布 npm 需要配置 NPM_TOKEN"
+            exit 1
+          fi
+
+      - name: Smoke test Linux binary
+        run: |
           chmod +x dist-native/yoooclaw-*
           VERSION_OUT="$(./dist-native/yoooclaw-linux-x64 --version)"
           if [ "$VERSION_OUT" != "$VERSION" ]; then
-            echo "::error::native --version 输出 $VERSION_OUT，期望 $VERSION"
+            echo "::error::linux native --version 输出 $VERSION_OUT，期望 $VERSION"
             exit 1
           fi
 
-      - name: Compute checksums for native binaries
+      - name: Pack npm tarballs
+        run: |
+          mkdir -p release-tarballs
+          for dir in dist-npm/cli-* dist-npm/cli; do
+            npm pack "./$dir" --pack-destination release-tarballs --json
+          done
+
+      - name: Publish npm packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          publish_pkg() {
+            local dir="$1"
+            local name
+            local version
+            name="$(node -p "require('./${dir}/package.json').name")"
+            version="$(node -p "require('./${dir}/package.json').version")"
+
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "::notice::$name@$version 已存在，跳过"
+              npm access set status=public "$name"
+              return
+            fi
+
+            echo "::notice::发布 $name@$version --tag $NPM_TAG"
+            npm publish "./$dir" --access public --tag "$NPM_TAG"
+            npm access set status=public "$name"
+          }
+
+          for dir in dist-npm/cli-*; do
+            publish_pkg "$dir"
+          done
+          publish_pkg dist-npm/cli
+
+      - name: Deprecate broken beta.0
+        if: env.VERSION == '0.2.0-beta.1'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          message="@yoooclaw/cli 0.2.0-beta.0 的平台二进制缺少 executable bit，请升级到 0.2.0-beta.1。"
+          npm deprecate "@yoooclaw/cli@0.2.0-beta.0" "$message"
+
+      - name: Compute checksums
         run: |
           cd dist-native
           sha256sum yoooclaw-* > checksums.txt
-          if [ "$(wc -l < checksums.txt | tr -d ' ')" != "4" ]; then
-            echo "::error::checksums.txt 应包含 4 个 native 产物"
+          expected=5
+          actual="$(wc -l < checksums.txt | tr -d ' ')"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::checksums.txt 应包含 $expected 个 native 产物，实际为 $actual"
             exit 1
           fi
           cat checksums.txt
-
-      - run: |
-          rm -f ./*.tgz
-          bun pm pack
-
-      - name: Verify npm package artifact
-        run: |
-          shopt -s nullglob
-          tarballs=(./*.tgz)
-          if [ "${#tarballs[@]}" -ne 1 ]; then
-            echo "::error::期望生成 1 个 npm tarball，实际为 ${#tarballs[@]}"
-            printf '%s\n' "${tarballs[@]}"
-            exit 1
-          fi
-
-          tar -tzf "${tarballs[0]}" > /tmp/yoooclaw-tarball.txt
-          required=(
-            package/package.json
-            package/dist/bin.cjs
-            package/dist/index.cjs
-            package/dist/index.d.ts
-            package/skills/yoooclaw-notification-query/SKILL.md
-            package/skills/yoooclaw-lightrule-create/SKILL.md
-            package/skills/yoooclaw-tunnel-debug/SKILL.md
-          )
-          for path in "${required[@]}"; do
-            if ! grep -qx "$path" /tmp/yoooclaw-tarball.txt; then
-              echo "::error::npm tarball 缺少 $path"
-              exit 1
-            fi
-          done
-
-      - name: Publish to npm
-        if: env.IS_BETA == '0' && env.NPM_PACKAGE_EXISTS == '0'
-        run: bun publish --access public
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Repack npm tarball for GitHub Release
-        run: |
-          rm -f ./*.tgz
-          bun pm pack
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          shopt -s nullglob
-          tarballs=(./*.tgz)
-          if [ "${#tarballs[@]}" -ne 1 ]; then
-            echo "::error::GitHub Release 需要 1 个 npm tarball，实际为 ${#tarballs[@]}"
-            exit 1
-          fi
-
-          ARGS=(--generate-notes)
-          if [ "$IS_BETA" = "1" ]; then
-            ARGS+=(--prerelease)
-          fi
-          gh release create "cli-v$VERSION" \
-            "${tarballs[0]}" \
+          assets=(
             dist-native/yoooclaw-darwin-arm64 \
             dist-native/yoooclaw-darwin-x64 \
-            dist-native/yoooclaw-linux-x64 \
             dist-native/yoooclaw-linux-arm64 \
+            dist-native/yoooclaw-linux-x64 \
+            dist-native/yoooclaw-win32-x64.exe \
             dist-native/checksums.txt \
-            "${ARGS[@]}"
+            release-tarballs/*.tgz
+          )
+
+          if gh release view "cli-v$VERSION" >/dev/null 2>&1; then
+            gh release upload "cli-v$VERSION" "${assets[@]}" --clobber
+          else
+            args=(--generate-notes)
+            if [ "$PRERELEASE" = "1" ]; then
+              args+=(--prerelease)
+            fi
+            gh release create "cli-v$VERSION" "${assets[@]}" "${args[@]}"
+          fi
 
       - name: Notify Feishu
         if: success()
@@ -489,7 +444,6 @@ jobs:
             LOG_ARGS=(-20 "$CURRENT_TAG")
           fi
 
-          # 逐条输出：标题 + 缩进的提交正文（跳过 merge 与版本号提交）
           CHANGES=$(git log --no-merges --pretty=format:'%H' "${LOG_ARGS[@]}" | while read -r h; do
             subj=$(git log -1 --pretty=format:'%s' "$h")
             if grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.].*)?$' <<< "$subj"; then
@@ -505,7 +459,7 @@ jobs:
 
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${CURRENT_TAG}"
           CHANNEL="稳定版"
-          [ "$IS_BETA" = "1" ] && CHANNEL="预发布"
+          [ "$PRERELEASE" = "1" ] && CHANNEL="预发布"
 
           TEXT="🚀 @yoooclaw/cli ${CURRENT_TAG}（${CHANNEL}）已发布
 
