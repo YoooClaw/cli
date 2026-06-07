@@ -1,4 +1,4 @@
-// Package fsutil 统一目录/文件权限与原子写（对齐 TS 版 src/fs-utils.ts）。
+// Package fsutil 统一目录/文件权限与原子写。
 //
 // 安全约束：目录 0700、敏感文件 0600；写入走「临时文件 + rename」原子替换。
 package fsutil

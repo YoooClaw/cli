@@ -1,4 +1,4 @@
-// Package cli 装配 yoooclaw CLI 的命令树（cobra），对齐 TS 版 command-tree + program.ts。
+// Package cli 装配 yoooclaw CLI 的命令树（cobra）。
 package cli
 
 import (

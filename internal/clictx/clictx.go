@@ -1,4 +1,4 @@
-// Package clictx 把全局 flags 物化成贯穿命令的执行上下文（对齐 TS 版 src/context.ts）。
+// Package clictx 把全局 flags 物化成贯穿命令的执行上下文。
 package clictx
 
 import (
