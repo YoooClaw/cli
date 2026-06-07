@@ -1,5 +1,5 @@
-// Package lightrule 提供灯效规则的本地文件存储（meta.json CRUD），
-// 对齐 src/vendor/light-rules/storage.ts。规则落在 <base>/tasks/<name>/meta.json。
+// Package lightrule 提供灯效规则的本地文件存储（meta.json CRUD）。
+// 规则落在 <base>/tasks/<name>/meta.json。
 package lightrule
 
 import (

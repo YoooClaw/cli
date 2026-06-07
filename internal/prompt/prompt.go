@@ -1,4 +1,4 @@
-// Package prompt 提供交互式输入工具（对齐 TS 版 src/prompt.ts）。
+// Package prompt 提供交互式输入工具。
 //
 // 非 TTY 环境调用任何 prompt 都返回 NOT_INTERACTIVE，避免在管道里挂起。
 package prompt

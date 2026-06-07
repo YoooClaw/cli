@@ -1,4 +1,4 @@
-// Package errs 提供携带结构化错误码的 CLI 错误（对齐 TS 版 src/errors.ts）。
+// Package errs 提供携带结构化错误码的 CLI 错误。
 //
 // 命令失败时顶层统一序列化为 {ok:false, error:{code,message,...}}（见 internal/output）。
 package errs

@@ -1,4 +1,4 @@
-// Package output 统一所有命令的 stdout 序列化（对齐 TS 版 src/output/format.ts）。
+// Package output 统一所有命令的 stdout 序列化。
 //
 // 支持 --format json|pretty|table|ndjson；错误与正常输出共用 {ok:false,error:{...}} schema。
 package output

@@ -1,4 +1,4 @@
-// Package paths 解析 ~/.yoooclaw/ 目录布局（对齐 TS 版 src/paths.ts）。
+// Package paths 解析 ~/.yoooclaw/ 目录布局。
 //
 //	~/.yoooclaw/
 //	  credentials.json            account 级共享凭据（跨 profile 且与插件共享）

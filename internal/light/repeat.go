@@ -1,5 +1,5 @@
 // Package light 移植 phone-notifications 灯效硬件控制面：repeat 归一、线协议编码、
-// segments 校验、内置 presets 与发往灯效云 API 的 sender（对齐 src/vendor/light/*）。
+// segments 校验、内置 presets 与发往灯效云 API 的 sender。
 package light
 
 import (

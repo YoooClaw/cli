@@ -312,7 +312,7 @@ dist-native/yoooclaw-darwin-arm64 --help
 | [internal/light](internal/light)                    | 灯效线协议、预设、发送器 |
 | [internal/skills](internal/skills)                  | 内置 Skill 列举 / 安装到 Agent skills 目录 |
 
-`src/` 中的旧 TypeScript 代码仍保留为协议对拍与迁移参考；当前发布产物由 Go 代码和 `scripts/build-go.sh` 生成。
+发布产物全部由 Go 代码经 `scripts/build-go.sh` 生成（npm 平台子包 + 原生二进制）；早期的 TypeScript 实现已下线，历史可在 git 记录中查阅。
 
 ## License
 

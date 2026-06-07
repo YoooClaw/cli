@@ -1,5 +1,5 @@
 // Package recording 读取/写入录音索引（recordings/index.json）与状态事件流
-// （recordings/state/events.jsonl），对齐 TS 版 vendor/recording。
+// （recordings/state/events.jsonl）。
 package recording
 
 import (

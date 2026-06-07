@@ -1,5 +1,4 @@
-// Package config 定义 daemon 配置 schema 并提供读写 + 点号路径 get/set/unset + 遮罩
-// （对齐 TS 版 src/config/schema.ts 与 src/config/store.ts）。
+// Package config 定义 daemon 配置 schema 并提供读写 + 点号路径 get/set/unset + 遮罩。
 //
 // 敏感字段（gateway token / webhook secret）不直接落这里，而用 *Ref 抽象引用指向
 // credentials 文件 / keychain / env。

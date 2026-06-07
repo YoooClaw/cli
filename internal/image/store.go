@@ -1,4 +1,4 @@
-// Package image 读取图片索引（images/index.json），对齐 TS 版 src/image/storage.ts。
+// Package image 读取图片索引（images/index.json）。
 //
 // 元数据与同步状态由 daemon 图片通道写入；CLI 查询纯读，不需要 daemon。
 package image

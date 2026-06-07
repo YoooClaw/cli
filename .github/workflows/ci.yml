@@ -16,19 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - run: bun install --frozen-lockfile
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
-      - name: Typecheck
-        run: bun run typecheck
+      - name: Vet
+        run: go vet ./...
 
-      - run: bun run test
+      - name: Test
+        run: go test ./...
 
-      - run: bun run build
+      - name: Build npm distribution (current platform)
+        run: scripts/build-go.sh --current

@@ -1,5 +1,5 @@
 // Package skills 列出并安装随二进制内嵌的 SKILL.md 到 agent 可发现目录
-// （对齐 TS 版 src/commands/skills.ts，但来源从 <pkg>/skills/ 改为内嵌 FS）。
+// （来源为二进制内嵌 FS，而非同级 skills/ 目录）。
 package skills
 
 import (
