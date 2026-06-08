@@ -16,3 +16,7 @@ dist-npm
 
 # 系统
 .DS_Store
+
+# 测试覆盖率产物
+coverage.out
+coverage.html
