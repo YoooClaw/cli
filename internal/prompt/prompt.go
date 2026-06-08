@@ -38,12 +38,17 @@ func Ask(question, defaultValue string) (string, error) {
 	if err := ensureInteractive(); err != nil {
 		return "", err
 	}
+	return ask(os.Stdin, os.Stdout, question, defaultValue)
+}
+
+// ask 是 Ask 的纯 I/O 核心（注入 reader/writer 以便单测）。
+func ask(in io.Reader, out io.Writer, question, defaultValue string) (string, error) {
 	suffix := ""
 	if defaultValue != "" {
 		suffix = " [" + defaultValue + "]"
 	}
-	_, _ = io.WriteString(os.Stdout, question+suffix+": ")
-	reader := bufio.NewReader(os.Stdin)
+	_, _ = io.WriteString(out, question+suffix+": ")
+	reader := bufio.NewReader(in)
 	line, _ := reader.ReadString('\n')
 	answer := strings.TrimSpace(line)
 	if answer == "" {
@@ -54,11 +59,19 @@ func Ask(question, defaultValue string) (string, error) {
 
 // Confirm 是 Yes/No 确认，默认值由 defaultYes 决定。
 func Confirm(question string, defaultYes bool) (bool, error) {
+	if err := ensureInteractive(); err != nil {
+		return false, err
+	}
+	return confirm(os.Stdin, os.Stdout, question, defaultYes)
+}
+
+// confirm 是 Confirm 的纯 I/O 核心（注入 reader/writer 以便单测）。
+func confirm(in io.Reader, out io.Writer, question string, defaultYes bool) (bool, error) {
 	hint := "y/N"
 	if defaultYes {
 		hint = "Y/n"
 	}
-	answer, err := Ask(question+" ("+hint+")", "")
+	answer, err := ask(in, out, question+" ("+hint+")", "")
 	if err != nil {
 		return false, err
 	}
@@ -71,7 +84,11 @@ func Confirm(question string, defaultYes bool) (bool, error) {
 
 // ReadStdin 读取 stdin 全部内容（用于 --from-file - / set-api-key -）。
 func ReadStdin() (string, error) {
-	data, err := io.ReadAll(os.Stdin)
+	return readAll(os.Stdin)
+}
+
+func readAll(r io.Reader) (string, error) {
+	data, err := io.ReadAll(r)
 	if err != nil {
 		return "", err
 	}

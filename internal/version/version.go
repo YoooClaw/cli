@@ -21,7 +21,15 @@ var Version = "dev"
 // 因此运行期按可执行文件路径是否在 node_modules 下来判定，决定 update 的升级命令。
 func Dist() string {
 	exe, err := os.Executable()
-	if err == nil && strings.Contains(exe, "node_modules") {
+	if err != nil {
+		return "native"
+	}
+	return distFor(exe)
+}
+
+// distFor 按可执行文件路径判定分发渠道（抽出以便单测两个分支）。
+func distFor(exe string) string {
+	if strings.Contains(exe, "node_modules") {
 		return "npm"
 	}
 	return "native"

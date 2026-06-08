@@ -11,7 +11,6 @@ import (
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
-	"github.com/YoooClaw/cli/internal/keychain"
 	"github.com/YoooClaw/cli/internal/paths"
 )
 
@@ -172,10 +171,10 @@ func pickDefault(entries []ApiKeyEntry) *ApiKeyEntry {
 }
 
 func keychainValue() string {
-	if !keychain.Available() {
+	if !keychainAvailableFn() {
 		return ""
 	}
-	return keychain.Get(KeychainService, KeychainAPIKeyAccount).Value
+	return keychainGetFn(KeychainService, KeychainAPIKeyAccount).Value
 }
 
 func storedEntriesFromFile(data map[string]any) []storedEntry {
@@ -281,7 +280,7 @@ func SetAPIKey(key string, useKeychain bool) (ApiKeyResolution, error) {
 			return ApiKeyResolution{}, errs.New(errs.CodeKeychainMultiUnsupport,
 				"multi-key 模式不支持 --keychain；请使用文件 apiKeys[] 管理多 key")
 		}
-		if !keychain.Set(KeychainService, KeychainAPIKeyAccount, trimmed) {
+		if !keychainSetFn(KeychainService, KeychainAPIKeyAccount, trimmed) {
 			return ApiKeyResolution{}, errs.New(errs.CodeKeychainUnavailable,
 				"当前平台无法写入 keychain，请去掉 --keychain 改写共享文件")
 		}
