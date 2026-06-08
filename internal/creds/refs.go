@@ -15,7 +15,6 @@ import (
 
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
-	"github.com/YoooClaw/cli/internal/keychain"
 )
 
 // ResolvedRef 是 ref 解析结果。
@@ -83,7 +82,7 @@ func ResolveRef(ref string) (ResolvedRef, error) {
 		if err != nil {
 			return ResolvedRef{}, err
 		}
-		r := keychain.Get(service, account)
+		r := keychainGetFn(service, account)
 		return ResolvedRef{Source: "keychain", Value: r.Value, Location: service + "/" + account}, nil
 	case "inline":
 		decoded, _ := base64.StdEncoding.DecodeString(rest)
@@ -125,7 +124,7 @@ func WriteRef(ref, value string) (ResolvedRef, error) {
 		if err != nil {
 			return ResolvedRef{}, err
 		}
-		if !keychain.Set(service, account, value) {
+		if !keychainSetFn(service, account, value) {
 			return ResolvedRef{}, errs.New(errs.CodeKeychainUnavailable, "keychain 写入失败："+service+"/"+account).
 				WithHint("当前平台可能没有可用的 keychain 工具，请改用 file: 引用")
 		}

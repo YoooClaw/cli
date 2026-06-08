@@ -1,0 +1,168 @@
+package recording
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func newStore(t *testing.T) *Storage {
+	t.Helper()
+	s := NewStorage(filepath.Join(t.TempDir(), "recordings"), testLogger{t})
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func meta(name, created string) Metadata {
+	return Metadata{Name: name, CreatedAt: created, DurationSec: 1, OssAudioURL: "https://oss.invalid/a.ogg"}
+}
+
+func TestStoreIngestListFindRename(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Ingest("r1", meta("一", "2026-06-01T00:00:00Z"), "phone-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ingest("r2", meta("二", "2026-06-03T00:00:00Z"), ""); err != nil {
+		t.Fatal(err)
+	}
+	all := s.ListAll()
+	if len(all) != 2 || all[0].ID != "r2" {
+		t.Fatalf("ListAll order wrong: %+v", all)
+	}
+	if got, ok := s.FindByID("r1"); !ok || got.ClientLabel != "phone-a" {
+		t.Errorf("FindByID r1: %+v ok=%v", got, ok)
+	}
+	if _, ok := s.FindByID("ghost"); ok {
+		t.Error("missing id should be false")
+	}
+	entry, ok, err := s.Rename("r1", "新名字")
+	if err != nil || !ok || entry.Metadata.Name != "新名字" {
+		t.Errorf("rename: %+v ok=%v err=%v", entry, ok, err)
+	}
+	if _, ok, _ := s.Rename("ghost", "x"); ok {
+		t.Error("rename missing should be false")
+	}
+}
+
+func TestStoreListByStatus(t *testing.T) {
+	s := newStore(t)
+	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")
+	syncing := s.ListByStatus(StatusSyncingOpenClaw)
+	if len(syncing) != 1 {
+		t.Errorf("expected 1 syncing, got %d", len(syncing))
+	}
+	if got := s.ListByStatus(StatusSynced); len(got) != 0 {
+		t.Errorf("expected 0 synced, got %d", len(got))
+	}
+}
+
+func TestStoreSetFilesAndTitle(t *testing.T) {
+	s := newStore(t)
+	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")
+	if err := s.SetTranscriptDataFile("r1", "r1.json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTranscriptFile("r1", "r1.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSummaryFile("r1", "r1.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTitle("r1", "  我的标题  "); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.FindByID("r1")
+	if got.TranscriptDataFile != "transcript-data/r1.json" || got.TranscriptFile != "transcripts/r1.md" ||
+		got.SummaryFile != "summaries/r1.md" || got.Title != "我的标题" {
+		t.Errorf("set files/title wrong: %+v", got)
+	}
+	// missing id
+	if err := s.SetTitle("ghost", "x"); err != os.ErrNotExist {
+		t.Errorf("set on missing id should be ErrNotExist, got %v", err)
+	}
+}
+
+func TestStoreDelete(t *testing.T) {
+	s := newStore(t)
+	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")
+	// 放一个真实音频文件，验证删除会清理引用文件
+	audioRel := "audio/r1.ogg"
+	if err := os.WriteFile(filepath.Join(s.dir, audioRel), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.updateEntry("r1", func(e *Entry) { e.AudioFile = audioRel })
+
+	// localOnly: 保留索引、清文件引用
+	ok, err := s.Delete("r1", true)
+	if err != nil || !ok {
+		t.Fatalf("local delete: ok=%v err=%v", ok, err)
+	}
+	got, _ := s.FindByID("r1")
+	if got.AudioFile != "" {
+		t.Error("localOnly delete should clear audioFile")
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, audioRel)); !os.IsNotExist(err) {
+		t.Error("audio file should be removed")
+	}
+
+	// 全删
+	ok, _ = s.Delete("r1", false)
+	if !ok {
+		t.Error("full delete should report true")
+	}
+	if _, found := s.FindByID("r1"); found {
+		t.Error("entry should be gone")
+	}
+	if ok, _ := s.Delete("ghost", false); ok {
+		t.Error("delete missing should be false")
+	}
+}
+
+func TestStoreClose(t *testing.T) {
+	s := newStore(t)
+	if err := s.Close(); err != nil {
+		t.Errorf("Close should be nil: %v", err)
+	}
+}
+
+func TestReadIndexAndEvents(t *testing.T) {
+	s := newStore(t)
+	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")
+	idx := ReadIndex(s.dir)
+	if len(idx) != 1 || idx[0].ID != "r1" {
+		t.Errorf("ReadIndex: %+v", idx)
+	}
+	if ReadIndex(filepath.Join(t.TempDir(), "nope")) != nil {
+		t.Error("missing index -> nil")
+	}
+
+	eventsPath := filepath.Join(t.TempDir(), "events.jsonl")
+	os.WriteFile(eventsPath, []byte("{\"type\":\"a\"}\n\nnot-json\n{\"type\":\"b\"}\n"), 0o600)
+	events := ReadEvents(eventsPath)
+	if len(events) != 2 || events[0]["type"] != "a" || events[1]["type"] != "b" {
+		t.Errorf("ReadEvents should skip blank/bad lines: %+v", events)
+	}
+	if ReadEvents(filepath.Join(t.TempDir(), "none.jsonl")) != nil {
+		t.Error("missing events -> nil")
+	}
+}
+
+func TestLoadIndexRecoversTranscribing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "recordings")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 写一个 transcribing 状态的索引，Init 应把它改成 transcribe_failed
+	os.WriteFile(filepath.Join(dir, "index.json"),
+		[]byte(`{"recordings":[{"id":"r1","status":"transcribing","metadata":{"name":"x","created_at":"2026-06-01T00:00:00Z"}}]}`), 0o644)
+	s := NewStorage(dir, testLogger{t})
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.FindByID("r1")
+	if got.Status != StatusTranscribeFailed || got.LastError == "" {
+		t.Errorf("interrupted transcribing should recover to failed: %+v", got)
+	}
+}

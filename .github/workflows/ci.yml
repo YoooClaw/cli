@@ -29,7 +29,13 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+      - name: Coverage gate
+        run: MIN_COVERAGE=55 scripts/coverage-gate.sh
 
       - name: Build npm distribution (current platform)
         run: scripts/build-go.sh --current
