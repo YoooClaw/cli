@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -128,6 +129,26 @@ func TestServerNotFound(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 404 {
 		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestListenWithFallbackPortZeroReturnsActualPort(t *testing.T) {
+	t.Parallel()
+	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	ln, port, err := listenWithFallback("127.0.0.1", 0, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if port == 0 {
+		t.Fatal("expected actual allocated port, got 0")
+	}
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener addr type = %T, want *net.TCPAddr", ln.Addr())
+	}
+	if port != addr.Port {
+		t.Fatalf("returned port = %d, listener port = %d", port, addr.Port)
 	}
 }
 

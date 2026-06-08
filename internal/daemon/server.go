@@ -420,10 +420,13 @@ func listenWithFallback(bind string, startPort int, logger *Logger) (net.Listene
 	for attempt := 0; attempt < 64; attempt++ {
 		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bind, port))
 		if err == nil {
-			if port != startPort {
-				logger.Info(fmt.Sprintf("起始端口 %d 被占用，最终绑定到 %d", startPort, port))
+			actualPort := listenerPort(ln, port)
+			if startPort == 0 {
+				logger.Info(fmt.Sprintf("系统分配 daemon 端口 %d", actualPort))
+			} else if actualPort != startPort {
+				logger.Info(fmt.Sprintf("起始端口 %d 被占用，最终绑定到 %d", startPort, actualPort))
 			}
-			return ln, port, nil
+			return ln, actualPort, nil
 		}
 		if !strings.Contains(err.Error(), "address already in use") {
 			return nil, 0, err
@@ -432,6 +435,13 @@ func listenWithFallback(bind string, startPort int, logger *Logger) (net.Listene
 		port++
 	}
 	return nil, 0, errs.New(errs.CodeUnknown, "无可用端口")
+}
+
+func listenerPort(ln net.Listener, fallback int) int {
+	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
+		return addr.Port
+	}
+	return fallback
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
