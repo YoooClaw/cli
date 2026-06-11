@@ -70,6 +70,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	}
 
 	_ = fsutil.EnsureDir(ctx.Paths.Dir, fsutil.DirMode)
+	ctx.Paths.MigrateLogs()
 	logger := NewLogger(ctx.Paths.DaemonLog, logLevel, false)
 	st := &runtimeState{startedAt: time.Now().UTC().Format(time.RFC3339)}
 

@@ -59,7 +59,8 @@ func TestFor(t *testing.T) {
 	}
 	cases := map[string]string{
 		p.Config: "config.json", p.Credentials: "credentials.json",
-		p.DaemonLock: "daemon.lock", p.DaemonLog: "daemon.log",
+		p.DaemonLock: "daemon.lock", p.Logs: "logs",
+		p.DaemonLog:     filepath.Join("logs", "daemon.log"),
 		p.Notifications: "notifications", p.Recordings: "recordings",
 		p.Images: "images", p.LightRules: "light-rules", p.State: "state",
 	}
@@ -68,6 +69,43 @@ func TestFor(t *testing.T) {
 			t.Errorf("path for %q = %q", leaf, got)
 		}
 	}
+}
+
+func TestMigrateLogs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOOOCLAW_HOME", home)
+	p := For("acme")
+	if err := os.MkdirAll(p.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 旧布局：日志直接放在 profile 根目录。
+	old := []string{"daemon.log", "daemon.log.2026-06-01", "daemon.log.2026-06-02"}
+	for _, name := range old {
+		if err := os.WriteFile(filepath.Join(p.Dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 非日志文件不应被搬动。
+	if err := os.WriteFile(p.Config, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p.MigrateLogs()
+
+	for _, name := range old {
+		if _, err := os.Stat(filepath.Join(p.Dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s 仍在根目录，应已搬走", name)
+		}
+		if _, err := os.Stat(filepath.Join(p.Logs, name)); err != nil {
+			t.Errorf("%s 未出现在 logs/: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(p.Config); err != nil {
+		t.Errorf("config.json 不应被搬动: %v", err)
+	}
+
+	// 已是新布局时为幂等 no-op，不报错。
+	p.MigrateLogs()
 }
 
 func TestListProfileNames(t *testing.T) {

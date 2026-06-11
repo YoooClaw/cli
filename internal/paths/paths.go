@@ -6,7 +6,8 @@
 //	  profiles/<profile>/
 //	    config.json
 //	    credentials.json          instance 级密文
-//	    daemon.lock / daemon.log
+//	    daemon.lock
+//	    logs/daemon.log           daemon 日志 + 轮转文件（logs/daemon.log.YYYY-MM-DD）
 //	    notifications/ recordings/ images/ light-rules/ state/
 package paths
 
@@ -56,6 +57,7 @@ type Paths struct {
 	Config        string
 	Credentials   string
 	DaemonLock    string
+	Logs          string
 	DaemonLog     string
 	Notifications string
 	Recordings    string
@@ -73,12 +75,41 @@ func For(profile string) Paths {
 		Config:        filepath.Join(dir, "config.json"),
 		Credentials:   filepath.Join(dir, "credentials.json"),
 		DaemonLock:    filepath.Join(dir, "daemon.lock"),
-		DaemonLog:     filepath.Join(dir, "daemon.log"),
+		Logs:          filepath.Join(dir, "logs"),
+		DaemonLog:     filepath.Join(dir, "logs", "daemon.log"),
 		Notifications: filepath.Join(dir, "notifications"),
 		Recordings:    filepath.Join(dir, "recordings"),
 		Images:        filepath.Join(dir, "images"),
 		LightRules:    filepath.Join(dir, "light-rules"),
 		State:         filepath.Join(dir, "state"),
+	}
+}
+
+// MigrateLogs 把旧布局里直接放在 profile 根目录的 daemon.log（含轮转文件
+// daemon.log.YYYY-MM-DD）一次性挪进 logs/ 子目录。已是新布局时为 no-op。
+func (p Paths) MigrateLogs() {
+	entries, err := os.ReadDir(p.Dir)
+	if err != nil {
+		return
+	}
+	var moved []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "daemon.log" || strings.HasPrefix(name, "daemon.log.") {
+			moved = append(moved, name)
+		}
+	}
+	if len(moved) == 0 {
+		return
+	}
+	if err := os.MkdirAll(p.Logs, 0o700); err != nil {
+		return
+	}
+	for _, name := range moved {
+		_ = os.Rename(filepath.Join(p.Dir, name), filepath.Join(p.Logs, name))
 	}
 }
 
