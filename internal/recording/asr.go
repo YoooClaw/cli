@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/creds"
+	"github.com/YoooClaw/cli/internal/envhost"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
@@ -27,13 +27,6 @@ const (
 var (
 	longRecordingRunningStatuses = map[string]bool{"PENDING": true, "RUNNING": true, "SUSPENDED": true}
 	longRecordingFailureStatuses = map[string]bool{"FAILED": true, "CANCELED": true, "UNKNOWN": true}
-	defaultEnvHosts              = map[string]string{
-		"development": "openclaw-service-dev.yoooclaw.com",
-		"test":        "openclaw-service-test.yoooclaw.com",
-		"production":  "openclaw-service.yoooclaw.com",
-	}
-	envSchemeRE        = regexp.MustCompile(`^(https?|wss?)://`)
-	envTrailingSlashRE = regexp.MustCompile(`/+$`)
 )
 
 // AsrConfig 是录音 ASR 配置。
@@ -551,7 +544,7 @@ func resolveSubmitEndpoint(apiConfig *AsrAPIConfig) string {
 	if apiConfig != nil && strings.TrimSpace(apiConfig.Endpoint) != "" {
 		return strings.TrimSpace(apiConfig.Endpoint)
 	}
-	return "https://" + envHost() + "/api/model-proxy/long-recording/submit-task"
+	return "https://" + envhost.Host() + "/api/model-proxy/long-recording/submit-task"
 }
 
 func resolveQueryBaseURL(apiConfig *AsrAPIConfig) string {
@@ -562,36 +555,7 @@ func resolveQueryBaseURL(apiConfig *AsrAPIConfig) string {
 		}
 		return endpoint
 	}
-	return "https://" + envHost() + "/api/model-proxy/long-recording/query-task-result"
-}
-
-func envHost() string {
-	env := strings.TrimSpace(os.Getenv("PHONE_NOTIFICATIONS_ENV"))
-	if env != "development" && env != "test" && env != "production" {
-		env = "production"
-	}
-	var override string
-	switch env {
-	case "development":
-		override = os.Getenv("OPENCLAW_HOST_DEVELOPMENT")
-	case "test":
-		override = os.Getenv("OPENCLAW_HOST_TEST")
-	case "production":
-		override = os.Getenv("OPENCLAW_HOST_PRODUCTION")
-	}
-	if h := normalizeEnvHost(override); h != "" {
-		return h
-	}
-	return defaultEnvHosts[env]
-}
-
-func normalizeEnvHost(host string) string {
-	trimmed := strings.TrimSpace(host)
-	if trimmed == "" {
-		return ""
-	}
-	trimmed = envSchemeRE.ReplaceAllString(trimmed, "")
-	return envTrailingSlashRE.ReplaceAllString(trimmed, "")
+	return "https://" + envhost.Host() + "/api/model-proxy/long-recording/query-task-result"
 }
 
 func normalizeAPIKeyHeader(apiKey string) string {

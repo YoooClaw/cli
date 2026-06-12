@@ -9,11 +9,34 @@ import (
 )
 
 func TestDefaultRelayURL(t *testing.T) {
-	old := RelayHost
-	t.Cleanup(func() { RelayHost = old })
-	RelayHost = "example.test"
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
+	t.Setenv("OPENCLAW_HOST_TEST", "example.test")
 	if got := DefaultRelayURL(); got != "wss://example.test/message/messages/ws/plugin" {
 		t.Errorf("DefaultRelayURL = %q", got)
+	}
+}
+
+func TestResolveRelayURL(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
+	t.Setenv("OPENCLAW_HOST_TEST", "")
+
+	// 持久化的仍是另一环境的内置默认主机 → 跟随当前环境（test）重新解析。
+	cfg := Config{Relay: RelaySection{URL: "wss://openclaw-service.yoooclaw.com" + RelayPath}}
+	if got := ResolveRelayURL(cfg); got != "wss://openclaw-service-test.yoooclaw.com"+RelayPath {
+		t.Errorf("default-host URL should follow env, got %q", got)
+	}
+
+	// 用户自定义 URL → 原样保留。
+	custom := "wss://my-relay.example.com/custom/path"
+	cfg.Relay.URL = custom
+	if got := ResolveRelayURL(cfg); got != custom {
+		t.Errorf("custom URL should be preserved, got %q", got)
+	}
+
+	// 空 URL → 回退当前环境默认。
+	cfg.Relay.URL = ""
+	if got := ResolveRelayURL(cfg); got != "wss://openclaw-service-test.yoooclaw.com"+RelayPath {
+		t.Errorf("empty URL should fall back to env default, got %q", got)
 	}
 }
 
