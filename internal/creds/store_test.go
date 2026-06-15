@@ -125,9 +125,12 @@ func TestSetAPIKeyKeychain(t *testing.T) {
 	if fk.store[key(KeychainService, KeychainAPIKeyAccount)] != "sk-kc-abcdefgh" {
 		t.Error("key not written to fake keychain")
 	}
-	// 解析应优先 keychain（无 file apiKeys 时）
-	if got := ResolveAPIKey(); got.Source != "keychain" || got.Value != "sk-kc-abcdefgh" {
-		t.Errorf("resolve keychain: %+v", got)
+	// 解析只看 credentials.json：keychain key 不再被采用，仅作 shadowed 提示
+	if got := ResolveAPIKey(); got.Source != "none" || got.Value != "" {
+		t.Errorf("keychain must not resolve: %+v", got)
+	}
+	if set := ResolveAPIKeyEntries(); !set.ShadowedKeychainPresent {
+		t.Errorf("keychain should be reported as shadowed: %+v", set)
 	}
 }
 
@@ -139,13 +142,14 @@ func TestSetAPIKeyKeychainUnavailable(t *testing.T) {
 	}
 }
 
-func TestResolveAPIKeyEnvWins(t *testing.T) {
+func TestResolveAPIKeyEnvIgnored(t *testing.T) {
 	setup(t)
 	t.Setenv(APIKeyEnv, "sk-env-override")
 	SetAPIKey("sk-file-key-12345678", false)
 	got := ResolveAPIKey()
-	if got.Source != "env" || got.Value != "sk-env-override" {
-		t.Errorf("env should win: %+v", got)
+	// 环境变量不再参与解析，只认 credentials.json
+	if got.Source != "file" || got.Value != "sk-file-key-12345678" {
+		t.Errorf("file should win, env ignored: %+v", got)
 	}
 }
 

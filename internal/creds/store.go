@@ -3,7 +3,6 @@ package creds
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -209,13 +208,10 @@ func writeAPIKeys(entries []storedEntry) (ApiKeyResolution, error) {
 	return res, nil
 }
 
-// ResolveAPIKeyEntries 分层解析 account 级 api-key（env > keychain > file），命中即停。
+// ResolveAPIKeyEntries 解析 account 级 api-key——仅从 credentials.json 读取；
+// 环境变量 YOOOCLAW_API_KEY 与 keychain 不再参与解析（keychain 若存在仅作 shadowed 提示）。
 func ResolveAPIKeyEntries() CredentialSet {
 	file := paths.SharedCredentialsPath()
-	if env := strings.TrimSpace(os.Getenv(APIKeyEnv)); env != "" {
-		entry := ApiKeyEntry{Label: "env", Key: env, Default: true, Source: "env"}
-		return CredentialSet{Mode: "env-single", Entries: []ApiKeyEntry{entry}, DefaultEntry: &entry, Location: APIKeyEnv}
-	}
 
 	data := readSharedCredentials()
 	legacyRaw, _ := data[apiKeyField].(string)
@@ -242,20 +238,14 @@ func ResolveAPIKeyEntries() CredentialSet {
 		}
 	}
 
-	if kc != "" {
-		entry := ApiKeyEntry{Label: "keychain", Key: kc, Default: true, Source: "keychain"}
-		return CredentialSet{Mode: "keychain-single", Entries: []ApiKeyEntry{entry}, DefaultEntry: &entry,
-			Location: KeychainService + "/" + KeychainAPIKeyAccount, LegacyAPIKeyPresent: legacy}
-	}
-
 	if legacy {
 		val := strings.TrimSpace(legacyRaw)
 		entry := ApiKeyEntry{Label: "default", Key: val, Default: true, Source: "file"}
 		return CredentialSet{Mode: "legacy-file-single", Entries: []ApiKeyEntry{entry}, DefaultEntry: &entry,
-			Location: file, LegacyAPIKeyPresent: true}
+			Location: file, LegacyAPIKeyPresent: true, ShadowedKeychainPresent: kc != ""}
 	}
 
-	return CredentialSet{Mode: "none", Location: file}
+	return CredentialSet{Mode: "none", Location: file, ShadowedKeychainPresent: kc != ""}
 }
 
 // ResolveAPIKey 返回当前默认 api-key。
