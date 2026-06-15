@@ -70,7 +70,7 @@ func (s *server) handleTunnel(w http.ResponseWriter, r *http.Request, path strin
 		writeJSON(w, 200, map[string]any{
 			"ok": true, "mode": relayStatus["mode"], "credentialMode": s.credentialSet.Mode,
 			"defaultLabel": defaultEntryLabel(s.credentialSet),
-			"connected":    relayStatus["connected"], "relayUrl": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
+			"connected":    relayStatus["connected"], "relayUrl": relayStatus["url"], "enabled": s.cfg.Relay.Enabled,
 			"reconnectAttempt": relayStatus["reconnectAttempt"], "lastDisconnectReason": relayStatus["lastDisconnectReason"],
 			"note": relayStatus["note"], "tunnels": relayStatus["tunnels"],
 		})

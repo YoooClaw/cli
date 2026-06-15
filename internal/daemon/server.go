@@ -114,7 +114,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 			logger.Warn("Relay 已启用但未设置 api-key；当前仅直连 HTTP")
 		} else {
 			srv.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
-				TunnelURL:          cfg.Relay.URL,
+				TunnelURL:          config.ResolveRelayURL(cfg),
 				HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(actualPort),
 				HTTPToken:          token,
 				HeartbeatSec:       cfg.Relay.HeartbeatSec,
@@ -204,7 +204,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Relay.Enabled {
 			if s.tunnelSupervisor == nil && len(s.credentialSet.Entries) > 0 {
 				s.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
-					TunnelURL:          s.cfg.Relay.URL,
+					TunnelURL:          config.ResolveRelayURL(s.cfg),
 					HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(s.port),
 					HTTPToken:          s.token,
 					HeartbeatSec:       s.cfg.Relay.HeartbeatSec,
@@ -382,7 +382,7 @@ func (s *server) relayStatusPayload() map[string]any {
 			note = "Relay 重连中"
 		}
 		return map[string]any{
-			"mode": "relay", "connected": connected, "url": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
+			"mode": "relay", "connected": connected, "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
 			"reconnectAttempt": reconnectAttempt, "lastDisconnectReason": nilIfEmptyStr(lastDisconnectReason),
 			"note": note, "tunnels": status.Tunnels,
 		}
@@ -392,7 +392,7 @@ func (s *server) relayStatusPayload() map[string]any {
 		note = "Relay 已启用但当前 CredentialSet 没有可用 api-key"
 	}
 	return map[string]any{
-		"mode": "standalone-http", "connected": false, "url": s.cfg.Relay.URL, "enabled": s.cfg.Relay.Enabled,
+		"mode": "standalone-http", "connected": false, "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
 		"reconnectAttempt": 0, "note": note, "tunnels": []any{},
 	}
 }

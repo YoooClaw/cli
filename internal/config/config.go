@@ -5,6 +5,9 @@
 package config
 
 import (
+	"strings"
+
+	"github.com/YoooClaw/cli/internal/envhost"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/paths"
@@ -20,12 +23,31 @@ const (
 	DefaultImageMaxByte = 20 * 1024 * 1024
 )
 
-// RelayHost 是默认 Relay 主机；可由构建期 ldflags 注入覆盖，未注入时回退生产域名。
-var RelayHost = "openclaw-service.yoooclaw.com"
+// RelayPath 是 Relay 隧道 WebSocket 的固定路径。
+const RelayPath = "/message/messages/ws/plugin"
 
-// DefaultRelayURL 返回默认 Relay 隧道地址（复用 phone-notifications 托管 Relay）。
+// DefaultRelayURL 返回默认 Relay 隧道地址；主机随 PHONE_NOTIFICATIONS_ENV 切换
+// （development/test/production，见 internal/envhost），复用 phone-notifications 托管 Relay。
 func DefaultRelayURL() string {
-	return "wss://" + RelayHost + "/message/messages/ws/plugin"
+	return "wss://" + envhost.Host() + RelayPath
+}
+
+// ResolveRelayURL 返回 daemon 实际应连接的 Relay 地址。
+// 若配置里持久化的仍是某个环境的内置默认主机（而非用户自定义 URL），则按当前
+// PHONE_NOTIFICATIONS_ENV 重新解析，使已初始化的 profile 也能跟随环境切换；
+// 用户显式改过的自定义 URL 始终保留。
+func ResolveRelayURL(cfg Config) string {
+	url := cfg.Relay.URL
+	if url == "" || envhost.IsDefaultHost(stripRelayURL(url)) {
+		return DefaultRelayURL()
+	}
+	return url
+}
+
+// stripRelayURL 从 Relay URL 中提取主机部分（去掉 scheme 与已知路径）供默认值判定。
+func stripRelayURL(url string) string {
+	host := envhost.Normalize(url)
+	return strings.TrimSuffix(host, RelayPath)
 }
 
 // SecretRefPaths 是 config.json 里需要遮罩展示的敏感引用字段（点号路径）。
