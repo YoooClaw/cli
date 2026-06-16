@@ -182,6 +182,10 @@ func (s *Supervisor) startLocked(entry creds.ApiKeyEntry) *managedTunnel {
 		ClientLabel: label, Logger: logger,
 	})
 	dispatcher.Start()
+	client.OnDisconnected(func(reason string) {
+		logger.Info("Relay tunnel disconnected; cleaning local WS channels: " + reason)
+		dispatcher.Cleanup()
+	})
 	client.Start()
 	s.opts.Logger.Info("[tunnel:" + label + "] Relay tunnel started")
 	return &managedTunnel{entry: entry, client: client, dispatcher: dispatcher}
