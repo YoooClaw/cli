@@ -27,11 +27,48 @@ type Bundled struct {
 var fmBlockRE = regexp.MustCompile(`(?s)^---\r?\n(.*?)\r?\n---`)
 
 func pickMeta(block, key string) string {
-	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*(.+)$`)
-	if m := re.FindStringSubmatch(block); m != nil {
-		return strings.TrimSpace(m[1])
+	lines := strings.Split(block, "\n")
+	prefix := key + ":"
+	for i, line := range lines {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		// YAML 块标量（description: | 或 >）：收集后续更深缩进的行。
+		if val == "|" || val == ">" || strings.HasPrefix(val, "|") || strings.HasPrefix(val, ">") {
+			return collectBlockScalar(lines[i+1:], val[:1] == ">")
+		}
+		return val
 	}
 	return ""
+}
+
+// collectBlockScalar 读取块标量的后续缩进行，直到回到顶层键或 frontmatter 结束。
+// folded 为 true（>）时用空格连接行，否则（|）保留换行。
+func collectBlockScalar(rest []string, folded bool) string {
+	var out []string
+	for _, line := range rest {
+		trimmed := strings.TrimSpace(line)
+		// 空行属于块的一部分。
+		if trimmed == "" {
+			out = append(out, "")
+			continue
+		}
+		// 顶层键（无前导空格且形如 key:）表示块结束。
+		if line[0] != ' ' && line[0] != '\t' {
+			break
+		}
+		out = append(out, trimmed)
+	}
+	// 去掉尾部空行。
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	sep := "\n"
+	if folded {
+		sep = " "
+	}
+	return strings.TrimSpace(strings.Join(out, sep))
 }
 
 func parseSkillMeta(md string) (name, description string) {

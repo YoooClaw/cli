@@ -14,6 +14,8 @@ type TranscriptSource struct {
 	TaskID    string `json:"taskId,omitempty"`
 	RequestID string `json:"requestId,omitempty"`
 	Status    string `json:"status,omitempty"`
+	// Delivery 标记结果写入通道，例如 result.write 写入时为 "result-write"。
+	Delivery string `json:"delivery,omitempty"`
 }
 
 // TranscriptSegment 是 transcript-data normalized.segments 的单段。

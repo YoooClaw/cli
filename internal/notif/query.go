@@ -121,6 +121,52 @@ func Query(notificationsDir string, opts QueryOptions) []StoredNotification {
 	return collectMatching(notificationsDir, opts)
 }
 
+// ScanStats 是一次查询扫描的统计（对齐 TS NotificationQueryStats）。
+type ScanStats struct {
+	DaysScanned       int  `json:"daysScanned"`
+	ItemsScanned      int  `json:"itemsScanned"`
+	Matched           int  `json:"matched"`
+	StoppedAfterLimit bool `json:"stoppedAfterLimit"`
+}
+
+// QueryWithStats 在收集匹配通知的同时统计扫描量，达到 limit 即早停
+// （对齐 TS collectMatchingNotificationsWithStats）。
+func QueryWithStats(notificationsDir string, opts QueryOptions) ([]StoredNotification, ScanStats) {
+	stats := ScanStats{}
+	if !dirExists(notificationsDir) {
+		return nil, stats
+	}
+	var results []StoredNotification
+	for _, dateKey := range listDateKeys(notificationsDir) {
+		if opts.FromDateKey != "" && dateKey < opts.FromDateKey {
+			continue
+		}
+		if opts.ToDateKey != "" && dateKey > opts.ToDateKey {
+			continue
+		}
+		stats.DaysScanned++
+		items := readDateFile(notificationsDir, dateKey)
+		sortByTimestampDesc(items)
+		for _, item := range items {
+			stats.ItemsScanned++
+			if !MatchesQuery(item, opts) {
+				continue
+			}
+			stats.Matched++
+			results = append(results, item)
+			if len(results) >= opts.Limit {
+				stats.StoppedAfterLimit = true
+				return results, stats
+			}
+		}
+	}
+	sortByTimestampDesc(results)
+	if len(results) > opts.Limit {
+		results = results[:opts.Limit]
+	}
+	return results, stats
+}
+
 func dirExists(dir string) bool {
 	info, err := os.Stat(dir)
 	return err == nil && info.IsDir()

@@ -71,6 +71,37 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "SYNC_FAILED", firstNonEmptyStr(result.Error, "Unknown error"))
 		}
 
+	case "recordings.result.write":
+		var body recording.ResultWriteParams
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		recordingID := strings.TrimSpace(body.RecordingID)
+		if recordingID == "" {
+			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
+			return
+		}
+		if body.Transcript == nil && body.Summary == nil {
+			gatewayErr(w, "INVALID_PARAMS", "transcript or summary is required")
+			return
+		}
+		body.RecordingID = recordingID
+		result, err := recording.HandleRecordingResultWrite(body, s.recordingStorage, s.logger, recording.SyncOptions{
+			NotifyStatus: s.notifyRecordingStatus,
+		})
+		if err != nil {
+			code := "RESULT_WRITE_FAILED"
+			switch {
+			case strings.HasPrefix(err.Error(), "Recording not found:"):
+				code = "NOT_FOUND"
+			case err.Error() == "recordingId is required" || err.Error() == "transcript or summary is required":
+				code = "INVALID_PARAMS"
+			}
+			gatewayErr(w, code, err.Error())
+			return
+		}
+		gatewayOK(w, result)
+
 	case "recordings.retranscribe":
 		var body recordingIDBody
 		if !decodeBody(w, r, &body) {

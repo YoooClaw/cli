@@ -207,6 +207,7 @@ func emitRecordingStatus(recordingID string, storage *Storage, logger Logger, no
 		SrtFile:            entry.SrtFile,
 		TranscriptDataFile: entry.TranscriptDataFile,
 		TranscriptFile:     entry.TranscriptFile,
+		SummaryFile:        entry.SummaryFile,
 		Title:              title,
 		UpdatedAt:          entry.UpdatedAt,
 		Error:              errMessage,

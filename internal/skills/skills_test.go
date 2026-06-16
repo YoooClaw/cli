@@ -23,6 +23,19 @@ func TestParseSkillMeta(t *testing.T) {
 	}
 }
 
+func TestParseSkillMetaBlockScalar(t *testing.T) {
+	t.Parallel()
+	md := "---\nname: my-skill\ndescription: |\n  line one\n  line two\n\n  line three\nother: x\n---\n# body\n"
+	name, desc := parseSkillMeta(md)
+	if name != "my-skill" {
+		t.Errorf("name = %q", name)
+	}
+	want := "line one\nline two\n\nline three"
+	if desc != want {
+		t.Errorf("block scalar desc = %q, want %q", desc, want)
+	}
+}
+
 func TestList(t *testing.T) {
 	t.Parallel()
 	got, err := List()

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/clictx"
@@ -15,7 +16,9 @@ import (
 // maxLimit 充当 summary/stats 的"全部"上限（对齐 TS 的 MAX_SAFE_INTEGER 语义）。
 const maxLimit = 1 << 60
 
-func addQueryFlags(cmd *cobra.Command) {
+func addQueryFlags(cmd *cobra.Command) { addQueryFlagsWithLimit(cmd, "100") }
+
+func addQueryFlagsWithLimit(cmd *cobra.Command, defaultLimit string) {
 	f := cmd.Flags()
 	f.String("from", "", "开始时间，如 2026-03-01T09:00:00+08:00")
 	f.String("to", "", "结束时间")
@@ -24,7 +27,7 @@ func addQueryFlags(cmd *cobra.Command) {
 	f.String("conversation-type", "", "会话类型 group|private")
 	f.String("keyword", "", "在标题/内容/发送人/会话名中搜索")
 	f.String("client", "", "按 clientLabel 过滤；all 为全部")
-	f.String("limit", "100", "最大返回条数")
+	f.String("limit", defaultLimit, "最大返回条数")
 }
 
 func rawQueryFromCmd(cmd *cobra.Command) notif.RawQueryOpts {
@@ -62,7 +65,7 @@ func newNotificationCmd() *cobra.Command {
 	recent.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	unread := &cobra.Command{Use: "+unread", Short: "（预留）未读通知", Args: cobra.NoArgs, RunE: run(notificationUnread)}
 
-	c.AddCommand(search, summary, stats, storagePath, today, recent, unread)
+	c.AddCommand(search, summary, newSummaryJobCmd(), stats, storagePath, today, recent, unread)
 	return c
 }
 
@@ -78,10 +81,20 @@ func notificationSummary(ctx *clictx.Context, cmd *cobra.Command, _ []string) (a
 	sample := atoiDefault(flagStr(cmd, "sample"), 30)
 	top := atoiDefault(flagStr(cmd, "top"), 10)
 	raw := rawQueryFromCmd(cmd)
+	// 显式传 --limit 时聚合最近 N 条（供「总结约 X 条」场景）；
+	// 不传时维持原行为：聚合范围内全部通知。
+	limitRaw := raw.Limit
 	raw.Limit = ""
 	opts, err := notif.BuildQueryOptions(raw, maxLimit)
 	if err != nil {
 		return nil, err
+	}
+	if cmd.Flags().Changed("limit") {
+		n, err := strconv.Atoi(limitRaw)
+		if err != nil || n <= 0 {
+			return nil, errs.New(errs.CodeInvalidArgument, "--limit 必须是大于 0 的整数")
+		}
+		opts.Limit = n
 	}
 	items := notif.Query(ctx.Paths.Notifications, opts)
 	return map[string]any{

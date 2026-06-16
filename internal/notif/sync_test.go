@@ -12,9 +12,11 @@ func makeItems(n int) []StoredNotification {
 	return items
 }
 
+var allScope = SyncScope{Mode: "all"}
+
 func TestScanSyncEmpty(t *testing.T) {
 	t.Parallel()
-	res := ScanSync(t.TempDir())
+	res := ScanSync(t.TempDir(), allScope)
 	if res["totalPending"].(int) != 0 {
 		t.Errorf("empty scan should have 0 pending: %+v", res)
 	}
@@ -24,13 +26,99 @@ func TestScanSyncPending(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeDateFile(t, dir, "2026-06-07", makeItems(5))
-	res := ScanSync(dir)
+	res := ScanSync(dir, allScope)
 	if res["totalPending"].(int) != 5 {
 		t.Errorf("expected 5 pending: %+v", res)
 	}
 	pending := res["pending"].([]SyncPending)
 	if len(pending) != 1 || pending[0].StartIndex != 0 || pending[0].Count != 5 {
 		t.Errorf("pending detail wrong: %+v", pending)
+	}
+}
+
+func TestScanSyncScopeFilters(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeDateFile(t, dir, "2026-06-07", makeItems(3))
+	writeDateFile(t, dir, "2026-06-08", makeItems(2))
+	res := ScanSync(dir, SyncScope{Mode: "date", FromDate: "2026-06-08", ToDate: "2026-06-08"})
+	if res["totalPending"].(int) != 2 {
+		t.Errorf("scoped totalPending should be 2: %+v", res)
+	}
+	if res["outsideScopePending"].(int) != 3 {
+		t.Errorf("outsideScopePending should be 3: %+v", res)
+	}
+	if res["allDatesTotalPending"].(int) != 5 {
+		t.Errorf("allDatesTotalPending should be 5: %+v", res)
+	}
+}
+
+func TestResolveScanScope(t *testing.T) {
+	t.Parallel()
+	if s, err := ResolveScanScope(SyncScopeOptions{}); err != nil || s.Mode != "today" {
+		t.Errorf("default scope should be today: %+v %v", s, err)
+	}
+	if s, err := ResolveScanScope(SyncScopeOptions{All: true}); err != nil || s.Mode != "all" {
+		t.Errorf("--all scope wrong: %+v %v", s, err)
+	}
+	if _, err := ResolveScanScope(SyncScopeOptions{All: true, Date: "2026-06-07"}); err == nil {
+		t.Error("--all + --date should error")
+	}
+	if _, err := ResolveScanScope(SyncScopeOptions{Date: "2026-13-99"}); err == nil {
+		t.Error("invalid --date should error")
+	}
+	if _, err := ResolveScanScope(SyncScopeOptions{FromDate: "2026-06-08", ToDate: "2026-06-07"}); err == nil {
+		t.Error("from > to should error")
+	}
+}
+
+func TestNextSync(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeDateFile(t, dir, "2026-06-07", makeItems(3))
+	writeDateFile(t, dir, "2026-06-08", makeItems(2))
+
+	// 降序：先返回最新日期 2026-06-08。
+	res := NextSync(dir, allScope)
+	if res["done"].(bool) {
+		t.Fatalf("should not be done: %+v", res)
+	}
+	if res["date"].(string) != "2026-06-08" || res["returned"].(int) != 2 || res["endIndex"].(int) != 1 {
+		t.Errorf("next batch wrong: %+v", res)
+	}
+	if res["commitCommand"].(string) != "yoooclaw sync commit --date 2026-06-08 --end-index 1" {
+		t.Errorf("commitCommand wrong: %+v", res["commitCommand"])
+	}
+
+	// commit 2026-06-08 后，下一批应是 2026-06-07。
+	if _, err := CommitSync(dir, "2026-06-08", "1"); err != nil {
+		t.Fatal(err)
+	}
+	res = NextSync(dir, allScope)
+	if res["done"].(bool) || res["date"].(string) != "2026-06-07" {
+		t.Errorf("second batch should be 2026-06-07: %+v", res)
+	}
+
+	// 全部 commit 后应 done。
+	if _, err := CommitSync(dir, "2026-06-07", "2"); err != nil {
+		t.Fatal(err)
+	}
+	res = NextSync(dir, allScope)
+	if !res["done"].(bool) {
+		t.Errorf("should be done: %+v", res)
+	}
+}
+
+func TestNextSyncOutsideScope(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeDateFile(t, dir, "2026-06-07", makeItems(3))
+	res := NextSync(dir, SyncScope{Mode: "date", FromDate: "2026-06-08", ToDate: "2026-06-08"})
+	if !res["done"].(bool) {
+		t.Errorf("out-of-scope should be done: %+v", res)
+	}
+	if res["outsideScopePending"].(int) != 3 {
+		t.Errorf("outsideScopePending should be 3: %+v", res)
 	}
 }
 
@@ -91,7 +179,7 @@ func TestCommitSyncLegacyBatch(t *testing.T) {
 		t.Errorf("legacy commit wrong: %+v", res)
 	}
 	// checkpoint 持久化后再 scan 应无 pending
-	if ScanSync(dir)["totalPending"].(int) != 0 {
+	if ScanSync(dir, allScope)["totalPending"].(int) != 0 {
 		t.Error("after full commit no pending expected")
 	}
 }
