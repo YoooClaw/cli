@@ -130,7 +130,7 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 
 | Skill                         | 说明                                                                                                            |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `yoooclaw-notification-query` | 流式查询手机通知原始数据：「看看最近的通知」「谁找过我」「总结今天的消息」。纯读磁盘、不需要 daemon             |
+| `yoooclaw-notification-query` | 查询/汇总/总结手机通知：「看看最近的通知」「谁找过我」「总结最近约 N 条通知」。小批量走 `summary`、大批量走 `summary-job`，纯读磁盘、不需要 daemon |
 | `yoooclaw-lightrule-create`   | 从自然语言或 stdin 创建/管理「通知 → 灯效」持久规则，由 daemon 在 ingest 后评估命中并触发灯效（🟡）             |
 | `yoooclaw-tunnel-debug`       | 排查手机端推送链路：组合 auth / daemon / tunnel / gateway 状态定位本地配置、ingest 鉴权与 Relay WebSocket（🟡） |
 
@@ -199,6 +199,7 @@ yoooclaw log +errors                  # 昨天起的 error 级日志
 ```bash
 yoooclaw notification search --app 微信 --keyword 会议 --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
+yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # 大批量通知分片总结：create→next→commit→result
 yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw lightrule create --from-file -          # 从 stdin 提交规则定义

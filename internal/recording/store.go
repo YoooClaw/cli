@@ -331,10 +331,35 @@ func (s *Storage) UpdateStatus(recordingID, newStatus string) (Entry, error) {
 	return *entry, nil
 }
 
+// MarkResultWritten 在外部结果（result.write）写入后直接置为 transcribed。
+// 与插件 storage.markResultWritten 一致：绕过状态机校验，因为 synced/syncing →
+// transcribed 不是状态机的合法边，但这是带外（out-of-band）写入的预期终态。
+func (s *Storage) MarkResultWritten(recordingID string) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := s.findIndexLocked(recordingID)
+	if idx < 0 {
+		return Entry{}, os.ErrNotExist
+	}
+	entry := &s.index.Recordings[idx]
+	entry.Status = StatusTranscribed
+	entry.LastError = ""
+	entry.UpdatedAt = nowISO()
+	if err := s.saveIndexLocked(); err != nil {
+		return Entry{}, err
+	}
+	s.logger.Info("录音结果已写入: " + recordingID)
+	return *entry, nil
+}
+
 // SetAudioFile 记录本地音频文件。
 func (s *Storage) SetAudioFile(recordingID, filename string) error {
 	return s.updateEntry(recordingID, func(entry *Entry) {
-		entry.AudioFile = audioDirName + "/" + filename
+		next := audioDirName + "/" + filename
+		if entry.AudioFile != "" && entry.AudioFile != next {
+			s.removeRelativeLocked(entry.AudioFile)
+		}
+		entry.AudioFile = next
 	})
 }
 

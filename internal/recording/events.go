@@ -16,6 +16,7 @@ type StatusEvent struct {
 	SrtFile            string           `json:"srtFile,omitempty"`
 	TranscriptDataFile string           `json:"transcriptDataFile,omitempty"`
 	TranscriptFile     string           `json:"transcriptFile,omitempty"`
+	SummaryFile        string           `json:"summaryFile,omitempty"`
 	Transcript         []TranscriptItem `json:"transcript,omitempty"`
 	Summary            string           `json:"summary,omitempty"`
 	Title              string           `json:"title"`
