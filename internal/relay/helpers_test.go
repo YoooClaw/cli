@@ -2,9 +2,13 @@ package relay
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/YoooClaw/cli/internal/creds"
+	"github.com/gorilla/websocket"
 )
 
 func TestIntField(t *testing.T) {
@@ -192,5 +196,62 @@ func TestClientOnConnectedHandlers(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("OnDisconnected handler not invoked")
+	}
+}
+
+func TestSupervisorCleansDispatcherWSOnDisconnect(t *testing.T) {
+	t.Parallel()
+
+	upgrader := websocket.Upgrader{}
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade local ws: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer local.Close()
+
+	localWSURL := "ws" + strings.TrimPrefix(local.URL, "http")
+	localConn, _, err := websocket.DefaultDialer.Dial(localWSURL, nil)
+	if err != nil {
+		t.Fatalf("dial local ws: %v", err)
+	}
+	defer localConn.Close()
+
+	supervisor := NewSupervisor(SupervisorOptions{
+		TunnelURL:          "ws://127.0.0.1:1/ws",
+		HTTPBaseURL:        "http://127.0.0.1:1",
+		ReconnectBackoffMs: 50,
+		StateDir:           t.TempDir(),
+		Logger:             testLogger{t},
+	})
+	managed := supervisor.startLocked(creds.ApiKeyEntry{Label: "default", Key: "relay-key"})
+	defer managed.client.Stop("test done")
+
+	managed.dispatcher.wsMu.Lock()
+	managed.dispatcher.ws["stale"] = localConn
+	managed.dispatcher.wsMu.Unlock()
+
+	managed.client.emitDisconnected("test disconnect")
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		managed.dispatcher.wsMu.Lock()
+		count := len(managed.dispatcher.ws)
+		managed.dispatcher.wsMu.Unlock()
+		if count == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dispatcher ws map was not cleaned; count=%d", count)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
