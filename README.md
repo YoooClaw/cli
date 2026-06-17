@@ -34,7 +34,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 | 🔌 隧道 Tunnel        | Relay 隧道状态、强制重连、本地 ingest 回环自检               | 🟡     |
 | 🛡️ 网关 Gateway       | 模拟手机端调 daemon，校验本地连通与鉴权                      | 🟢/🟡  |
 | 📋 日志 Log           | daemon 日志检索与 error 级筛选                               | 🟢     |
-| ⚙️ 基础设施           | config / profile / auth / daemon / migrate / update / doctor | 🟢/🔵  |
+| ⚙️ 基础设施           | config / profile / auth / daemon / migrate / update / doctor / uninstall | 🟢/🔵  |
 | 🧩 技能 Skills        | 把随包 SKILL.md 安装到 Agent 可发现目录                      | 🟢     |
 
 > daemon 标记：🟢 不需要 daemon · 🟡 需要 daemon 在跑 · 🔵 管理 daemon 自身。

@@ -46,6 +46,7 @@ func newRootCmd() *cobra.Command {
 		newUpdateCmd(),
 		newSkillsCmd(),
 		newDoctorCmd(),
+		newUninstallCmd(),
 	)
 	return root
 }
