@@ -16,6 +16,7 @@ import (
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
+	"github.com/YoooClaw/cli/internal/envhost"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/notif"
@@ -32,9 +33,11 @@ var Capabilities = []string{"notifications", "recordings", "images", "lightrules
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
-	Bind     string
-	Port     int
-	LogLevel string
+	Bind       string
+	Port       int
+	LogLevel   string
+	Owner      string
+	Generation string
 }
 
 type runtimeState struct {
@@ -62,6 +65,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	tokenRef, _ := creds.ResolveGatewayToken(cfg)
 	token := tokenRef.Value
 	credentialSet := creds.ResolveAPIKeyEntries()
+	executable, _ := os.Executable()
 
 	loopback := bind == "127.0.0.1" || bind == "::1" || bind == "localhost"
 	if !loopback && token == "" {
@@ -95,6 +99,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
 		recordingInFlight: map[string]time.Time{},
 		token:             token, credentialSet: credentialSet, ignored: ignored, bind: bind,
+		owner: opts.Owner, generation: opts.Generation, executable: executable,
 	}
 
 	// 监听；端口被占自动 +1（最多 64 次）。
@@ -105,7 +110,10 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	srv.port = actualPort
 
 	httpSrv := &http.Server{Handler: srv}
-	if err := WriteLock(ctx.Paths, Lock{PID: os.Getpid(), StartedAt: st.startedAt, Bind: bind, Port: actualPort, LogLevel: logLevel}); err != nil {
+	if err := WriteLock(ctx.Paths, Lock{
+		PID: os.Getpid(), StartedAt: st.startedAt, Bind: bind, Port: actualPort, LogLevel: logLevel,
+		Owner: opts.Owner, Generation: opts.Generation, Executable: executable, Version: version.Version, Profile: ctx.Profile,
+	}); err != nil {
 		return err
 	}
 	logger.Info(fmt.Sprintf("yoooclaw daemon 启动：%s:%d（profile=%s, pid=%d）", bind, actualPort, ctx.Profile, os.Getpid()))
@@ -168,6 +176,9 @@ type server struct {
 	ignored           map[string]bool
 	bind              string
 	port              int
+	owner             string
+	generation        string
+	executable        string
 	shutdown          func(string)
 }
 
@@ -354,7 +365,13 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 	relayStatus := s.relayStatusPayload()
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "server": "yoooclaw", "version": version.Version, "pid": os.Getpid(),
-		"profile": s.ctx.Profile, "bind": s.bind, "port": s.port, "startedAt": s.st.startedAt,
+		"executable": nilIfEmptyStr(s.executable),
+		"profile":    s.ctx.Profile, "bind": s.bind, "port": s.port, "startedAt": s.st.startedAt,
+		"lifecycle": map[string]any{
+			"owner":      nilIfEmptyStr(s.owner),
+			"generation": nilIfEmptyStr(s.generation),
+			"startedAt":  s.st.startedAt,
+		},
 		"lastIngestAt": nilIfEmptyStr(lastIngest), "ingestCount": ingestCount,
 		"relay":          relayStatus,
 		"tunnels":        relayStatus["tunnels"],
@@ -382,7 +399,7 @@ func (s *server) relayStatusPayload() map[string]any {
 			note = "Relay 重连中"
 		}
 		return map[string]any{
-			"mode": "relay", "connected": connected, "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
+			"mode": "relay", "connected": connected, "env": envhost.Name(), "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
 			"reconnectAttempt": reconnectAttempt, "lastDisconnectReason": nilIfEmptyStr(lastDisconnectReason),
 			"note": note, "tunnels": status.Tunnels,
 		}
@@ -392,7 +409,7 @@ func (s *server) relayStatusPayload() map[string]any {
 		note = "Relay 已启用但当前 CredentialSet 没有可用 api-key"
 	}
 	return map[string]any{
-		"mode": "standalone-http", "connected": false, "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
+		"mode": "standalone-http", "connected": false, "env": envhost.Name(), "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
 		"reconnectAttempt": 0, "note": note, "tunnels": []any{},
 	}
 }

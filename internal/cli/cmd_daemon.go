@@ -20,13 +20,18 @@ func newDaemonCmd() *cobra.Command {
 	start.Flags().String("port", "", "监听端口（默认 config.daemon.port）")
 	start.Flags().Bool("no-detach", false, "前台运行（systemd/launchd 用）")
 	start.Flags().String("log-level", "", "error|warn|info|debug|trace")
+	addDaemonLifecycleFlags(start)
 
 	stop := &cobra.Command{Use: "stop", Short: "停止 daemon（SIGTERM → 10s → SIGKILL）", Args: cobra.NoArgs, RunE: run(daemonStop)}
+	stop.Flags().String("owner", "", "仅停止 owner 匹配的 daemon")
+	stop.Flags().String("generation", "", "仅停止 generation 匹配的 daemon")
+	stop.Flags().Bool("wait", true, "等待 daemon 完全退出")
 	restart := &cobra.Command{Use: "restart", Short: "stop + start，保留原启动参数", Args: cobra.NoArgs, RunE: run(daemonRestart)}
 	restart.Flags().String("bind", "", "监听地址")
 	restart.Flags().String("port", "", "监听端口")
 	restart.Flags().Bool("no-detach", false, "前台运行")
 	restart.Flags().String("log-level", "", "日志级别")
+	addDaemonLifecycleFlags(restart)
 	reload := &cobra.Command{Use: "reload", Short: "重读凭据并增量刷新 Relay 隧道", Args: cobra.NoArgs, RunE: run(daemonReload)}
 	status := &cobra.Command{Use: "status", Short: "打印 daemon 状态（PID/端口/relay/规则数...）", Args: cobra.NoArgs, RunE: run(daemonStatus)}
 
@@ -39,6 +44,7 @@ func newDaemonCmd() *cobra.Command {
 	runFg.Flags().String("bind", "", "监听地址")
 	runFg.Flags().String("port", "", "监听端口")
 	runFg.Flags().String("log-level", "", "日志级别")
+	addDaemonLifecycleFlags(runFg)
 
 	c.AddCommand(start, stop, restart, reload, status, logs, runFg)
 	return c
@@ -49,7 +55,19 @@ func startOptsFromCmd(cmd *cobra.Command) daemon.StartOpts {
 	if s := flagStr(cmd, "port"); s != "" {
 		port, _ = strconv.Atoi(s)
 	}
-	return daemon.StartOpts{Bind: flagStr(cmd, "bind"), Port: port, LogLevel: flagStr(cmd, "log-level")}
+	return daemon.StartOpts{
+		Bind: flagStr(cmd, "bind"), Port: port, LogLevel: flagStr(cmd, "log-level"),
+		Owner: flagStr(cmd, "owner"), Generation: flagStr(cmd, "generation"),
+	}
+}
+
+func addDaemonLifecycleFlags(cmd *cobra.Command) {
+	cmd.Flags().String("owner", "", "生命周期 owner（例如 hermes-plugin）")
+	cmd.Flags().String("generation", "", "生命周期 generation，用于识别同一批启动的进程")
+}
+
+func stopOptsFromCmd(cmd *cobra.Command) daemon.StopOpts {
+	return daemon.StopOpts{Owner: flagStr(cmd, "owner"), Generation: flagStr(cmd, "generation"), Wait: flagBool(cmd, "wait")}
 }
 
 func daemonRunForeground(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
@@ -85,8 +103,8 @@ func daemonStart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 	return map[string]any{"ok": true, "pid": lock.PID, "bind": lock.Bind, "port": lock.Port, "detached": true}, nil
 }
 
-func daemonStop(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	return daemon.Stop(ctx.Paths)
+func daemonStop(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	return daemon.StopWithOptions(ctx.Paths, stopOptsFromCmd(cmd))
 }
 
 func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {

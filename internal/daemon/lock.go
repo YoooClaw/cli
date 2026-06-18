@@ -12,11 +12,16 @@ import (
 
 // Lock 是 daemon.lock 的内容。
 type Lock struct {
-	PID       int    `json:"pid"`
-	StartedAt string `json:"startedAt"`
-	Bind      string `json:"bind"`
-	Port      int    `json:"port"`
-	LogLevel  string `json:"logLevel,omitempty"`
+	PID        int    `json:"pid"`
+	StartedAt  string `json:"startedAt"`
+	Bind       string `json:"bind"`
+	Port       int    `json:"port"`
+	LogLevel   string `json:"logLevel,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	Generation string `json:"generation,omitempty"`
+	Executable string `json:"executable,omitempty"`
+	Version    string `json:"version,omitempty"`
+	Profile    string `json:"profile,omitempty"`
 }
 
 // RunningState 是 daemon 运行态。

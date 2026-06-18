@@ -172,6 +172,39 @@ yoooclaw auth token-rotate
 yoooclaw daemon restart
 ```
 
+## Daemon lifecycle protocol
+
+`yoooclaw daemon` exposes lifecycle metadata so external orchestrators such as
+the Hermes plugin can keep the daemon and their websocket connections in the
+same generation.
+
+```bash
+yoooclaw daemon run-foreground --owner hermes-plugin --generation abc123
+yoooclaw daemon stop --owner hermes-plugin --generation abc123 --wait
+yoooclaw daemon status --format json
+```
+
+`daemon status` includes `pid`, `version`, `executable`, `profile`,
+`relay.env`, and a nested lifecycle object:
+
+```json
+{
+  "ok": true,
+  "version": "0.3.0",
+  "executable": "/Users/me/.yoooclaw/hermes-plugin/bin/0.3.0/yoooclaw",
+  "profile": "test",
+  "lifecycle": {
+    "owner": "hermes-plugin",
+    "generation": "abc123",
+    "startedAt": "2026-06-18T10:34:07Z"
+  }
+}
+```
+
+The lifecycle flags are optional; normal human `daemon start`, `stop`, and
+`restart` usage remains unchanged. When supplied to `daemon stop`, owner and
+generation are checked before the process is terminated.
+
 ## 三层命令体系
 
 按粒度从快捷到完全自定义，覆盖日常操作到任意 daemon 端点：

@@ -37,6 +37,9 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 		ignored:           map[string]bool{"com.spam.app": true},
 		bind:              "127.0.0.1",
 		port:              18789,
+		owner:             "hermes-plugin",
+		generation:        "gen-1",
+		executable:        "/tmp/yoooclaw",
 	}
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
@@ -71,6 +74,16 @@ func TestServerStatusNoToken(t *testing.T) {
 	}
 	if body["relay"].(map[string]any)["mode"] != "standalone-http" {
 		t.Errorf("expected standalone-http relay mode: %+v", body["relay"])
+	}
+	if body["executable"] != "/tmp/yoooclaw" {
+		t.Errorf("expected executable in status: %+v", body)
+	}
+	lifecycle, ok := body["lifecycle"].(map[string]any)
+	if !ok || lifecycle["owner"] != "hermes-plugin" || lifecycle["generation"] != "gen-1" || lifecycle["startedAt"] != "2026-06-07T10:00:00Z" {
+		t.Errorf("expected lifecycle payload: %+v", body["lifecycle"])
+	}
+	if body["relay"].(map[string]any)["env"] == "" {
+		t.Errorf("expected relay env in status: %+v", body["relay"])
 	}
 }
 
