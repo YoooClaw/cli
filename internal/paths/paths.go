@@ -21,13 +21,20 @@ import (
 // DefaultProfile 是缺省 profile 名。
 const DefaultProfile = "default"
 
+// DefaultRoot 返回**不读环境变量**的缺省根数据目录（~/.yoooclaw）。
+// 供 library（yclib）等需要显式、可预测根目录的调用方使用，避免隐式 env 决策。
+func DefaultRoot() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".yoooclaw")
+}
+
 // RootDir 返回 CLI 根数据目录。可用 YOOOCLAW_HOME 覆盖（测试 / 多实例隔离）。
+// 注意：本函数会读环境变量，仅供 CLI 外壳使用；library 路径请用 DefaultRoot / ForRoot。
 func RootDir() string {
 	if h := strings.TrimSpace(os.Getenv("YOOOCLAW_HOME")); h != "" {
 		return h
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".yoooclaw")
+	return DefaultRoot()
 }
 
 // SharedCredentialsPath 返回 account 级共享凭据文件（顶层，跨 profile + 插件共享）。
@@ -66,9 +73,15 @@ type Paths struct {
 	State         string
 }
 
-// For 解析某个 profile 下的全部关键路径。
+// For 解析某个 profile 下的全部关键路径（根目录走 RootDir，含 env 覆盖）。
 func For(profile string) Paths {
-	dir := ProfileDir(profile)
+	return ForRoot(RootDir(), profile)
+}
+
+// ForRoot 在**显式根目录**下解析某个 profile 的全部关键路径，不读任何环境变量。
+// 供 library（yclib）注入 Config.RootDir 时使用，保证路径可预测、无隐式 env 决策。
+func ForRoot(root, profile string) Paths {
+	dir := filepath.Join(root, "profiles", profile)
 	return Paths{
 		Profile:       profile,
 		Dir:           dir,

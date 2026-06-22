@@ -14,11 +14,17 @@ import (
 
 // Spawn fork 一个脱离会话的子进程跑 `daemon run-foreground`，轮询 lock 确认起来（最多 ~3s）。
 func Spawn(ctx *clictx.Context, opts StartOpts) (*Lock, error) {
+	return SpawnFor(ctx.Paths, ctx.Profile, opts)
+}
+
+// SpawnFor 同 Spawn，但以**显式 paths + profile** 入参，不依赖 clictx。
+// 供 library（yclib）显式起 daemon 时使用。
+func SpawnFor(p paths.Paths, profile string, opts StartOpts) (*Lock, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, errs.New(errs.CodeUnknown, "无法定位可执行文件："+err.Error())
 	}
-	args := []string{"daemon", "run-foreground", "--profile", ctx.Profile}
+	args := []string{"daemon", "run-foreground", "--profile", profile}
 	if opts.Bind != "" {
 		args = append(args, "--bind", opts.Bind)
 	}
@@ -56,7 +62,7 @@ func Spawn(ctx *clictx.Context, opts StartOpts) (*Lock, error) {
 
 	for i := 0; i < 30; i++ {
 		time.Sleep(100 * time.Millisecond)
-		if st := State(ctx.Paths); st.Running {
+		if st := State(p); st.Running {
 			return st.Lock, nil
 		}
 	}

@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"regexp"
-	"sort"
 	"strconv"
 	"time"
 
@@ -98,57 +96,13 @@ func notificationSummary(ctx *clictx.Context, cmd *cobra.Command, _ []string) (a
 	}
 	items := notif.Query(ctx.Paths.Notifications, opts)
 	return map[string]any{
-		"ok":    true,
-		"total": len(items),
-		"range": map[string]any{"from": nilIfEmpty(raw.From), "to": nilIfEmpty(raw.To)},
-		"topApps": topCounts(items, func(n notif.StoredNotification) string {
-			return firstNonEmpty(n.AppDisplayName, n.AppName)
-		}, top),
-		"topSenders": topCounts(items, func(n notif.StoredNotification) string {
-			return firstNonEmpty(n.SenderName, n.Title)
-		}, top),
-		"sample": toAnySlice(sliceN(items, sample)),
+		"ok":         true,
+		"total":      len(items),
+		"range":      map[string]any{"from": nilIfEmpty(raw.From), "to": nilIfEmpty(raw.To)},
+		"topApps":    notif.TopCounts(items, notif.AppLabel, top),
+		"topSenders": notif.TopCounts(items, notif.SenderLabel, top),
+		"sample":     toAnySlice(sliceN(items, sample)),
 	}, nil
-}
-
-var dateOnlyRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-var isoTimeRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$`)
-
-type statsBoundary struct {
-	raw        string
-	exactTs    *time.Time
-	startTs    time.Time
-	endTs      time.Time
-	minDateKey string
-	maxDateKey string
-}
-
-func parseStatsBoundary(value, optionName string) (statsBoundary, error) {
-	if dateOnlyRE.MatchString(value) {
-		t, err := time.ParseInLocation("2006-01-02", value, time.Local)
-		if err != nil {
-			return statsBoundary{}, errs.Newf(errs.CodeInvalidArgument, "%s 必须是合法日期 YYYY-MM-DD", optionName)
-		}
-		start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
-		end := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999000000, time.Local)
-		return statsBoundary{raw: value, startTs: start, endTs: end, minDateKey: value, maxDateKey: value}, nil
-	}
-	if !isoTimeRE.MatchString(value) {
-		return statsBoundary{}, errs.Newf(errs.CodeInvalidArgument,
-			"%s 必须是 YYYY-MM-DD 或 ISO 8601 时间，例如 2026-06-02 或 2026-06-02T09:00:00+08:00", optionName)
-	}
-	exact, ok := notif.ParseTime(value)
-	if !ok {
-		return statsBoundary{}, errs.Newf(errs.CodeInvalidArgument, "%s 不是合法时间", optionName)
-	}
-	declaredKey := value[:10]
-	localKey := exact.In(time.Local).Format("2006-01-02")
-	lo, hi := declaredKey, localKey
-	if lo > hi {
-		lo, hi = hi, lo
-	}
-	e := exact
-	return statsBoundary{raw: value, exactTs: &e, startTs: exact, endTs: exact, minDateKey: lo, maxDateKey: hi}, nil
 }
 
 func notificationStats(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
@@ -160,15 +114,15 @@ func notificationStats(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any
 	if toRaw == "" {
 		toRaw = localToday()
 	}
-	from, err := parseStatsBoundary(fromRaw, "--from")
+	from, err := notif.ParseStatsBoundary(fromRaw, "--from")
 	if err != nil {
 		return nil, err
 	}
-	to, err := parseStatsBoundary(toRaw, "--to")
+	to, err := notif.ParseStatsBoundary(toRaw, "--to")
 	if err != nil {
 		return nil, err
 	}
-	if from.startTs.After(to.endTs) {
+	if from.StartTs.After(to.EndTs) {
 		return nil, errs.New(errs.CodeInvalidArgument, "--from 不能晚于 --to")
 	}
 	dim := flagStr(cmd, "dim")
@@ -181,21 +135,21 @@ func notificationStats(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any
 	}
 	opts := notif.QueryOptions{
 		App: flagStr(cmd, "app"), Sender: flagStr(cmd, "sender"), Client: flagStr(cmd, "client"),
-		Limit: maxLimit, FromTs: from.exactTs, ToTs: to.exactTs,
-		FromDateKey: from.minDateKey, ToDateKey: to.maxDateKey,
+		Limit: maxLimit, FromTs: from.ExactTs, ToTs: to.ExactTs,
+		FromDateKey: from.MinDateKey, ToDateKey: to.MaxDateKey,
 	}
 	items := notif.Query(ctx.Paths.Notifications, opts)
 
 	dims := map[string]any{
-		"date":   topCounts(items, func(n notif.StoredNotification) string { return tsLocalDate(n.Timestamp) }, maxLimit),
-		"app":    topCounts(items, func(n notif.StoredNotification) string { return firstNonEmpty(n.AppDisplayName, n.AppName) }, maxLimit),
-		"sender": topCounts(items, func(n notif.StoredNotification) string { return firstNonEmpty(n.SenderName, n.Title) }, maxLimit),
-		"hour":   topCounts(items, func(n notif.StoredNotification) string { return tsLocalHour(n.Timestamp) }, maxLimit),
-		"client": topCounts(items, func(n notif.StoredNotification) string { return firstNonEmpty(n.ClientLabel, "legacy") }, maxLimit),
+		"date":   notif.TopCounts(items, func(n notif.StoredNotification) string { return notif.TsLocalDate(n.Timestamp) }, maxLimit),
+		"app":    notif.TopCounts(items, notif.AppLabel, maxLimit),
+		"sender": notif.TopCounts(items, notif.SenderLabel, maxLimit),
+		"hour":   notif.TopCounts(items, func(n notif.StoredNotification) string { return notif.TsLocalHour(n.Timestamp) }, maxLimit),
+		"client": notif.TopCounts(items, notif.ClientLabelOf, maxLimit),
 	}
 	out := map[string]any{
 		"ok": true, "total": len(items),
-		"range": map[string]any{"from": from.raw, "to": to.raw}, "dim": dim,
+		"range": map[string]any{"from": from.Raw, "to": to.Raw}, "dim": dim,
 	}
 	if dim == "all" {
 		for k, v := range dims {
@@ -236,37 +190,9 @@ func notificationUnread(_ *clictx.Context, _ *cobra.Command, _ []string) (any, e
 }
 
 // ── helpers ──
-
-func topCounts(items []notif.StoredNotification, pick func(notif.StoredNotification) string, topN int) []any {
-	counts := map[string]int{}
-	for _, item := range items {
-		if k := pick(item); k != "" {
-			counts[k]++
-		}
-	}
-	type kc struct {
-		key   string
-		count int
-	}
-	rows := make([]kc, 0, len(counts))
-	for k, v := range counts {
-		rows = append(rows, kc{k, v})
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].count != rows[j].count {
-			return rows[i].count > rows[j].count
-		}
-		return rows[i].key < rows[j].key
-	})
-	if topN < len(rows) {
-		rows = rows[:topN]
-	}
-	out := make([]any, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, map[string]any{"key": r.key, "count": r.count})
-	}
-	return out
-}
+// 注：聚合原语 TopCounts / AppLabel / SenderLabel / ClientLabelOf / TsLocalDate /
+// TsLocalHour / ParseStatsBoundary 已下沉到 internal/notif（CLI 与 yclib 共用，
+// 见 arc-cli-library-integration §6 单一真相源）。
 
 func toAnySlice(items []notif.StoredNotification) []any {
 	out := make([]any, 0, len(items))
@@ -312,20 +238,6 @@ func atoiDefault(s string, def int) int {
 
 func localToday() string        { return time.Now().Format("2006-01-02") }
 func localDaysAgo(n int) string { return time.Now().AddDate(0, 0, -n).Format("2006-01-02") }
-func tsLocalDate(ts string) string {
-	t, ok := notif.ParseTime(ts)
-	if !ok {
-		return ""
-	}
-	return t.In(time.Local).Format("2006-01-02")
-}
-func tsLocalHour(ts string) string {
-	t, ok := notif.ParseTime(ts)
-	if !ok {
-		return ""
-	}
-	return t.In(time.Local).Format("15")
-}
 
 func localTZOffset() string {
 	_, offset := time.Now().Zone()
