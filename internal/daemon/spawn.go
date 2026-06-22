@@ -34,6 +34,15 @@ func Spawn(ctx *clictx.Context, opts StartOpts) (*Lock, error) {
 	if opts.Generation != "" {
 		args = append(args, "--generation", opts.Generation)
 	}
+	if opts.IngressMode != "" {
+		args = append(args, "--ingress", opts.IngressMode)
+	}
+	if opts.EgressCallbackURL != "" {
+		args = append(args, "--egress-callback-url", opts.EgressCallbackURL)
+	}
+	if opts.EgressCallbackToken != "" {
+		args = append(args, "--egress-callback-token", opts.EgressCallbackToken)
+	}
 	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = detachSysProcAttr()
 	if null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0); err == nil {

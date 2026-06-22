@@ -21,6 +21,7 @@ func newDaemonCmd() *cobra.Command {
 	start.Flags().Bool("no-detach", false, "前台运行（systemd/launchd 用）")
 	start.Flags().String("log-level", "", "error|warn|info|debug|trace")
 	addDaemonLifecycleFlags(start)
+	addIngressFlags(start)
 
 	stop := &cobra.Command{Use: "stop", Short: "停止 daemon（SIGTERM → 10s → SIGKILL）", Args: cobra.NoArgs, RunE: run(daemonStop)}
 	stop.Flags().String("owner", "", "仅停止 owner 匹配的 daemon")
@@ -32,6 +33,7 @@ func newDaemonCmd() *cobra.Command {
 	restart.Flags().Bool("no-detach", false, "前台运行")
 	restart.Flags().String("log-level", "", "日志级别")
 	addDaemonLifecycleFlags(restart)
+	addIngressFlags(restart)
 	reload := &cobra.Command{Use: "reload", Short: "重读凭据并增量刷新 Relay 隧道", Args: cobra.NoArgs, RunE: run(daemonReload)}
 	status := &cobra.Command{Use: "status", Short: "打印 daemon 状态（PID/端口/relay/规则数...）", Args: cobra.NoArgs, RunE: run(daemonStatus)}
 
@@ -45,6 +47,7 @@ func newDaemonCmd() *cobra.Command {
 	runFg.Flags().String("port", "", "监听端口")
 	runFg.Flags().String("log-level", "", "日志级别")
 	addDaemonLifecycleFlags(runFg)
+	addIngressFlags(runFg)
 
 	c.AddCommand(start, stop, restart, reload, status, logs, runFg)
 	return c
@@ -58,12 +61,21 @@ func startOptsFromCmd(cmd *cobra.Command) daemon.StartOpts {
 	return daemon.StartOpts{
 		Bind: flagStr(cmd, "bind"), Port: port, LogLevel: flagStr(cmd, "log-level"),
 		Owner: flagStr(cmd, "owner"), Generation: flagStr(cmd, "generation"),
+		IngressMode:         flagStr(cmd, "ingress"),
+		EgressCallbackURL:   flagStr(cmd, "egress-callback-url"),
+		EgressCallbackToken: flagStr(cmd, "egress-callback-token"),
 	}
 }
 
 func addDaemonLifecycleFlags(cmd *cobra.Command) {
 	cmd.Flags().String("owner", "", "生命周期 owner（例如 hermes-plugin）")
 	cmd.Flags().String("generation", "", "生命周期 generation，用于识别同一批启动的进程")
+}
+
+func addIngressFlags(cmd *cobra.Command) {
+	cmd.Flags().String("ingress", "", "传输模式 standalone|proxied|direct（默认 config.ingress.mode）")
+	cmd.Flags().String("egress-callback-url", "", "proxied 模式出站事件回投宿主的 URL")
+	cmd.Flags().String("egress-callback-token", "", "proxied 模式出站回调的 Bearer token")
 }
 
 func stopOptsFromCmd(cmd *cobra.Command) daemon.StopOpts {

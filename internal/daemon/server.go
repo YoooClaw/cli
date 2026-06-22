@@ -38,6 +38,11 @@ type StartOpts struct {
 	LogLevel   string
 	Owner      string
 	Generation string
+	// IngressMode 覆盖 config.ingress.mode（standalone|proxied|direct）；空则回退 env/config。
+	IngressMode string
+	// EgressCallbackURL/Token 覆盖 config.ingress.egressCallback（proxied 模式出站回投）。
+	EgressCallbackURL   string
+	EgressCallbackToken string
 }
 
 type runtimeState struct {
@@ -117,21 +122,38 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 		return err
 	}
 	logger.Info(fmt.Sprintf("yoooclaw daemon 启动：%s:%d（profile=%s, pid=%d）", bind, actualPort, ctx.Profile, os.Getpid()))
-	if cfg.Relay.Enabled {
+	mode := resolveIngressMode(opts, cfg)
+	srv.ingressMode = mode
+	srv.egress = NoopEgress{}
+	switch mode {
+	case config.IngressProxied:
+		// 宿主代理到手机的连接：daemon 不连隧道，只暴露 ingest API。要求 api-key 供宿主推送鉴权。
 		if len(credentialSet.Entries) == 0 {
-			logger.Warn("Relay 已启用但未设置 api-key；当前仅直连 HTTP")
-		} else {
-			srv.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
-				TunnelURL:          config.ResolveRelayURL(cfg),
-				HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(actualPort),
-				HTTPToken:          token,
-				HeartbeatSec:       cfg.Relay.HeartbeatSec,
-				ReconnectBackoffMs: cfg.Relay.ReconnectBackoffMs,
-				StateDir:           ctx.Paths.Dir,
-				Logger:             logger,
-			})
-			result := srv.tunnelSupervisor.Apply(credentialSet)
-			logger.Info(fmt.Sprintf("Relay tunnels applied: started=%v unchanged=%v", result.Started, result.Unchanged))
+			return errs.New(errs.CodeUnauthorized, "proxied 模式需要至少一个 api-key 供宿主推送鉴权").
+				WithHint("先设置 api-key，或改用 --ingress=standalone")
+		}
+		srv.egress = resolveProxyEgress(opts, cfg, logger)
+		logger.Info("ingress=proxied：Relay 隧道关闭，等待宿主推送 ingest")
+	case config.IngressDirect:
+		logger.Info("ingress=direct：Relay 隧道关闭，仅接受直接 POST")
+	default: // standalone
+		if cfg.Relay.Enabled {
+			if len(credentialSet.Entries) == 0 {
+				logger.Warn("Relay 已启用但未设置 api-key；当前仅直连 HTTP")
+			} else {
+				srv.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
+					TunnelURL:          config.ResolveRelayURL(cfg),
+					HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(actualPort),
+					HTTPToken:          token,
+					HeartbeatSec:       cfg.Relay.HeartbeatSec,
+					ReconnectBackoffMs: cfg.Relay.ReconnectBackoffMs,
+					StateDir:           ctx.Paths.Dir,
+					Logger:             logger,
+				})
+				result := srv.tunnelSupervisor.Apply(credentialSet)
+				srv.egress = NewRelayEgress(srv.tunnelSupervisor)
+				logger.Info(fmt.Sprintf("Relay tunnels applied: started=%v unchanged=%v", result.Started, result.Unchanged))
+			}
 		}
 	}
 
@@ -171,6 +193,8 @@ type server struct {
 	recordingMu       sync.Mutex
 	recordingInFlight map[string]time.Time
 	tunnelSupervisor  *relay.Supervisor
+	egress            Egress
+	ingressMode       string
 	token             string
 	credentialSet     creds.CredentialSet
 	ignored           map[string]bool
@@ -212,7 +236,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/daemon/reload" && r.Method == http.MethodPost:
 		s.credentialSet = creds.ResolveAPIKeyEntries()
 		relayResult := relay.ApplyResult{}
-		if s.cfg.Relay.Enabled {
+		if s.ingressMode == config.IngressStandalone && s.cfg.Relay.Enabled {
 			if s.tunnelSupervisor == nil && len(s.credentialSet.Entries) > 0 {
 				s.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
 					TunnelURL:          config.ResolveRelayURL(s.cfg),
@@ -373,6 +397,7 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 			"startedAt":  s.st.startedAt,
 		},
 		"lastIngestAt": nilIfEmptyStr(lastIngest), "ingestCount": ingestCount,
+		"ingressMode":    s.ingressMode,
 		"relay":          relayStatus,
 		"tunnels":        relayStatus["tunnels"],
 		"credentialMode": s.credentialSet.Mode, "defaultLabel": defaultLabel,
@@ -405,8 +430,15 @@ func (s *server) relayStatusPayload() map[string]any {
 		}
 	}
 	note := "Relay 未启用，走直连 HTTP"
-	if s.cfg.Relay.Enabled {
-		note = "Relay 已启用但当前 CredentialSet 没有可用 api-key"
+	switch s.ingressMode {
+	case config.IngressProxied:
+		note = "ingress=proxied：隧道由宿主代理，daemon 仅收 ingest"
+	case config.IngressDirect:
+		note = "ingress=direct：隧道关闭，仅接受直接 POST"
+	default:
+		if s.cfg.Relay.Enabled {
+			note = "Relay 已启用但当前 CredentialSet 没有可用 api-key"
+		}
 	}
 	return map[string]any{
 		"mode": "standalone-http", "connected": false, "env": envhost.Name(), "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
@@ -472,6 +504,24 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func errBody(code, msg string) map[string]any {
 	return map[string]any{"ok": false, "error": map[string]any{"code": code, "message": msg}}
+}
+
+// resolveIngressMode 解析 ingress 模式，优先级：flag > env(YOOOCLAW_INGRESS) > config > standalone。
+func resolveIngressMode(opts StartOpts, cfg config.Config) string {
+	raw := firstNonEmptyStr(opts.IngressMode, os.Getenv("YOOOCLAW_INGRESS"), cfg.Ingress.Mode)
+	return config.NormalizeIngressMode(raw)
+}
+
+// resolveProxyEgress 装配 proxied 模式出站端口；未配置回调则丢弃并告警。
+func resolveProxyEgress(opts StartOpts, cfg config.Config, logger *Logger) Egress {
+	url := firstNonEmptyStr(opts.EgressCallbackURL, cfg.Ingress.EgressCallback.URL)
+	token := firstNonEmptyStr(opts.EgressCallbackToken, cfg.Ingress.EgressCallback.Token)
+	if url == "" {
+		logger.Warn("proxied 模式未配置 egress 回调，出站事件将被丢弃")
+		return NoopEgress{}
+	}
+	logger.Info("ingress=proxied：出站事件回投 " + url)
+	return NewProxyEgress(url, token, logger)
 }
 
 func firstNonEmptyStr(values ...string) string {

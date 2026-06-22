@@ -329,8 +329,10 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 			s.logger.Warn("[recording-status] 事件落盘失败: " + err.Error())
 		}
 	}
-	if s.tunnelSupervisor != nil {
-		s.tunnelSupervisor.PushEvent("recording.status", event)
+	if s.egress != nil {
+		if err := s.egress.PushEvent("recording.status", event); err != nil {
+			s.logger.Warn("[recording-status] 出站事件投递失败: " + err.Error())
+		}
 	}
 	if terminalRecordingStatuses[event.TransferStatus] {
 		s.releaseRecordingInFlight(event.RecordingID)
