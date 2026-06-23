@@ -205,6 +205,32 @@ The lifecycle flags are optional; normal human `daemon start`, `stop`, and
 `restart` usage remains unchanged. When supplied to `daemon stop`, owner and
 generation are checked before the process is terminated.
 
+### Ingress 模式（daemon 连接可选、可代理）
+
+「到手机的连接」分层后可由 `--ingress` 选择**唯一** owner，避免独立 CLI 与宿主插件
+（如 hermes-plugin）同时连 Relay 导致双连接、双 ingest。优先级 `--ingress` flag >
+`YOOOCLAW_INGRESS` 环境变量 > `config.ingress.mode`，默认 `standalone`。
+
+| 模式 | 到手机的连接 owner | Relay 隧道 | ingest 鉴权 | 出站事件 |
+| --- | --- | --- | --- | --- |
+| `standalone`（默认） | Go daemon 自己的隧道 | 启用 | gateway token / 本机 | 经 Relay 推回手机 |
+| `proxied`（嵌入插件） | 宿主插件代理 | **关闭** | **必须 api-key** | POST 回宿主回调 URL |
+| `direct`（LAN / 测试） | 调用方直接 POST | 关闭 | api-key / token | 丢弃（仅落盘） |
+
+`proxied` 下 daemon 不连隧道，只暴露 ingest API（`POST /notifications` `/recordings`
+`/images`，带 `Authorization: Bearer <api-key>`）供宿主把手机数据喂进来；出站事件
+（如 `recording.status`）经 `--egress-callback-url` 回投宿主，再由宿主转发手机。
+
+```bash
+# 嵌入宿主：关掉 Go 自身隧道，让宿主代理连接并接收回投事件
+yoooclaw daemon run-foreground --ingress proxied \
+  --egress-callback-url http://127.0.0.1:8765/yoooclaw/egress \
+  --egress-callback-token <token>
+```
+
+`daemon status` 输出新增 `ingressMode` 字段。完整分层设计见
+[docs/design/ingress-layering.md](docs/design/ingress-layering.md)。
+
 ## 三层命令体系
 
 按粒度从快捷到完全自定义，覆盖日常操作到任意 daemon 端点：

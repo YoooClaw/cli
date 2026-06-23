@@ -78,6 +78,41 @@ type RelaySection struct {
 	Enabled            bool   `json:"enabled"`
 }
 
+// Ingress 运行模式（见 docs/design/ingress-layering.md）。
+const (
+	// IngressStandalone：daemon 自连 Relay 隧道接收数据（默认）。
+	IngressStandalone = "standalone"
+	// IngressProxied：宿主（如 hermes-plugin）代理到手机的连接，daemon 关闭隧道、
+	// 仅暴露 ingest API 收数据，出站事件回投宿主 egress 回调。
+	IngressProxied = "proxied"
+	// IngressDirect：不连隧道、不回投，仅供 LAN / 测试直接 POST。
+	IngressDirect = "direct"
+)
+
+// IngressSection 选择数据入站的传输 owner（L3 传输层）。
+type IngressSection struct {
+	Mode           string                `json:"mode"`
+	EgressCallback EgressCallbackSection `json:"egressCallback"`
+}
+
+// EgressCallbackSection 是 proxied 模式下 daemon 把出站事件回投给宿主的地址。
+type EgressCallbackSection struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
+
+// NormalizeIngressMode 归一化 ingress 模式，未知/空值回退到 standalone。
+func NormalizeIngressMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case IngressProxied:
+		return IngressProxied
+	case IngressDirect:
+		return IngressDirect
+	default:
+		return IngressStandalone
+	}
+}
+
 // NotificationSection 通知存储配置。RetentionDays 为 nil 表示永久保存。
 type NotificationSection struct {
 	RetentionDays *int     `json:"retentionDays"`
@@ -121,6 +156,7 @@ type Config struct {
 	Daemon       DaemonSection       `json:"daemon"`
 	Auth         AuthSection         `json:"auth"`
 	Relay        RelaySection        `json:"relay"`
+	Ingress      IngressSection      `json:"ingress"`
 	Notification NotificationSection `json:"notification"`
 	LightRules   LightRulesSection   `json:"lightRules"`
 	AutoUpdate   AutoUpdateSection   `json:"autoUpdate"`
@@ -148,6 +184,7 @@ func Default(credentialsPath string) Config {
 			ReconnectBackoffMs: 2000,
 			Enabled:            true,
 		},
+		Ingress: IngressSection{Mode: IngressStandalone},
 		Notification: NotificationSection{
 			RetentionDays: nil,
 			IgnoredApps:   []string{},

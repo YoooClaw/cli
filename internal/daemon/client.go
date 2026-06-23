@@ -23,8 +23,21 @@ type Client struct {
 	timeout time.Duration
 }
 
-// NewClient 按 lock / config 推导 base URL 与 gateway token。
+// NewClient 按 lock / config 推导 base URL，并从 config/keychain 隐式解析 gateway token。
 func NewClient(p paths.Paths) *Client {
+	cfg, _ := config.Load(p)
+	tokenRef, _ := creds.ResolveGatewayToken(cfg)
+	return newClient(p, tokenRef.Value)
+}
+
+// NewClientWithToken 同 NewClient，但使用**显式传入**的 gateway token，不读 keychain/config。
+// 供 library（yclib）按 CredentialSource 注入凭证时使用。token 为空则后续请求不带鉴权头。
+func NewClientWithToken(p paths.Paths, token string) *Client {
+	return newClient(p, token)
+}
+
+// newClient 按 lock / config 推导 base URL，token 由调用方决定。
+func newClient(p paths.Paths, token string) *Client {
 	cfg, _ := config.Load(p)
 	state := State(p)
 	bind := cfg.Daemon.Bind
@@ -37,10 +50,9 @@ func NewClient(p paths.Paths) *Client {
 	if host == "0.0.0.0" {
 		host = "127.0.0.1"
 	}
-	tokenRef, _ := creds.ResolveGatewayToken(cfg)
 	return &Client{
 		BaseURL: "http://" + host + ":" + strconv.Itoa(port),
-		token:   tokenRef.Value,
+		token:   token,
 		timeout: 10 * time.Second,
 	}
 }
