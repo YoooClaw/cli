@@ -324,7 +324,7 @@ yoooclaw --profile work notification +today
 
 ### 录音与 Relay
 
-独立 daemon 用 Go 版录音存储、状态机、OSS 下载与 ASR 调度，并通过 `RelayClient + RelayDispatcher` 接收手机端 `recordings.sync` / `POST /recordings`。
+独立 daemon 用 Go 版录音存储、状态机、OSS 下载与 ASR 调度，并通过 `RelayClient + RelayDispatcher` 接收 App/云端的 `recordings.result.write`（写入转录/总结，可选下载音频）。
 
 ```bash
 yoooclaw recording events --since 1h --limit 50

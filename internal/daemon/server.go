@@ -102,8 +102,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	srv := &server{
 		ctx: ctx, cfg: cfg, logger: logger, st: st, storage: storage,
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
-		recordingInFlight: map[string]time.Time{},
-		token:             token, credentialSet: credentialSet, ignored: ignored, bind: bind,
+		token:         token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
 	}
 
@@ -190,8 +189,6 @@ type server struct {
 	storage           *notif.Storage
 	recordingStorage  *recording.Storage
 	recordingEventLog *recording.EventLog
-	recordingMu       sync.Mutex
-	recordingInFlight map[string]time.Time
 	tunnelSupervisor  *relay.Supervisor
 	egress            Egress
 	ingressMode       string
@@ -262,10 +259,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleIngest(w, r, authCtx, "notifications")
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
-	case path == "/recordings" && r.Method == http.MethodPost:
-		s.handleRecordingHTTP(w, r, authCtx)
 	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
-		s.handleRecordingGateway(w, r, path, authCtx)
+		s.handleRecordingGateway(w, r, path)
 	case path == "/images" && r.Method == http.MethodPost:
 		s.handleImageHTTP(w, r, authCtx)
 	case path == "/gateway/images.sync" && r.Method == http.MethodPost:
@@ -450,8 +445,8 @@ func (s *server) relayStatusPayload() map[string]any {
 
 func isIngestPath(path string) bool {
 	switch path {
-	case "/notifications", "/recordings", "/images",
-		"/gateway/notifications.push", "/gateway/recordings.sync", "/gateway/images.sync":
+	case "/notifications", "/images",
+		"/gateway/notifications.push", "/gateway/recordings.result.write", "/gateway/images.sync":
 		return true
 	}
 	return false
