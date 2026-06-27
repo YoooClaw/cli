@@ -8,8 +8,6 @@ const (
 	StatusPendingOSSUpload = "pending_oss_upload"
 	StatusUploadingOSS     = "uploading_oss"
 	StatusOSSUploaded      = "oss_uploaded"
-	StatusSyncingOpenClaw  = "syncing_openclaw"
-	StatusSyncFailed       = "sync_failed"
 	StatusSynced           = "synced"
 	StatusTranscribing     = "transcribing"
 	StatusTranscribeFailed = "transcribe_failed"
@@ -21,9 +19,7 @@ var validTransitions = map[string]map[string]bool{
 	StatusReceiving:        {StatusPendingOSSUpload: true},
 	StatusPendingOSSUpload: {StatusUploadingOSS: true},
 	StatusUploadingOSS:     {StatusOSSUploaded: true},
-	StatusOSSUploaded:      {StatusSyncingOpenClaw: true},
-	StatusSyncingOpenClaw:  {StatusSynced: true, StatusSyncFailed: true},
-	StatusSyncFailed:       {StatusSyncingOpenClaw: true},
+	StatusOSSUploaded:      {StatusSynced: true},
 	StatusSynced:           {StatusTranscribing: true},
 	StatusTranscribing:     {StatusTranscribed: true, StatusTranscribeFailed: true},
 	StatusTranscribeFailed: {StatusTranscribing: true},

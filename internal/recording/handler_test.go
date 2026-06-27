@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 )
@@ -18,63 +17,6 @@ type testLogger struct {
 func (l testLogger) Info(msg string)  { l.t.Log("[INFO] " + msg) }
 func (l testLogger) Warn(msg string)  { l.t.Log("[WARN] " + msg) }
 func (l testLogger) Error(msg string) { l.t.Log("[ERROR] " + msg) }
-
-func TestHandleRecordingSyncDownloadsFiles(t *testing.T) {
-	t.Parallel()
-	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/rec.ogg":
-			_, _ = w.Write([]byte("audio-bytes"))
-		case "/rec.srt":
-			_, _ = w.Write([]byte("1\n00:00:00,000 --> 00:00:01,000\nhello\n"))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer oss.Close()
-
-	storage := NewStorage(filepath.Join(t.TempDir(), "recordings"), testLogger{t})
-	if err := storage.Init(); err != nil {
-		t.Fatal(err)
-	}
-	var eventsMu sync.Mutex
-	var events []StatusEvent
-	result := HandleRecordingSyncWithClientLabel("rec_1", Metadata{
-		Name: "测试录音", DurationSec: 1, FileSizeBytes: 12,
-		CreatedAt:   "2026-06-04T17:16:50+08:00",
-		OssAudioURL: oss.URL + "/rec.ogg",
-		OssSrtURL:   oss.URL + "/rec.srt",
-		Markers:     []Marker{{Index: 0, TimestampMS: 500}},
-	}, "phone-a", storage, nil, testLogger{t}, SyncOptions{
-		NotifyStatus: func(event StatusEvent) {
-			eventsMu.Lock()
-			defer eventsMu.Unlock()
-			events = append(events, event)
-		},
-		DownloadOptions: DownloadOptions{MaxRetries: 1},
-	})
-	if !result.OK || result.TransferStatus != StatusSyncingOpenClaw {
-		t.Fatalf("unexpected sync result: %+v", result)
-	}
-
-	waitFor(t, time.Second, func() bool {
-		entry, ok := storage.FindByID("rec_1")
-		return ok && entry.Status == StatusSynced && entry.AudioFile == "audio/rec_1.ogg" && entry.SrtFile == "audio/rec_1.srt"
-	})
-	entry, _ := storage.FindByID("rec_1")
-	if entry.ClientLabel != "phone-a" {
-		t.Fatalf("client label mismatch: %q", entry.ClientLabel)
-	}
-	audio, err := os.ReadFile(filepath.Join(storage.AudioDir(), "rec_1.ogg"))
-	if err != nil || string(audio) != "audio-bytes" {
-		t.Fatalf("audio file mismatch: %q err=%v", string(audio), err)
-	}
-	eventsMu.Lock()
-	defer eventsMu.Unlock()
-	if len(events) == 0 || events[len(events)-1].TransferStatus != StatusSynced {
-		t.Fatalf("missing synced event: %+v", events)
-	}
-}
 
 func TestRunTranscriptionWorkflowWithModelProxy(t *testing.T) {
 	t.Setenv("OPENCLAW_ASR_POLL_INTERVAL_MS", "1")

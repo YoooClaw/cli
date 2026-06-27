@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
@@ -32,7 +31,6 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 		logger:            logger,
 		st:                &runtimeState{startedAt: "2026-06-07T10:00:00Z"},
 		storage:           storage,
-		recordingInFlight: map[string]time.Time{},
 		token:             token,
 		ignored:           map[string]bool{"com.spam.app": true},
 		bind:              "127.0.0.1",

@@ -72,7 +72,7 @@ type ResultWriteResult struct {
 
 // HandleRecordingResultWrite 处理 recordings.result.write：写入 App / 云端生成的
 // 转录与总结，覆盖同一录音的 transcript-data/transcripts/summaries 文件。
-// 找不到录音时按占位元数据 upsert 新建（与 recordings.sync 的 upsert 语义一致）；
+// 找不到录音时按占位元数据 upsert 新建；
 // 可选 ossUrl 时在后台下载并覆盖本地音频。不触发插件侧 ASR。
 func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logger Logger, opts SyncOptions) (ResultWriteResult, error) {
 	recordingID := strings.TrimSpace(params.RecordingID)
@@ -144,7 +144,6 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 }
 
 // buildPlaceholderMetadata 在找不到录音时，用请求里能拿到的信息拼一份占位元数据。
-// 后续 recordings.sync 会用真实元数据覆盖。
 func buildPlaceholderMetadata(recordingID string, params ResultWriteParams) Metadata {
 	name := recordingID
 	createdAt := nowISO()

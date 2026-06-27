@@ -3,30 +3,14 @@ package daemon
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	imgstore "github.com/YoooClaw/cli/internal/image"
 	"github.com/YoooClaw/cli/internal/recording"
 )
 
-const recordingInFlightTimeout = 5 * time.Minute
-
-var terminalRecordingStatuses = map[string]bool{
-	recording.StatusSynced:           true,
-	recording.StatusTranscribed:      true,
-	recording.StatusTranscribeFailed: true,
-	recording.StatusSyncFailed:       true,
-}
-
 var successfulRecordingStatuses = map[string]bool{
 	recording.StatusSynced:      true,
 	recording.StatusTranscribed: true,
-}
-
-type recordingSyncBody struct {
-	RecordingID string               `json:"recordingId"`
-	Recording   recording.Metadata   `json:"recording"`
-	ASR         *recording.AsrConfig `json:"asr,omitempty"`
 }
 
 type recordingIDBody struct {
@@ -34,43 +18,9 @@ type recordingIDBody struct {
 	ASR         *recording.AsrConfig `json:"asr,omitempty"`
 }
 
-func (s *server) handleRecordingHTTP(w http.ResponseWriter, r *http.Request, auth authResult) {
-	var body recordingSyncBody
-	if !decodeBody(w, r, &body) {
-		return
-	}
-	result, ok, code, message := s.doRecordingSync(body, auth.clientLabel)
-	if !ok {
-		writeJSON(w, 400, map[string]any{"ok": false, "error": message})
-		return
-	}
-	status := 200
-	if !result.OK {
-		status = 500
-	}
-	_ = code
-	writeJSON(w, status, result)
-}
-
-func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, path string, auth authResult) {
+func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, path string) {
 	method := strings.TrimPrefix(path, "/gateway/")
 	switch method {
-	case "recordings.sync":
-		var body recordingSyncBody
-		if !decodeBody(w, r, &body) {
-			return
-		}
-		result, ok, code, message := s.doRecordingSync(body, auth.clientLabel)
-		if !ok {
-			gatewayErr(w, code, message)
-			return
-		}
-		if result.OK {
-			gatewayOK(w, result)
-		} else {
-			gatewayErr(w, "SYNC_FAILED", firstNonEmptyStr(result.Error, "Unknown error"))
-		}
-
 	case "recordings.result.write":
 		var body recording.ResultWriteParams
 		if !decodeBody(w, r, &body) {
@@ -252,42 +202,6 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
-func (s *server) doRecordingSync(body recordingSyncBody, clientLabel string) (recording.SyncResult, bool, string, string) {
-	recordingID := strings.TrimSpace(body.RecordingID)
-	if recordingID == "" {
-		return recording.SyncResult{}, false, "INVALID_PARAMS", "recordingId is required"
-	}
-	if strings.TrimSpace(body.Recording.OssAudioURL) == "" || strings.TrimSpace(body.Recording.CreatedAt) == "" {
-		return recording.SyncResult{}, false, "INVALID_PARAMS", "recording with oss_audio_url and created_at is required"
-	}
-	if body.ASR != nil {
-		if errMsg := recording.ValidateAsrConfig(body.ASR); errMsg != "" {
-			return recording.SyncResult{}, false, "INVALID_PARAMS", errMsg
-		}
-	}
-	if s.isRecordingInFlight(recordingID) {
-		entry, ok := s.recordingStorage.FindByID(recordingID)
-		status := recording.StatusSyncingOpenClaw
-		if ok {
-			status = entry.Status
-		}
-		s.logger.Info("[recording-sync] in-flight 跳过重复 sync: " + recordingID + "（当前 " + status + "）")
-		return recording.SyncResult{OK: true, RecordingID: recordingID, TransferStatus: status}, true, "", ""
-	}
-	asr := s.resolveConfiguredASR(body.ASR)
-	if asr != nil && body.ASR == nil {
-		s.logger.Info("[recording-sync] 使用本地 asr-config.json（mode=" + asr.Mode + maskedKeyLog(asr) + "）")
-	}
-	s.markRecordingInFlight(recordingID)
-	result := recording.HandleRecordingSyncWithClientLabel(recordingID, body.Recording, clientLabel, s.recordingStorage, asr, s.logger, recording.SyncOptions{
-		NotifyStatus: s.notifyRecordingStatus,
-	})
-	if !result.OK {
-		s.releaseRecordingInFlight(recordingID)
-	}
-	return result, true, "", ""
-}
-
 func (s *server) handleImageHTTP(w http.ResponseWriter, r *http.Request, auth authResult) {
 	var body imgstore.SyncPayload
 	if !decodeBody(w, r, &body) {
@@ -334,41 +248,12 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 			s.logger.Warn("[recording-status] 出站事件投递失败: " + err.Error())
 		}
 	}
-	if terminalRecordingStatuses[event.TransferStatus] {
-		s.releaseRecordingInFlight(event.RecordingID)
-	}
 	if successfulRecordingStatuses[event.TransferStatus] {
 		if entry, ok := s.recordingStorage.FindByID(event.RecordingID); ok && entry.LastError != "" {
 			_ = s.recordingStorage.SetLastError(event.RecordingID, "")
-			s.logger.Info("[recording-sync] 终态 " + event.TransferStatus + " 清理 lastError 残留: " + event.RecordingID)
+			s.logger.Info("[recording-status] 终态 " + event.TransferStatus + " 清理 lastError 残留: " + event.RecordingID)
 		}
 	}
-}
-
-func (s *server) markRecordingInFlight(recordingID string) {
-	s.recordingMu.Lock()
-	defer s.recordingMu.Unlock()
-	s.recordingInFlight[recordingID] = time.Now().Add(recordingInFlightTimeout)
-}
-
-func (s *server) releaseRecordingInFlight(recordingID string) {
-	s.recordingMu.Lock()
-	defer s.recordingMu.Unlock()
-	delete(s.recordingInFlight, recordingID)
-}
-
-func (s *server) isRecordingInFlight(recordingID string) bool {
-	s.recordingMu.Lock()
-	defer s.recordingMu.Unlock()
-	deadline, ok := s.recordingInFlight[recordingID]
-	if !ok {
-		return false
-	}
-	if time.Now().After(deadline) {
-		delete(s.recordingInFlight, recordingID)
-		return false
-	}
-	return true
 }
 
 func recordingListItem(entry recording.Entry) map[string]any {

@@ -123,11 +123,17 @@ func (s *Storage) loadIndex() {
 	needsRewrite := false
 	now := nowISO()
 	for i := range wrapper.Recordings {
-		if wrapper.Recordings[i].Status == "transcribing" {
+		switch wrapper.Recordings[i].Status {
+		case "transcribing":
 			wrapper.Recordings[i].Status = "transcribe_failed"
 			if strings.TrimSpace(wrapper.Recordings[i].LastError) == "" {
 				wrapper.Recordings[i].LastError = "转写任务已中断，请重新发起转写"
 			}
+			wrapper.Recordings[i].UpdatedAt = now
+			needsRewrite = true
+		case "syncing_openclaw", "sync_failed":
+			// 旧版 recordings.sync 遗留的中间态，sync 已移除，归一到 synced。
+			wrapper.Recordings[i].Status = StatusSynced
 			wrapper.Recordings[i].UpdatedAt = now
 			needsRewrite = true
 		}
@@ -156,7 +162,7 @@ func (s *Storage) TranscriptsDir() string { return s.transcriptsDir }
 // SummariesDir 返回 summaries/ 绝对路径。
 func (s *Storage) SummariesDir() string { return s.summariesDir }
 
-// Ingest 收到 recordings.sync 后写入/更新元数据。
+// Ingest 写入/更新录音元数据（result.write 新建录音时调用）。
 func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel string) (Entry, error) {
 	if clientLabel == "" {
 		clientLabel = "default"
@@ -167,12 +173,8 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	now := nowISO()
 	if idx := s.findIndexLocked(recordingID); idx >= 0 {
 		entry := &s.index.Recordings[idx]
-		sameAudioURL := entry.Metadata.OssAudioURL == metadata.OssAudioURL
-		canPreserveSyncState := sameAudioURL &&
-			entry.AudioFile != "" &&
-			entry.Status != "syncing_openclaw" &&
-			entry.Status != "sync_failed"
-		if canPreserveSyncState {
+		canPreserveState := entry.Metadata.OssAudioURL == metadata.OssAudioURL && entry.AudioFile != ""
+		if canPreserveState {
 			entry.Metadata = metadata
 			entry.ClientLabel = clientLabel
 			entry.UpdatedAt = now
@@ -188,7 +190,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		s.removeRelativeLocked(entry.SummaryFile)
 		entry.Metadata = metadata
 		entry.ClientLabel = clientLabel
-		entry.Status = "syncing_openclaw"
+		entry.Status = StatusSynced
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
@@ -206,7 +208,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		ID:          recordingID,
 		ClientLabel: clientLabel,
 		Metadata:    metadata,
-		Status:      "syncing_openclaw",
+		Status:      StatusSynced,
 		IngestedAt:  now,
 		UpdatedAt:   now,
 	}
@@ -363,13 +365,6 @@ func (s *Storage) SetAudioFile(recordingID, filename string) error {
 	})
 }
 
-// SetSrtFile 记录本地打点文件。
-func (s *Storage) SetSrtFile(recordingID, filename string) error {
-	return s.updateEntry(recordingID, func(entry *Entry) {
-		entry.SrtFile = audioDirName + "/" + filename
-	})
-}
-
 // SetTranscriptDataFile 记录转写 JSON 文件。
 func (s *Storage) SetTranscriptDataFile(recordingID, filename string) error {
 	return s.updateEntry(recordingID, func(entry *Entry) {
@@ -434,9 +429,6 @@ func AudioFilename(recordingID, ossURL string) string {
 	return recordingID + extractAudioExt(ossURL)
 }
 
-// SrtFilename 生成打点文件名。
-func SrtFilename(recordingID string) string { return recordingID + ".srt" }
-
 // TranscriptDataFilename 生成转写 JSON 文件名。
 func TranscriptDataFilename(recordingID string) string { return recordingID + ".json" }
 
@@ -455,11 +447,6 @@ func SummaryFilename(recordingID string) string { return recordingID + ".md" }
 // AudioFilePath 返回音频文件绝对路径。
 func (s *Storage) AudioFilePath(recordingID, ossURL string) string {
 	return filepath.Join(s.audioDir, AudioFilename(recordingID, ossURL))
-}
-
-// SrtFilePath 返回打点文件绝对路径。
-func (s *Storage) SrtFilePath(recordingID string) string {
-	return filepath.Join(s.audioDir, SrtFilename(recordingID))
 }
 
 func extractAudioExt(rawURL string) string {

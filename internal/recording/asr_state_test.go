@@ -9,7 +9,7 @@ import (
 
 func TestValidateTransition(t *testing.T) {
 	t.Parallel()
-	if err := ValidateTransition(StatusSyncingOpenClaw, StatusSynced); err != nil {
+	if err := ValidateTransition(StatusSynced, StatusTranscribing); err != nil {
 		t.Errorf("valid transition should pass: %v", err)
 	}
 	err := ValidateTransition(StatusSynced, StatusReceiving)

@@ -49,12 +49,12 @@ func TestStoreIngestListFindRename(t *testing.T) {
 func TestStoreListByStatus(t *testing.T) {
 	s := newStore(t)
 	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")
-	syncing := s.ListByStatus(StatusSyncingOpenClaw)
-	if len(syncing) != 1 {
-		t.Errorf("expected 1 syncing, got %d", len(syncing))
+	synced := s.ListByStatus(StatusSynced)
+	if len(synced) != 1 {
+		t.Errorf("expected 1 synced, got %d", len(synced))
 	}
-	if got := s.ListByStatus(StatusSynced); len(got) != 0 {
-		t.Errorf("expected 0 synced, got %d", len(got))
+	if got := s.ListByStatus(StatusTranscribed); len(got) != 0 {
+		t.Errorf("expected 0 transcribed, got %d", len(got))
 	}
 }
 

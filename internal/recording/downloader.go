@@ -34,12 +34,6 @@ type DownloadResult struct {
 	Error     string        `json:"error,omitempty"`
 }
 
-// RecordingDownloadResult 是录音音频 + SRT 的下载结果。
-type RecordingDownloadResult struct {
-	Audio DownloadResult  `json:"audio"`
-	SRT   *DownloadResult `json:"srt,omitempty"`
-}
-
 // DownloadFile 从 URL 下载文件到 destPath。
 func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) DownloadResult {
 	timeout := opts.Timeout
@@ -116,18 +110,4 @@ func writeDownloadResponse(resp *http.Response, destPath string) error {
 		return err
 	}
 	return f.Close()
-}
-
-// DownloadRecordingFiles 下载录音音频与可选 SRT。
-func DownloadRecordingFiles(audioURL, srtURL, audioDestPath, srtDestPath string, logger Logger, opts DownloadOptions) RecordingDownloadResult {
-	audio := DownloadFile(audioURL, audioDestPath, logger, opts)
-	var srt *DownloadResult
-	if srtURL != "" {
-		res := DownloadFile(srtURL, srtDestPath, logger, opts)
-		if !res.OK {
-			logger.Warn("[downloader] 打点文件下载失败（非致命）: " + res.Error)
-		}
-		srt = &res
-	}
-	return RecordingDownloadResult{Audio: audio, SRT: srt}
 }
