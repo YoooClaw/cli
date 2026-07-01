@@ -1,173 +1,175 @@
 # @yoooclaw/cli
 
+English | [简体中文](README.zh-CN.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm version](https://img.shields.io/npm/v/@yoooclaw/cli.svg)](https://www.npmjs.com/package/@yoooclaw/cli)
 [![Go native](https://img.shields.io/badge/native-Go-00ADD8.svg)](https://go.dev/)
 
-yoooclaw 独立 CLI 工具 —— **自带后台守护进程（daemon），不依赖 openclaw 客户端在线**，为人类与 AI Agent 而生。本地接收手机通知、Relay 隧道、录音 ASR、灯效规则评估，统一 `--format` 输出，随包发布 Agent Skill 开箱即用。
+yoooclaw is a standalone CLI — **it ships its own background daemon and does not depend on the openclaw client being online** — built for both humans and AI agents. It receives phone notifications locally, manages the Relay tunnel, handles recording ASR and light-effect rule evaluation, exposes unified `--format` output, and ships with an Agent Skill that works out of the box.
 
-Service-oriented 命令树、三层命令体系、Agent-Native。
+Service-oriented command tree, a three-tier command system, Agent-Native.
 
-[安装](#安装与快速开始) · [Agent 技能](#agent-技能) · [鉴权](#鉴权) · [命令体系](#三层命令体系) · [进阶](#进阶用法) · [安全](#安全与风险提示) · [贡献](#开发与贡献)
+[Install](#installation--quickstart) · [Agent Skills](#agent-skills) · [Auth](#authentication) · [Commands](#three-tier-command-system) · [Advanced](#advanced-usage) · [Security](#security--risk-notice) · [Contributing](#development--contributing)
 
-## 为什么用 yoooclaw？
+## Why yoooclaw?
 
-- **自带守护进程** —— 本地 daemon 收通知、跑规则、连 Relay，不依赖 openclaw 客户端在线
-- **Agent-Native** —— 随包 [Skill](skills/) 开箱即用，Agent 零额外配置直接调 `yoooclaw` 命令
-- **三层命令体系** —— Shortcuts（人/AI 友好）→ Service Commands（结构化）→ Raw API（全覆盖），按粒度选择
-- **纯读磁盘的查询** —— 通知 / 录音 / 图片查询直接读 `~/.yoooclaw`，不需要 daemon 在跑
-- **统一输出契约** —— `--format json|pretty|table|ndjson`，成功失败同通道、结构可预测；本地 CLI 错误返回非零退出码，Raw/daemon HTTP 响应请同时检查 `ok` / HTTP status
-- **凭据安全** —— OS keychain 优先存储，多 api-key 管理，gateway token 鉴权本地 ingest
-- **Go 原生二进制** —— npm 薄 launcher + 平台子包，或直接安装原生 binary；macOS / Linux / Windows 全平台
+- **Ships its own daemon** — a local daemon receives notifications, evaluates rules, and connects to Relay, independent of whether the openclaw client is online
+- **Agent-Native** — the bundled [Skill](skills/) works out of the box; agents can call `yoooclaw` commands with zero extra config
+- **Three-tier command system** — Shortcuts (human/AI friendly) → Service Commands (structured) → Raw API (full coverage), pick the granularity you need
+- **Disk-only queries** — notification / recording / image queries read directly from `~/.yoooclaw`, no daemon required
+- **Unified output contract** — `--format json|pretty|table|ndjson`, success and failure share one channel with predictable structure; local CLI errors return a non-zero exit code, and Raw/daemon HTTP responses should be checked against both `ok` and HTTP status
+- **Credential security** — OS keychain storage by default, multi api-key management, gateway token auth for local ingest
+- **Native Go binary** — a thin npm launcher + platform subpackages, or install the native binary directly; full macOS / Linux / Windows support
 
-## 能力一览
+## Capabilities at a Glance
 
-| 领域                  | 能力                                                         | daemon |
-| --------------------- | ------------------------------------------------------------ | ------ |
-| 📱 通知 Notification  | 按时间/应用/发送人/关键词查询，今日/最近摘要，多维聚合统计，大批量分片总结 | 🟢     |
-| 🔄 同步 Sync          | 扫描/迭代未处理通知、按日期取详情、提交批次，供记忆系统消费   | 🟢     |
-| 🎙️ 录音 Recording     | 列举与查询录音、ASR 转写配置（api/model-proxy；local 已停用）、状态事件流跟随 | 🟢     |
-| 🖼️ 图片 Image         | 列举与查询图片、本地路径 / 缩略图解析                        | 🟢     |
-| 💡 灯效 Light         | 下发灯效指令到硬件（段 / 预设 / 规则三选一），连通性自检     | 🟡     |
-| 📐 灯效规则 Lightrule | 「通知 → 灯效」持久规则的增删改查、启用 / 停用               | 🟡     |
-| ⏰ 监控 Monitor       | cron 驱动的定时通知监控任务                                  | 🟡     |
-| 🔌 隧道 Tunnel        | Relay 隧道状态、强制重连、本地 ingest 回环自检               | 🟡     |
-| 🛡️ 网关 Gateway       | 模拟手机端调 daemon，校验本地连通与鉴权                      | 🟢/🟡  |
-| 📋 日志 Log           | daemon 日志检索与 error 级筛选                               | 🟢     |
-| ⚙️ 基础设施           | config / profile / auth / daemon / migrate / update / doctor / uninstall | 🟢/🔵  |
-| 🧩 技能 Skills        | 把随包 SKILL.md 安装到 Agent 可发现目录                      | 🟢     |
+| Domain                    | Capabilities                                                                                             | daemon |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ |
+| 📱 Notification            | Query by time/app/sender/keyword, today/recent summaries, multi-dimension aggregate stats, chunked summarization for large batches | 🟢     |
+| 🔄 Sync                     | Scan/iterate unprocessed notifications, fetch details by date, commit batches — feeds memory systems       | 🟢     |
+| 🎙️ Recording                | List/query recordings, ASR transcription config (api/model-proxy; local mode deprecated), follow status event stream | 🟢     |
+| 🖼️ Image                    | List/query images, resolve local paths / thumbnails                                                        | 🟢     |
+| 💡 Light                    | Send light-effect commands to hardware (segment / preset / rule — pick one), connectivity self-check       | 🟡     |
+| 📐 Lightrule                | CRUD for persistent "notification → light effect" rules, enable / disable                                  | 🟡     |
+| ⏰ Monitor                  | cron-driven scheduled notification monitoring jobs                                                          | 🟡     |
+| 🔌 Tunnel                   | Relay tunnel status, force reconnect, local ingest loopback self-check                                      | 🟡     |
+| 🛡️ Gateway                  | Simulate phone-side calls into the daemon, verify local connectivity & auth                                 | 🟢/🟡  |
+| 📋 Log                      | daemon log search & error-level filtering                                                                   | 🟢     |
+| ⚙️ Infrastructure           | config / profile / auth / daemon / migrate / update / doctor / uninstall                                    | 🟢/🔵  |
+| 🧩 Skills                   | Install bundled SKILL.md into the agent's discovery directory                                               | 🟢     |
 
-> daemon 标记：🟢 不需要 daemon · 🟡 需要 daemon 在跑 · 🔵 管理 daemon 自身。
+> daemon legend: 🟢 no daemon needed · 🟡 daemon must be running · 🔵 manages the daemon itself.
 
-## 安装与快速开始
+## Installation & Quickstart
 
-两种分发渠道，二者**功能一致**，按需选择。npm 包现在是极薄 Node launcher，真正执行的是 optionalDependencies 安装的 Go 原生二进制；直接安装渠道则跳过 Node，直接下载同一套 Go binary。
+Two distribution channels with **identical functionality** — pick whichever fits. The npm package is now a very thin Node launcher; the actual work is done by the native Go binary installed via optionalDependencies. The direct-install channel skips Node entirely and downloads the same Go binary.
 
-**平台支持**：npm 渠道支持 `darwin/linux` 的 `x64+arm64` 与 `win32-x64`（launcher 需 Node ≥ 18）；`install.sh` / GitHub Release 直装支持 `darwin/linux` 的 `x64+arm64`。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
+**Platform support**: the npm channel supports `darwin/linux` `x64+arm64` and `win32-x64` (the launcher needs Node ≥ 18); `install.sh` / GitHub Release direct install supports `darwin/linux` `x64+arm64`. On Windows, credentials are stored in plaintext at `~/.yoooclaw/credentials.json` (no OS keychain hardening — `yoooclaw doctor` will warn about this), and the daemon shuts down gracefully over HTTP.
 
-### 渠道 A — npm（薄 Node launcher + 平台 Go 二进制）
+### Channel A — npm (thin Node launcher + platform Go binary)
 
 ```bash
-# 免安装（每次拉最新版）
+# No install needed (always pulls the latest version)
 npx @yoooclaw/cli --help
 
-# 全局安装（提供 yoooclaw / yc 两个命令）
+# Global install (provides both the yoooclaw and yc commands)
 npm i -g @yoooclaw/cli
 yoooclaw --help
 yc --help
 ```
 
-### 渠道 B — 原生二进制（无需 Node）
+### Channel B — Native binary (no Node required)
 
-单文件 Go 可执行，冷启动和资源占用都比旧 TS/Bun 形态更轻。
+A single-file Go executable — lighter cold-start and resource footprint than the older TS/Bun implementation.
 
 ```bash
-# 自动检测平台、下载、校验 sha256、写到 ~/.local/bin
+# Auto-detect platform, download, verify sha256, install to ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh | sh
 
-# 指定版本 / 安装目录 / 覆盖
+# Pin a version / install directory / force overwrite
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh \
   | sh -s -- --version 0.2.0-beta.2 --dir ~/bin --force
 ```
 
-直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。Windows Go binary 目前随 npm 平台子包发布。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
+Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`. The Windows Go binary currently ships only via the npm platform subpackage. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
 
-> `yoooclaw update self` 会按当前安装来源给出对应升级命令（npm 走 `npm update -g`，二进制走 install.sh）。
+> `yoooclaw update self` gives you the right upgrade command for how you installed (npm → `npm update -g`, binary → install.sh).
 
-### 快速开始（人类用户）
+### Quickstart (Human Users)
 
 ```bash
-# 1. 交互式首次向导：生成 config + gateway token，并自动拉起 daemon
+# 1. Interactive first-run wizard: generates config + gateway token and starts the daemon
 yoooclaw config init
 
-# 2. 查鉴权与环境是否就绪
+# 2. Check auth and environment readiness
 yoooclaw auth status
 yoooclaw doctor
 
-# 3. 开始用：纯读磁盘查通知，不需要 daemon
+# 3. Start using it: notification queries read straight from disk, no daemon required
 yoooclaw notification +today
 ```
 
-### 快速开始（AI Agent）
+### Quickstart (AI Agent)
 
-> 以下步骤面向 AI Agent，部分需用户在终端确认。查询类命令纯读磁盘即可，控制类命令需 daemon 在跑。
+> The steps below are for AI agents; some may need a human to confirm in the terminal. Query commands are disk-only; control commands require the daemon to be running.
 
 ```bash
-# 1. 用 stdin 注入配置完成初始化（避免交互），随后自动起 daemon
+# 1. Initialize via stdin config injection (no interactive prompts), which also starts the daemon
 yoooclaw config init --non-interactive --from-file -
 
-# 2. 确认 daemon 在跑、隧道已连
+# 2. Confirm the daemon is running and the tunnel is connected
 yoooclaw daemon status
 yoooclaw tunnel status
 
-# 3. 流式查询通知（基于磁盘最新数据，勿依赖记忆）
-yoooclaw notification summary --app 微信 --from 2026-06-01T00:00:00+08:00 --format json
+# 3. Stream notification queries (always based on the latest disk data — don't rely on memory)
+yoooclaw notification summary --app WeChat --from 2026-06-01T00:00:00+08:00 --format json
 
-# 4. 把随包 Skill 装到当前 Agent 的发现目录
+# 4. Install the bundled Skill into the current agent's discovery directory
 yoooclaw skills install
 ```
 
-## Agent 技能
+## Agent Skills
 
-> **推荐搭配 [YoooClaw/skills](https://github.com/YoooClaw/skills) 一起用。** 该仓库分发的 `yoooclaw-cli` Skill 把命令路由、`--format` 输出契约、daemon 依赖与错误处理打包成一份给 Agent 的「使用说明书」，让 Codex / Claude Code 等开箱即懂怎么调 `yoooclaw`。先装 CLI，再装 Skill：
+> **Recommended pairing: [YoooClaw/skills](https://github.com/YoooClaw/skills).** The `yoooclaw-cli` Skill distributed from that repo packages command routing, the `--format` output contract, daemon dependencies, and error handling into an agent-facing "instruction manual", so Codex / Claude Code and similar agents understand how to call `yoooclaw` out of the box. Install the CLI first, then the Skill:
 
 ```bash
-# 1. 安装 CLI（前置）
+# 1. Install the CLI (prerequisite)
 npm install -g @yoooclaw/cli
 
-# 2. 安装 yoooclaw-cli Skill —— Codex + Claude Code
+# 2. Install the yoooclaw-cli Skill — Codex + Claude Code
 npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent codex --agent claude-code --copy --yes
 
-# 只装其中一个 agent：把 --agent 改成单个即可
+# Install for just one agent: pass a single --agent
 npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent claude-code --copy --yes
 ```
 
-> Hermes Agent 用 `hermes skills install https://raw.githubusercontent.com/YoooClaw/skills/main/yoooclaw-cli/SKILL.md`。装好后重启 Agent 会话即可被发现。
+> For Hermes Agent, use `hermes skills install https://raw.githubusercontent.com/YoooClaw/skills/main/yoooclaw-cli/SKILL.md`. Restart the agent session after installing so it can be discovered.
 
-### 本仓库随包内置 Skill
+### Built-in Skill (bundled in this repo)
 
-随包发布 [skills/](skills/) 下的 SKILL.md，教 Agent 直接调 `yoooclaw` 命令。在 openclaw 插件里由 `openclaw.plugin.json` 自动注册；独立 CLI 形态下用 `yoooclaw skills install` 软链到 Agent 的 skills 发现目录。
+This repo ships a SKILL.md under [skills/](skills/) that teaches agents to call `yoooclaw` commands directly. In the openclaw plugin it is auto-registered via `openclaw.plugin.json`; in the standalone CLI form, use `yoooclaw skills install` to symlink it into the agent's skills discovery directory.
 
-| Skill                         | 说明                                                                                                            |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `yoooclaw-notification-query` | 查询/汇总/总结手机通知：「看看最近的通知」「谁找过我」「总结最近约 N 条通知」。小批量走 `summary`、大批量走 `summary-job`，纯读磁盘、不需要 daemon |
-| `yoooclaw-lightrule-create`   | 从自然语言或 stdin 创建/管理「通知 → 灯效」持久规则，由 daemon 在 ingest 后评估命中并触发灯效（🟡）             |
-| `yoooclaw-tunnel-debug`       | 排查手机端推送链路：组合 auth / daemon / tunnel / gateway 状态定位本地配置、ingest 鉴权与 Relay WebSocket（🟡） |
+| Skill                          | Description                                                                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `yoooclaw-notification-query`  | Query/aggregate/summarize phone notifications: "show me recent notifications", "who's contacted me", "summarize the last N notifications". Small batches use `summary`, large batches use `summary-job`; disk-only, no daemon required |
+| `yoooclaw-lightrule-create`    | Create/manage persistent "notification → light effect" rules from natural language or stdin; the daemon evaluates and triggers light effects after ingest (🟡) |
+| `yoooclaw-tunnel-debug`        | Debug the phone-side push path: combine auth / daemon / tunnel / gateway status to pinpoint local config, ingest auth, and Relay WebSocket issues (🟡) |
 
 ```bash
-yoooclaw skills list                 # 列出随包发布的内置 Skill
-yoooclaw skills targets              # 查看支持的 Agent 目标和探测结果
-yoooclaw skills install              # 自动探测唯一 Agent 后软链安装
+yoooclaw skills list                 # List Skills bundled with this package
+yoooclaw skills targets              # View supported agent targets and detection results
+yoooclaw skills install              # Auto-detect the sole agent and symlink-install
 yoooclaw skills install --agent claude
-yoooclaw skills install --copy       # 复制而非软链（Windows 无管理员权限时用）
+yoooclaw skills install --copy       # Copy instead of symlink (use on Windows without admin rights)
 ```
 
-默认软链而非复制：`yoooclaw update self` 升级 CLI 后 Skill 内容自动跟随新版本。安装后重启 Agent 会话即可被发现。
+Symlinking is the default rather than copying: after `yoooclaw update self` upgrades the CLI, the Skill content updates automatically along with it. Restart the agent session after installing so it can be discovered.
 
-## 鉴权
+## Authentication
 
-yoooclaw 的鉴权围绕两类凭据：**api-key**（account 级，签名手机端上行 ingest）与 **gateway token**（本地 daemon HTTP 鉴权）。多数命令为本地检查（🟢），`auth check` 会端到端调 daemon（🟡）。
+yoooclaw's authentication revolves around two kinds of credentials: **api-key** (account-level, signs phone-side upstream ingest) and **gateway token** (local daemon HTTP auth). Most commands are local checks (🟢); `auth check` performs an end-to-end call to the daemon (🟡).
 
-| 命令                               | 说明                                                     |
-| ---------------------------------- | -------------------------------------------------------- |
-| `auth set-api-key <key>`           | 设置/轮换 account 级 default api-key（`-` 从 stdin 读）  |
-| `auth add-api-key <key>`           | 新增一条 multi-key api-key，可带 `--label` / `--default` |
-| `auth list-api-keys`               | 列出 api-key 条目（key 自动遮罩）                        |
-| `auth set-default-api-key <label>` | 切换 default api-key                                     |
-| `auth remove-api-key <label>`      | 删除指定 label 的 api-key                                |
-| `auth token-rotate`                | 生成新 gateway token；daemon 在跑时随后 restart 生效     |
-| `auth status`                      | 显示鉴权状态（本地检查，不调 daemon）                    |
-| `auth check`                       | 端到端鉴权体检（调 daemon `/daemon/status`）             |
+| Command                             | Description                                                       |
+| ------------------------------------ | ------------------------------------------------------------------- |
+| `auth set-api-key <key>`             | Set/rotate the account-level default api-key (`-` reads from stdin) |
+| `auth add-api-key <key>`             | Add a multi-key api-key entry, optionally with `--label` / `--default` |
+| `auth list-api-keys`                 | List api-key entries (keys are automatically masked)                |
+| `auth set-default-api-key <label>`   | Switch the default api-key                                          |
+| `auth remove-api-key <label>`        | Remove the api-key entry with the given label                       |
+| `auth token-rotate`                  | Generate a new gateway token; restart the daemon afterward if it's running |
+| `auth status`                        | Show auth status (local check, does not call the daemon)            |
+| `auth check`                         | End-to-end auth health check (calls daemon `/daemon/status`)        |
 
 ```bash
-# 从 stdin 安全写入 default api-key，并存入 OS keychain
+# Write the default api-key securely from stdin, stored in the OS keychain
 echo "ock-xxxx" | yoooclaw auth set-api-key - --keychain
 
-# 多设备/多客户端：按 label 管理多条 api-key
+# Multi-device/multi-client: manage multiple api-keys by label
 yoooclaw auth add-api-key - --label phone-a --default
 yoooclaw auth list-api-keys
 
-# 轮换 gateway token 后让 daemon 生效
+# Rotate the gateway token, then restart the daemon so it takes effect
 yoooclaw auth token-rotate
 yoooclaw daemon restart
 ```
@@ -205,69 +207,67 @@ The lifecycle flags are optional; normal human `daemon start`, `stop`, and
 `restart` usage remains unchanged. When supplied to `daemon stop`, owner and
 generation are checked before the process is terminated.
 
-### Ingress 模式（daemon 连接可选、可代理）
+### Ingress Modes (optional, proxyable daemon connection)
 
-「到手机的连接」分层后可由 `--ingress` 选择**唯一** owner，避免独立 CLI 与宿主插件
-（如 hermes-plugin）同时连 Relay 导致双连接、双 ingest。优先级 `--ingress` flag >
-`YOOOCLAW_INGRESS` 环境变量 > `config.ingress.mode`，默认 `standalone`。
+Once the "connection to the phone" is layered, `--ingress` selects the **single** owner, avoiding a double connection / double ingest when the standalone CLI and a host plugin (e.g. hermes-plugin) both try to connect to Relay. Priority order: `--ingress` flag > `YOOOCLAW_INGRESS` env var > `config.ingress.mode`, defaulting to `standalone`.
 
-| 模式 | 到手机的连接 owner | Relay 隧道 | ingest 鉴权 | 出站事件 |
+| Mode | Owner of the phone connection | Relay tunnel | Ingest auth | Outbound events |
 | --- | --- | --- | --- | --- |
-| `standalone`（默认） | Go daemon 自己的隧道 | 启用 | gateway token / 本机 | 经 Relay 推回手机 |
-| `proxied`（嵌入插件） | 宿主插件代理 | **关闭** | **必须 api-key** | POST 回宿主回调 URL |
-| `direct`（LAN / 测试） | 调用方直接 POST | 关闭 | api-key / token | 丢弃（仅落盘） |
+| `standalone` (default) | the Go daemon's own tunnel | enabled | gateway token / local | pushed back to the phone via Relay |
+| `proxied` (embedded in a host plugin) | the host plugin proxies it | **off** | **api-key required** | POSTed back to the host callback URL |
+| `direct` (LAN / testing) | the caller POSTs directly | off | api-key / token | discarded (disk write only) |
 
-`proxied` 下 daemon 不连隧道，只暴露 ingest API（`POST /notifications` `/recordings`
-`/images`，带 `Authorization: Bearer <api-key>`）供宿主把手机数据喂进来；出站事件
-（如 `recording.status`）经 `--egress-callback-url` 回投宿主，再由宿主转发手机。
+Under `proxied`, the daemon doesn't connect to the tunnel; it only exposes the ingest API (`POST /notifications` `/recordings`
+`/images`, with `Authorization: Bearer <api-key>`) so the host can feed phone data in. Outbound events
+(such as `recording.status`) are posted back to the host via `--egress-callback-url`, and the host forwards them to the phone.
 
 ```bash
-# 嵌入宿主：关掉 Go 自身隧道，让宿主代理连接并接收回投事件
+# Embedded in a host: turn off the Go daemon's own tunnel, let the host proxy the connection and receive callback events
 yoooclaw daemon run-foreground --ingress proxied \
   --egress-callback-url http://127.0.0.1:8765/yoooclaw/egress \
   --egress-callback-token <token>
 ```
 
-`daemon status` 输出新增 `ingressMode` 字段。完整分层设计见
-[docs/design/ingress-layering.md](docs/design/ingress-layering.md)。
+`daemon status` output now includes an `ingressMode` field. See the full layering design at
+[docs/design/ingress-layering.md](docs/design/ingress-layering.md).
 
-## 三层命令体系
+## Three-Tier Command System
 
-按粒度从快捷到完全自定义，覆盖日常操作到任意 daemon 端点：
+Ranging from quick shortcuts to fully custom calls, covering everyday operations up to any daemon endpoint:
 
 ### 1. Shortcuts
 
-以 `+` 前缀，对人类与 AI 都友好，自带智能默认值与表格输出。
+Prefixed with `+`, friendly to both humans and AI, with smart defaults and table output built in.
 
 ```bash
-yoooclaw notification +today          # 今日通知摘要
-yoooclaw notification +recent         # 最近 1 小时通知
-yoooclaw recording +latest            # 最新一条录音详情
-yoooclaw light +blink                 # 灯效连通性测试（red-strobe-3）
-yoooclaw lightrule +on                # 启用所有灯效规则
-yoooclaw tunnel +test                 # daemon 本地 ingest + 鉴权自检
-yoooclaw log +errors                  # 昨天起的 error 级日志
+yoooclaw notification +today          # Today's notification summary
+yoooclaw notification +recent         # Notifications from the last hour
+yoooclaw recording +latest            # Details of the most recent recording
+yoooclaw light +blink                 # Light-effect connectivity test (red-strobe-3)
+yoooclaw lightrule +on                # Enable all light-effect rules
+yoooclaw tunnel +test                 # Daemon local ingest + auth self-check
+yoooclaw log +errors                  # Error-level logs since yesterday
 ```
 
-运行 `yoooclaw <service> --help` 查看某 service 的全部快捷命令。
+Run `yoooclaw <service> --help` to see all shortcuts for a given service.
 
 ### 2. Service Commands
 
-`yoooclaw <service> <subcommand> [...flags]`，结构化访问各领域能力，service 列表见 `yoooclaw --help`。
+`yoooclaw <service> <subcommand> [...flags]` — structured access to each domain's capabilities; see the service list via `yoooclaw --help`.
 
 ```bash
-yoooclaw notification search --app 微信 --keyword 会议 --limit 50
+yoooclaw notification search --app WeChat --keyword meeting --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
-yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # 大批量通知分片总结：create→next→commit→result
+yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # Chunked summarization for large notification batches: create→next→commit→result
 yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
-yoooclaw lightrule create --from-file -          # 从 stdin 提交规则定义
+yoooclaw lightrule create --from-file -          # Submit a rule definition from stdin
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
 
 ### 3. Raw API
 
-`yoooclaw api <METHOD> <PATH> [--data ...]` 直达 daemon HTTP 端点，覆盖未被 service 命令封装的部分。
+`yoooclaw api <METHOD> <PATH> [--data ...]` reaches daemon HTTP endpoints directly, covering anything not wrapped by a service command.
 
 ```bash
 yoooclaw api GET /daemon/status
@@ -275,29 +275,29 @@ yoooclaw api POST /images --data @image.json
 echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 ```
 
-## 进阶用法
+## Advanced Usage
 
-### 全局 flags
+### Global flags
 
-| flag               | 说明                                                            |
-| ------------------ | --------------------------------------------------------------- |
-| `--profile <name>` | 切换 profile（默认 `default`）                                  |
-| `--format <fmt>`   | `json\|pretty\|table\|ndjson`（TTY 默认 pretty，管道默认 json） |
-| `--quiet`          | 抑制进度日志，只输出最终结果                                    |
-| `--no-color`       | 关闭终端颜色                                                    |
+| flag                | Description                                                    |
+| -------------------- | ------------------------------------------------------------------ |
+| `--profile <name>`   | Switch profile (default: `default`)                                |
+| `--format <fmt>`     | `json\|pretty\|table\|ndjson` (defaults to pretty on a TTY, json when piped) |
+| `--quiet`             | Suppress progress logs, output only the final result               |
+| `--no-color`          | Disable terminal colors                                            |
 
-### 输出格式
+### Output Formats
 
 ```bash
---format json      # 完整 JSON（管道默认）
---format pretty    # 人类友好的格式化输出（TTY 默认）
---format table     # 可读表格
---format ndjson    # 行分隔 JSON，便于逐条管道处理
+--format json      # Full JSON (default when piped)
+--format pretty    # Human-friendly formatted output (default on a TTY)
+--format table     # Readable table
+--format ndjson    # Newline-delimited JSON, convenient for line-by-line piping
 ```
 
-### 输出契约
+### Output Contract
 
-成功与失败共用同一通道（stdout）与可预测结构。本地 CLI 校验 / 运行时错误会额外以非零退出码表达；`api` 这类 Raw HTTP 命令会尽量保留 daemon 原始响应，脚本里应同时检查 `ok` 与 HTTP status：
+Success and failure share the same channel (stdout) with a predictable structure. Local CLI validation / runtime errors are additionally expressed via a non-zero exit code; Raw HTTP commands like `api` preserve the daemon's original response as much as possible, so scripts should check both `ok` and HTTP status:
 
 ```json
 {
@@ -310,11 +310,11 @@ echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 }
 ```
 
-错误码统一前缀 `YOOOCLAW_*`（见 [internal/errs/errors.go](internal/errs/errors.go)）。
+Error codes share a uniform `YOOOCLAW_*` prefix (see [internal/errs/errors.go](internal/errs/errors.go)).
 
-### 多 profile
+### Multiple Profiles
 
-`--profile <name>` 在不同账号/设备间切换，数据隔离在 `~/.yoooclaw/profiles/<profile>/`。
+`--profile <name>` switches between accounts/devices; data is isolated under `~/.yoooclaw/profiles/<profile>/`.
 
 ```bash
 yoooclaw profile list
@@ -322,28 +322,28 @@ yoooclaw profile create work
 yoooclaw --profile work notification +today
 ```
 
-### 录音与 Relay
+### Recording & Relay
 
-独立 daemon 用 Go 版录音存储、状态机、OSS 下载与 ASR 调度，并通过 `RelayClient + RelayDispatcher` 接收 App/云端的 `recordings.result.write`（写入转录/总结，可选下载音频）。
+The standalone daemon uses a Go implementation of recording storage, the state machine, OSS download, and ASR scheduling, and receives the app/cloud's `recordings.result.write` (writing transcripts/summaries, optionally downloading audio) via `RelayClient + RelayDispatcher`.
 
 ```bash
 yoooclaw recording events --since 1h --limit 50
 yoooclaw recording events --id <recording-id> --watch
 ```
 
-录音配置与事件分别落在当前 profile 的 `recordings/asr-config.json` 与 `recordings/state/events.jsonl`。
+Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively.
 
-### 数据目录
+### Data Directory
 
-`~/.yoooclaw/`（可用 `YOOOCLAW_HOME` 覆盖，便于测试 / 多实例）。布局见 [internal/paths/paths.go](internal/paths/paths.go) 与 PRD「数据模型」。
+`~/.yoooclaw/` (can be overridden with `YOOOCLAW_HOME`, useful for testing / multiple instances). See the layout in [internal/paths/paths.go](internal/paths/paths.go) and the PRD's "Data Model" section.
 
-## 安全与风险提示
+## Security & Risk Notice
 
-本工具会被 AI Agent 调用来自动化操作本地 daemon 与手机端链路，存在模型幻觉、不可预期执行与提示注入等固有风险。授权后 Agent 将在你的身份与授权范围内行事，可能导致敏感数据泄露或非预期操作，请谨慎使用。
+This tool can be invoked by AI agents to automate operations against the local daemon and the phone-side link, which carries inherent risks such as model hallucination, unpredictable execution, and prompt injection. Once authorized, the agent will act within your identity and authorization scope, which may lead to sensitive data exposure or unintended operations — use with caution.
 
-为降低风险，工具默认开启多层防护：daemon 仅监听本地端口、本地 ingest 经 gateway token 鉴权、凭据优先存入 OS keychain、终端输出对敏感字段遮罩。**强烈建议不要主动放宽这些默认安全设置**；一旦放宽，风险将显著上升，后果需自行承担。请充分理解全部使用风险——使用本工具即视为自愿承担相关责任。
+To reduce risk, the tool enables multiple layers of protection by default: the daemon only listens on a local port, local ingest is authenticated via gateway token, credentials are stored in the OS keychain by default, and sensitive fields are masked in terminal output. **We strongly recommend against relaxing these default security settings**; doing so significantly increases risk, and you assume full responsibility for the consequences. Please fully understand the risks involved — using this tool constitutes voluntary acceptance of the associated responsibility.
 
-## 开发与贡献
+## Development & Contributing
 
 ```bash
 go test ./...
@@ -352,28 +352,28 @@ scripts/build-go.sh --current
 dist-native/yoooclaw-darwin-arm64 --help
 ```
 
-完整文档见 [yc-docs/src/cli](https://github.com/YoooClaw/yc-docs/tree/master/src/cli)。欢迎提 Issue / PR；较大改动建议先开 Issue 讨论。
+Full documentation lives at [yc-docs/src/cli](https://github.com/YoooClaw/yc-docs/tree/master/src/cli). Issues and PRs are welcome; for larger changes, please open an issue to discuss first.
 
-### 源码结构
+### Source Layout
 
-| 文件 / 目录                                         | 职责 |
-| --------------------------------------------------- | ---- |
-| [cmd/yc/main.go](cmd/yc/main.go)                    | Go binary 入口 |
-| [internal/cli/root.go](internal/cli/root.go)        | cobra root、全局 flags、service 命令接线 |
-| [internal/cli/handler.go](internal/cli/handler.go)  | handler 包装、输出与错误渲染 |
-| [internal/output/output.go](internal/output/output.go) | `--format` 统一序列化 |
-| [internal/errs/errors.go](internal/errs/errors.go)  | `YOOOCLAW_*` 错误码 |
-| [internal/paths/paths.go](internal/paths/paths.go)  | `~/.yoooclaw/` 目录布局解析 |
-| [internal/daemon/server.go](internal/daemon/server.go) | daemon HTTP server、鉴权、Relay 装配 |
+| File / Directory                                     | Responsibility |
+| ------------------------------------------------------ | -------------- |
+| [cmd/yc/main.go](cmd/yc/main.go)                        | Go binary entry point |
+| [internal/cli/root.go](internal/cli/root.go)            | cobra root, global flags, service command wiring |
+| [internal/cli/handler.go](internal/cli/handler.go)      | handler wrapping, output and error rendering |
+| [internal/output/output.go](internal/output/output.go)  | unified `--format` serialization |
+| [internal/errs/errors.go](internal/errs/errors.go)      | `YOOOCLAW_*` error codes |
+| [internal/paths/paths.go](internal/paths/paths.go)      | `~/.yoooclaw/` directory layout resolution |
+| [internal/daemon/server.go](internal/daemon/server.go)  | daemon HTTP server, auth, Relay wiring |
 | [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
-| [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | Relay 入站帧到 daemon HTTP/gateway 的进程内分发 |
-| [internal/recording](internal/recording)            | 录音 OSS 下载、状态机、ASR、转写稿存储 |
-| [internal/image](internal/image)                    | 图片 OSS 下载与索引 |
-| [internal/light](internal/light)                    | 灯效线协议、预设、发送器 |
-| [internal/skills](internal/skills)                  | 内置 Skill 列举 / 安装到 Agent skills 目录 |
+| [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | in-process dispatch from inbound Relay frames to daemon HTTP/gateway |
+| [internal/recording](internal/recording)                | recording OSS download, state machine, ASR, transcript storage |
+| [internal/image](internal/image)                        | image OSS download and indexing |
+| [internal/light](internal/light)                        | light-effect wire protocol, presets, sender |
+| [internal/skills](internal/skills)                      | built-in Skill listing / installation into agent skills directories |
 
-发布产物全部由 Go 代码经 `scripts/build-go.sh` 生成（npm 平台子包 + 原生二进制）；早期的 TypeScript 实现已下线，历史可在 git 记录中查阅。
+All release artifacts are generated from the Go source via `scripts/build-go.sh` (npm platform subpackages + native binaries); the earlier TypeScript implementation has been retired and remains available only in git history.
 
 ## License
 
-MIT —— 见 [LICENSE](LICENSE)。
+MIT — see [LICENSE](LICENSE).
