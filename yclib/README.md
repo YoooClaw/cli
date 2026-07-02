@@ -1,6 +1,6 @@
 # yclib — yc-cli 进程内 Go Library
 
-`yclib` 是 `@yoooclaw/cli` 的**进程内公开 API 门面**，让 Go Agent 进程直接 `import` 调用 CLI 的能力，无需 fork 子进程、无 IPC、类型安全。
+`yclib` 是 `@yoooclaw/cli` 的**进程内公开 API 门面**，让 Go Agent 进程直接 `import` 调用 CLI 的业务能力，无需为每次调用 fork 子进程、无 IPC、类型安全。唯一例外是调用方显式触发的 `Daemon().Start`，它会创建长期运行的 daemon 子进程。
 
 > 设计约束见 software 仓库 `architecture/arc-cli-library-integration.md`（路径 C）。
 
@@ -68,7 +68,9 @@ type Config struct {
 
 > **daemon 生命周期（arc §5 硬约束）**：library **绝不隐式 fork daemon**。`Light()` 等
 > daemon 依赖方法在 daemon 未运行时只返回 `CodeDaemonNotRunning`，由调用方决定是否
-> `Daemon().Start(...)`。
+> `Daemon().Start(...)`。显式启动会 re-exec 当前 Go 宿主，并由 yclib 在宿主 `main`
+> 运行前接管子进程作为 daemon；宿主不需要实现 yc 的命令行入口。`Config.RootDir`
+> 会显式传入 daemon 子进程，不受宿主的 `YOOOCLAW_HOME` 影响。
 
 ```go
 c, _ := yclib.New(yclib.Config{

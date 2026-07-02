@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/config"
 )
@@ -59,11 +60,14 @@ func TestResolveProxyEgress(t *testing.T) {
 }
 
 func TestProxyEgressPushEvent(t *testing.T) {
-	var gotAuth, gotBody string
+	type callback struct {
+		auth string
+		body string
+	}
+	got := make(chan callback, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
+		got <- callback{auth: r.Header.Get("Authorization"), body: string(b)}
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()
@@ -73,19 +77,60 @@ func TestProxyEgressPushEvent(t *testing.T) {
 	if err := eg.PushEvent("recording.status", map[string]any{"id": "r1"}); err != nil {
 		t.Fatalf("PushEvent error: %v", err)
 	}
-	if gotAuth != "Bearer cbtok" {
-		t.Fatalf("Authorization = %q, want Bearer cbtok", gotAuth)
+	var received callback
+	select {
+	case received = <-got:
+	case <-time.After(time.Second):
+		t.Fatal("未收到异步 egress 回调")
+	}
+	if received.auth != "Bearer cbtok" {
+		t.Fatalf("Authorization = %q, want Bearer cbtok", received.auth)
 	}
 	var payload struct {
 		Event   string         `json:"event"`
 		Payload map[string]any `json:"payload"`
 	}
-	if err := json.Unmarshal([]byte(gotBody), &payload); err != nil {
-		t.Fatalf("回调 body 非法 JSON: %v (%s)", err, gotBody)
+	if err := json.Unmarshal([]byte(received.body), &payload); err != nil {
+		t.Fatalf("回调 body 非法 JSON: %v (%s)", err, received.body)
 	}
 	if payload.Event != "recording.status" || payload.Payload["id"] != "r1" {
 		t.Fatalf("回调 payload 不符: %+v", payload)
 	}
+}
+
+func TestProxyEgressDoesNotWaitForSlowCallback(t *testing.T) {
+	callbackStarted := make(chan struct{}, 1)
+	releaseCallback := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callbackStarted <- struct{}{}
+		<-releaseCallback
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	eg := NewProxyEgress(srv.URL, "", nil)
+	returned := make(chan error, 1)
+	go func() {
+		returned <- eg.PushEvent("recording.status", map[string]any{"id": "slow"})
+	}()
+
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("PushEvent error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		close(releaseCallback)
+		t.Fatal("PushEvent 被慢宿主回调阻塞")
+	}
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(time.Second):
+		close(releaseCallback)
+		t.Fatal("异步回调未开始")
+	}
+	close(releaseCallback)
 }
 
 func TestNoopEgressDropsEvents(t *testing.T) {

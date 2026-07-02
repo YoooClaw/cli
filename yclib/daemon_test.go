@@ -2,7 +2,10 @@ package yclib_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/YoooClaw/cli/yclib"
 )
@@ -22,6 +25,32 @@ func TestDaemonStop_NoopWhenNotRunning(t *testing.T) {
 	c, _ := yclib.New(yclib.Config{RootDir: t.TempDir()})
 	if err := c.Daemon().Stop(context.Background()); err != nil {
 		t.Fatalf("Stop on not-running should be no-op, got %v", err)
+	}
+}
+
+func TestDaemonStart_ReexecsEmbeddingHostWithConfiguredRoot(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("YOOOCLAW_HOME", t.TempDir())
+	c, _ := yclib.New(yclib.Config{RootDir: root, Profile: "embedded"})
+
+	st, err := c.Daemon().Start(context.Background(), yclib.DaemonStartOpts{})
+	if err != nil {
+		t.Fatalf("Start from embedding host: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Daemon().Stop(context.Background()) })
+	if !st.Running || st.Profile != "embedded" {
+		t.Fatalf("unexpected daemon status: %+v", st)
+	}
+	lockPath := filepath.Join(root, "profiles", "embedded", "daemon.lock")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("configured RootDir lock missing at %s: %v", lockPath, err)
+	}
+	stopStarted := time.Now()
+	if err := c.Daemon().Stop(context.Background()); err != nil {
+		t.Fatalf("Stop embedded daemon: %v", err)
+	}
+	if elapsed := time.Since(stopStarted); elapsed > 3*time.Second {
+		t.Fatalf("Stop embedded daemon took too long: %s", elapsed)
 	}
 }
 

@@ -54,7 +54,8 @@ func NewProxyEgress(url, token string, logger *Logger) *ProxyEgress {
 	}
 }
 
-// PushEvent 把 {event, payload} POST 给宿主回调。
+// PushEvent 异步把 {event, payload} POST 给宿主回调。请求会保留自身的 10s
+// 超时，但调用方只负责排队，不会被宿主回调的延迟阻塞 ingest 响应。
 func (e *ProxyEgress) PushEvent(event string, payload any) error {
 	body, err := json.Marshal(map[string]any{"event": event, "payload": payload})
 	if err != nil {
@@ -68,12 +69,17 @@ func (e *ProxyEgress) PushEvent(event string, payload any) error {
 	if e.token != "" {
 		req.Header.Set("Authorization", "Bearer "+e.token)
 	}
+	go e.deliver(event, req)
+	return nil
+}
+
+func (e *ProxyEgress) deliver(event string, req *http.Request) {
 	resp, err := e.client.Do(req)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("egress 回投失败 event=" + event + ": " + err.Error())
 		}
-		return err
+		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -81,9 +87,8 @@ func (e *ProxyEgress) PushEvent(event string, payload any) error {
 		if e.logger != nil {
 			e.logger.Warn(msg)
 		}
-		return fmt.Errorf("%s", msg)
+		return
 	}
-	return nil
 }
 
 // NoopEgress 丢弃出站事件（direct 模式，或 proxied 未配置回调时）。
