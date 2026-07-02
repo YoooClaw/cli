@@ -52,7 +52,7 @@ func (d *DaemonClient) Start(ctx context.Context, opts DaemonStartOpts) (DaemonS
 	if st := daemon.State(d.c.paths); st.Running {
 		return statusFrom(st), nil
 	}
-	lock, err := daemon.SpawnFor(d.c.paths, d.c.profile, daemon.StartOpts{
+	lock, err := daemon.SpawnFor(d.c.paths, d.c.rootDir, d.c.profile, daemon.StartOpts{
 		Bind: opts.Bind, Port: opts.Port, LogLevel: opts.LogLevel,
 	})
 	if err != nil {

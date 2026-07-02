@@ -49,6 +49,7 @@ type Config struct {
 // （不建目录、不写文件、不读环境变量）。Client 可并发只读使用。
 type Client struct {
 	profile            string
+	rootDir            string
 	paths              paths.Paths
 	logger             Logger
 	creds              CredentialSource
@@ -67,6 +68,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{
 		profile:            profile,
+		rootDir:            root,
 		paths:              paths.ForRoot(root, profile),
 		logger:             cfg.Logger,
 		creds:              cfg.Credentials,
