@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,6 +132,81 @@ func TestProxyEgressDoesNotWaitForSlowCallback(t *testing.T) {
 		t.Fatal("异步回调未开始")
 	}
 	close(releaseCallback)
+}
+
+func TestProxyEgressRetriesOnServerError(t *testing.T) {
+	oldDelays := proxyEgressRetryDelays
+	proxyEgressRetryDelays = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond}
+	defer func() { proxyEgressRetryDelays = oldDelays }()
+
+	var mu sync.Mutex
+	calls := 0
+	success := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n < 3 {
+			w.WriteHeader(http.StatusBadGateway) // 宿主整组重启窗口内的瞬时失败
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		success <- struct{}{}
+	}))
+	defer srv.Close()
+
+	eg := NewProxyEgress(srv.URL, "", nil)
+	if err := eg.PushEvent("recording.status", map[string]any{"id": "r1"}); err != nil {
+		t.Fatalf("PushEvent error: %v", err)
+	}
+	select {
+	case <-success:
+	case <-time.After(2 * time.Second):
+		t.Fatal("重试后仍未成功投递")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+}
+
+func TestProxyEgressDoesNotRetryClientError(t *testing.T) {
+	oldDelays := proxyEgressRetryDelays
+	proxyEgressRetryDelays = []time.Duration{time.Millisecond}
+	defer func() { proxyEgressRetryDelays = oldDelays }()
+
+	var mu sync.Mutex
+	calls := 0
+	first := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		select {
+		case first <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusUnauthorized) // token 不符属配置错误，重试无意义
+	}))
+	defer srv.Close()
+
+	eg := NewProxyEgress(srv.URL, "", nil)
+	if err := eg.PushEvent("recording.status", nil); err != nil {
+		t.Fatalf("PushEvent error: %v", err)
+	}
+	select {
+	case <-first:
+	case <-time.After(time.Second):
+		t.Fatal("未收到回调请求")
+	}
+	time.Sleep(50 * time.Millisecond) // 留出误重试的观察窗口
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("4xx 不应重试，calls = %d", calls)
+	}
 }
 
 func TestNoopEgressDropsEvents(t *testing.T) {
