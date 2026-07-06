@@ -11,12 +11,6 @@ import (
 	"time"
 )
 
-// 后端要求 appKey / templateId 写死在代码里（不再从 env 注入）。
-const (
-	lightAppKey     = "phone-notifications"
-	lightTemplateID = "1990771146010017800"
-)
-
 // Logger 是 sender 依赖的最小日志接口。
 type Logger interface {
 	Info(string)
@@ -32,36 +26,45 @@ type SendResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// SendLightEffect 把 segments 编码成线协议负载并 POST 到灯效云 API。
+// SendLightEffect 把结构化 segments POST 到 Notification Intelligence Service 的
+// 插件侧一次性亮灯 Facade（线协议编码与 message-service 调用由服务端完成）。
 func SendLightEffect(apiKey string, segments []map[string]any, repeatInput RepeatInput, reason, title string, logger Logger) SendResult {
 	apiURL := LightAPIURL()
 	resolvedTitle := resolveLightTitle(title, reason, segments)
 
 	if logger != nil {
-		logger.Info(fmt.Sprintf("Light sender: apiUrl=%s, appKey=%s…, templateId=%s, apiKey=%s, title=%s, reason=%s",
-			apiURL, truncate(lightAppKey, 8), lightTemplateID, maskKey(apiKey), resolvedTitle, reason))
+		logger.Info(fmt.Sprintf("Light sender: apiUrl=%s, apiKey=%s, title=%s, reason=%s",
+			apiURL, maskKey(apiKey), resolvedTitle, reason))
 	}
 	if apiURL == "" {
 		return SendResult{OK: false, Error: "灯效 API 未配置，请确认构建时已封装 OPENCLAW_HOST_*"}
 	}
 
-	bizContent, err := BuildLightEffectApnsBody(segments, repeatInput, reason)
+	if len(segments) == 0 {
+		return SendResult{OK: false, Error: "segments 不能为空"}
+	}
+	repeatTimes, err := NormalizeRepeatTimes(repeatInput)
 	if err != nil {
+		return SendResult{OK: false, Error: err.Error()}
+	}
+	if err := AssertAncsRepeatTimes(repeatTimes); err != nil {
 		return SendResult{OK: false, Error: err.Error()}
 	}
 	bizUniqueID := newUUID()
 
 	requestBody := map[string]any{
-		"appKey":      lightAppKey,
-		"bizMap":      map[string]any{"noticeType": "APP_NOTIFICATION_IMPORTANT", "title": resolvedTitle, "reason": reason},
-		"bizUniqueId": bizUniqueID,
-		"paramsMap":   map[string]any{"bizContent": bizContent},
-		"pushType":    "SPECIFY_PUSH",
-		"templateId":  lightTemplateID,
+		"title":        resolvedTitle,
+		"bizUniqueId":  bizUniqueID,
+		"repeat_times": repeatTimes,
+		"segments":     segments,
+	}
+	if strings.TrimSpace(reason) != "" {
+		requestBody["reason"] = reason
 	}
 	payload, _ := json.Marshal(requestBody)
 	if logger != nil {
-		logger.Info(fmt.Sprintf("Light sender: POST %s, bizUniqueId=%s, body=%s", apiURL, bizUniqueID, truncate(string(payload), 500)))
+		logger.Info(fmt.Sprintf("Light sender: POST %s, bizUniqueId=%s, segments_count=%d, repeat_times=%d",
+			apiURL, bizUniqueID, len(segments), repeatTimes))
 	}
 
 	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(payload))
@@ -84,6 +87,18 @@ func SendLightEffect(apiKey string, segments []map[string]any, repeatInput Repea
 			logger.Warn(fmt.Sprintf("Light sender: FAILED %d, url=%s, resBody=%s", res.StatusCode, apiURL, truncate(string(resBody), 500)))
 		}
 		return SendResult{OK: false, Status: res.StatusCode, Error: string(resBody)}
+	}
+
+	// 响应外壳：{code, msg, date, data:{success, requestId, bizUniqueId, message}}，code=000000 为成功。
+	var envelope struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if json.Unmarshal(resBody, &envelope) == nil && envelope.Code != "" && envelope.Code != "000000" {
+		if logger != nil {
+			logger.Warn(fmt.Sprintf("Light sender: FAILED code=%s, msg=%s, bizUniqueId=%s", envelope.Code, envelope.Msg, bizUniqueID))
+		}
+		return SendResult{OK: false, Status: res.StatusCode, BizUniqueID: bizUniqueID, Error: envelope.Code + ": " + envelope.Msg}
 	}
 	if logger != nil {
 		logger.Info(fmt.Sprintf("Light sender: OK bizUniqueId=%s, resBody=%s", bizUniqueID, truncate(string(resBody), 200)))
