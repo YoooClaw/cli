@@ -9,7 +9,7 @@ func TestLightAPIURL(t *testing.T) {
 	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
 	t.Setenv("OPENCLAW_HOST_PRODUCTION", "")
 	url := LightAPIURL()
-	if !strings.HasPrefix(url, "https://") || !strings.HasSuffix(url, "/api/message/tob/sendMessage") {
+	if !strings.HasPrefix(url, "https://") || !strings.HasSuffix(url, "/api/plugin/notification-intelligence/light-effects/send") {
 		t.Errorf("LightAPIURL = %q", url)
 	}
 }

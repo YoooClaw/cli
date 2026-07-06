@@ -97,9 +97,9 @@ func TestSendLightEffectConnectionError(t *testing.T) {
 func TestSendLightEffectBadBody(t *testing.T) {
 	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
 	t.Setenv("OPENCLAW_HOST_PRODUCTION", "127.0.0.1:1")
-	// 空 segments 会让 BuildLightEffectApnsBody 报错（编码前置校验）。
+	// 空 segments 在发送前被本地校验拦下，不发起请求。
 	res := SendLightEffect("k", nil, RepeatInput{}, "r", "t", nil)
 	if res.OK {
-		t.Error("empty segments should fail body build or send")
+		t.Error("empty segments should fail before send")
 	}
 }
