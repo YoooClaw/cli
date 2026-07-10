@@ -72,7 +72,7 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
 fi
 
 base=$(git rev-parse --abbrev-ref HEAD)
-echo "→ $pkgname：$current → $next（从 $base 切 $branch）"
+echo "→ ${pkgname}：${current} → ${next}（从 ${base} 切 ${branch}）"
 
 # ── 创建分支 + 改版本（仅替换首个 "version" 行，保证 1 行 diff）+ 提交 + 打 tag ──
 git checkout -b "$branch"
