@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -89,22 +91,77 @@ func spawn(p paths.Paths, executable string, args, env []string, release bool) (
 	if null != nil {
 		_ = null.Close()
 	}
-	if release {
-		_ = cmd.Process.Release()
-	} else {
+	if !release {
 		// An embedding host is long-lived, unlike the short-lived yc CLI parent.
 		// Keep a waiter so a stopped daemon cannot remain a zombie until the host exits.
 		go func() { _ = cmd.Wait() }()
 	}
 
-	for i := 0; i < 30; i++ {
+	lock, readyErr := waitForDaemonReady(p, cmd.Process.Pid)
+	if readyErr == nil {
+		if release {
+			_ = cmd.Process.Release()
+		}
+		return lock, nil
+	}
+
+	// Do not leave a failed child, zombie, or lock behind for the next retry.
+	_ = cmd.Process.Kill()
+	if release {
+		_ = cmd.Wait()
+	}
+	if current := ReadLock(p); current != nil && current.PID == cmd.Process.Pid {
+		RemoveLock(p)
+	}
+	return nil, errs.New(errs.CodeUnknown, "daemon 启动失败（3s 内 HTTP 未就绪）："+readyErr.Error()).
+		WithHint("查看 yoooclaw daemon logs 排查")
+}
+
+func waitForDaemonReady(p paths.Paths, pid int) (*Lock, error) {
+	var lastErr error = fmt.Errorf("尚未写出 lock")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
-		if st := State(p); st.Running {
-			return st.Lock, nil
+		lock := ReadLock(p)
+		if lock == nil || lock.PID != pid {
+			if !isProcessAlive(pid) || !isExpectedDaemonProcess(&Lock{PID: pid}) {
+				return nil, fmt.Errorf("daemon 进程已退出")
+			}
+			continue
+		}
+		if st := State(p); !st.Running {
+			return nil, fmt.Errorf("daemon lock 指向的进程无效")
+		}
+		probeTimeout := min(250*time.Millisecond, time.Until(deadline))
+		if probeTimeout <= 0 {
+			break
+		}
+		if err := probeDaemonHealth(lock, probeTimeout); err == nil {
+			return lock, nil
+		} else {
+			lastErr = err
 		}
 	}
-	return nil, errs.New(errs.CodeUnknown, "daemon 启动超时（3s 内未写出 lock）").
-		WithHint("查看 yoooclaw daemon logs 排查")
+	return nil, lastErr
+}
+
+func probeDaemonHealth(lock *Lock, timeout time.Duration) error {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(daemonBaseURL(lock.Bind, lock.Port) + "/health")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("health 返回 HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Server string `json:"server"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.Server != "yoooclaw" {
+		return fmt.Errorf("health 响应不是 yoooclaw daemon")
+	}
+	return nil
 }
 
 func replaceEnv(env []string, key, value string) []string {
@@ -133,8 +190,9 @@ func Stop(p paths.Paths) (map[string]any, error) {
 
 // StopWithOptions stops a daemon after optional owner/generation checks.
 func StopWithOptions(p paths.Paths, opts StopOpts) (map[string]any, error) {
-	lock := ReadLock(p)
-	if lock == nil || !isProcessAlive(lock.PID) {
+	state := State(p)
+	lock := state.Lock
+	if lock == nil || !state.Running {
 		RemoveLock(p)
 		return nil, errs.New(errs.CodeDaemonNotRunning, "daemon 未运行")
 	}
@@ -153,15 +211,20 @@ func StopWithOptions(p paths.Paths, opts StopOpts) (map[string]any, error) {
 	}
 	for i := 0; i < 100; i++ {
 		time.Sleep(100 * time.Millisecond)
-		current := ReadLock(p)
-		if current == nil || current.PID != lock.PID || !isProcessAlive(lock.PID) {
+		currentState := State(p)
+		current := currentState.Lock
+		if current == nil || current.PID != lock.PID || !currentState.Running {
 			if current != nil && current.PID == lock.PID {
 				RemoveLock(p)
 			}
 			return map[string]any{"ok": true, "stopped": lock.PID, "signal": signal}, nil
 		}
 	}
-	_ = forceKill(lock.PID)
+	// Revalidate identity before SIGKILL so PID reuse can never make a stale
+	// daemon lock terminate an unrelated WSL process.
+	if current := State(p); current.Running && current.Lock != nil && current.Lock.PID == lock.PID {
+		_ = forceKill(lock.PID)
+	}
 	if current := ReadLock(p); current != nil && current.PID == lock.PID {
 		RemoveLock(p)
 	}

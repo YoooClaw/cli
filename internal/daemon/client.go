@@ -5,9 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/config"
@@ -46,18 +46,15 @@ func newClient(p paths.Paths, token string) *Client {
 		bind = state.Lock.Bind
 		port = state.Lock.Port
 	}
-	host := bind
-	if host == "0.0.0.0" {
-		host = "127.0.0.1"
-	}
 	return &Client{
-		BaseURL: "http://" + host + ":" + strconv.Itoa(port),
+		BaseURL: daemonBaseURL(bind, port),
 		token:   token,
 		timeout: 10 * time.Second,
 	}
 }
 
-// Request 调 daemon；连接被拒/超时统一报 DAEMON_NOT_RUNNING。
+// Request 调 daemon；localhost 连接失败（包括 reset/EOF/超时）统一报
+// DAEMON_NOT_RUNNING，让生命周期监管可以清理陈旧 lock 并重启 daemon。
 func (c *Client) Request(method, path string, body any) (int, any, error) {
 	var reader io.Reader
 	if body != nil {
@@ -78,11 +75,8 @@ func (c *Client) Request(method, path string, body any) (int, any, error) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		if strings.Contains(err.Error(), "connection refused") || ctx.Err() != nil {
-			return 0, nil, errs.New(errs.CodeDaemonNotRunning, "daemon 未启动或无响应",
-				map[string]any{"hint": "先执行 yoooclaw daemon start", "baseUrl": c.BaseURL})
-		}
-		return 0, nil, errs.New(errs.CodeNetworkError, "调用 daemon 失败："+err.Error())
+		return 0, nil, errs.New(errs.CodeDaemonNotRunning, "daemon 未启动或无响应",
+			map[string]any{"hint": "先执行 yoooclaw daemon start", "baseUrl": c.BaseURL, "cause": err.Error()})
 	}
 	defer resp.Body.Close()
 	text, _ := io.ReadAll(resp.Body)
@@ -97,6 +91,14 @@ func (c *Client) Request(method, path string, body any) (int, any, error) {
 			map[string]any{"status": resp.StatusCode})
 	}
 	return resp.StatusCode, parsed, nil
+}
+
+func daemonBaseURL(bind string, port int) string {
+	host := bind
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // AssertRunning 确保 daemon 在运行，否则报 DAEMON_NOT_RUNNING（🟡 命令前置检查）。

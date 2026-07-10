@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/errs"
 )
@@ -19,11 +21,46 @@ func TestNewClientBuildsURL(t *testing.T) {
 	}
 }
 
+func TestDaemonBaseURLNormalizesWildcardAndIPv6(t *testing.T) {
+	if got := daemonBaseURL("0.0.0.0", 12345); got != "http://127.0.0.1:12345" {
+		t.Fatalf("wildcard base URL = %q", got)
+	}
+	if got := daemonBaseURL("::1", 12345); got != "http://[::1]:12345" {
+		t.Fatalf("IPv6 base URL = %q", got)
+	}
+}
+
 func TestClientRequestDaemonNotRunning(t *testing.T) {
 	c := &Client{BaseURL: "http://127.0.0.1:1", timeout: 1e9}
 	_, _, err := c.Request("GET", "/health", nil)
 	if e, ok := err.(*errs.Error); !ok || e.Code != errs.CodeDaemonNotRunning {
 		t.Errorf("connection refused should map to DAEMON_NOT_RUNNING, got %v", err)
+	}
+}
+
+func TestClientRequestConnectionResetIsDaemonNotRunning(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0) // close with RST, matching the WSL report.
+			}
+			_ = conn.Close()
+		}
+		close(accepted)
+	}()
+
+	c := &Client{BaseURL: "http://" + ln.Addr().String(), timeout: time.Second}
+	_, _, err = c.Request("GET", "/daemon/status", nil)
+	<-accepted
+	if e, ok := err.(*errs.Error); !ok || e.Code != errs.CodeDaemonNotRunning {
+		t.Fatalf("connection reset should map to DAEMON_NOT_RUNNING, got %v", err)
 	}
 }
 

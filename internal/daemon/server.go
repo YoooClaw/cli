@@ -71,6 +71,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	token := tokenRef.Value
 	credentialSet := creds.ResolveAPIKeyEntries()
 	executable, _ := os.Executable()
+	mode := resolveIngressMode(opts, cfg)
 
 	loopback := bind == "127.0.0.1" || bind == "::1" || bind == "localhost"
 	if !loopback && token == "" {
@@ -82,6 +83,13 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	ctx.Paths.MigrateLogs()
 	logger := NewLogger(ctx.Paths.DaemonLog, logLevel, false)
 	st := &runtimeState{startedAt: time.Now().UTC().Format(time.RFC3339)}
+	// Validate all prerequisites before publishing daemon.lock. Previously a
+	// proxied start without an api-key wrote the lock and then exited, leaving
+	// callers (especially after WSL restarts) talking to a dead or reused PID.
+	if mode == config.IngressProxied && len(credentialSet.Entries) == 0 {
+		return errs.New(errs.CodeUnauthorized, "proxied 模式需要至少一个 api-key 供宿主推送鉴权").
+			WithHint("先设置 api-key，或改用 --ingress=standalone")
+	}
 
 	storage := notif.NewStorage(ctx.Paths.Notifications, notif.PluginConfig{
 		RetentionDays: cfg.Notification.RetentionDays, IgnoredApps: cfg.Notification.IgnoredApps,
@@ -102,8 +110,12 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	srv := &server{
 		ctx: ctx, cfg: cfg, logger: logger, st: st, storage: storage,
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
-		token:         token, credentialSet: credentialSet, ignored: ignored, bind: bind,
+		token: token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
+		ingressMode: mode, egress: NoopEgress{},
+	}
+	if mode == config.IngressProxied {
+		srv.egress = resolveProxyEgress(opts, cfg, logger)
 	}
 
 	// 监听；端口被占自动 +1（最多 64 次）。
@@ -111,6 +123,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	if err != nil {
 		return err
 	}
+	defer ln.Close()
 	srv.port = actualPort
 
 	httpSrv := &http.Server{Handler: srv}
@@ -120,18 +133,13 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	}); err != nil {
 		return err
 	}
+	// Every non-os.Exit return path must retire the lock. This includes startup
+	// failures and unexpected http.Server termination.
+	defer RemoveLock(ctx.Paths)
 	logger.Info(fmt.Sprintf("yoooclaw daemon 启动：%s:%d（profile=%s, pid=%d）", bind, actualPort, ctx.Profile, os.Getpid()))
-	mode := resolveIngressMode(opts, cfg)
-	srv.ingressMode = mode
-	srv.egress = NoopEgress{}
 	switch mode {
 	case config.IngressProxied:
-		// 宿主代理到手机的连接：daemon 不连隧道，只暴露 ingest API。要求 api-key 供宿主推送鉴权。
-		if len(credentialSet.Entries) == 0 {
-			return errs.New(errs.CodeUnauthorized, "proxied 模式需要至少一个 api-key 供宿主推送鉴权").
-				WithHint("先设置 api-key，或改用 --ingress=standalone")
-		}
-		srv.egress = resolveProxyEgress(opts, cfg, logger)
+		// 宿主代理到手机的连接：daemon 不连隧道，只暴露 ingest API。
 		logger.Info("ingress=proxied：Relay 隧道关闭，等待宿主推送 ingest")
 	case config.IngressDirect:
 		logger.Info("ingress=direct：Relay 隧道关闭，仅接受直接 POST")
