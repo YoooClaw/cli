@@ -18,7 +18,7 @@ const ConfigVersion = 1
 
 // 默认值常量。
 const (
-	DefaultPort         = 18789
+	DefaultPort         = 18365
 	DefaultBind         = "127.0.0.1"
 	DefaultImageMaxByte = 20 * 1024 * 1024
 )
