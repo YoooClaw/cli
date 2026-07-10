@@ -39,7 +39,11 @@ func TestLockRoundTrip(t *testing.T) {
 	if got.Owner != "hermes-plugin" || got.Generation != "gen-1" || got.Executable != "/tmp/yoooclaw" || got.Version != "1.2.3" || got.Profile != "default" {
 		t.Fatalf("lock lifecycle fields not preserved: %+v", got)
 	}
-	// 自己的 pid 必然存活 -> Running
+	// 当前 test binary 不是 daemon，不能拿上面的伪 executable/cmdline 做身份
+	// 校验；另写一个 legacy lock 单独验证基础 PID 判活。
+	if err := WriteLock(p, Lock{PID: os.Getpid(), Bind: "127.0.0.1", Port: 18789}); err != nil {
+		t.Fatal(err)
+	}
 	st := State(p)
 	if !st.Running || st.Stale {
 		t.Errorf("self pid should be running: %+v", st)
