@@ -42,13 +42,17 @@ func ReadLock(p paths.Paths) *Lock {
 	return &lock
 }
 
-// State 返回 daemon 运行态（通过 signal 0 探活；陈旧锁视为未运行）。
+// State 返回 daemon 运行态（signal 0 + Linux/WSL /proc 身份校验；陈旧锁视为未运行）。
 func State(p paths.Paths) RunningState {
 	lock := ReadLock(p)
 	if lock == nil {
 		return RunningState{}
 	}
-	alive := isProcessAlive(lock.PID)
+	// signal 0 alone is not enough on Linux/WSL: it also succeeds for zombies,
+	// and a persisted lock can point at an unrelated process after PID reuse.
+	// When /proc metadata is available, verify that the PID still belongs to the
+	// daemon executable and command line recorded by the lock.
+	alive := isProcessAlive(lock.PID) && isExpectedDaemonProcess(lock)
 	return RunningState{Running: alive, Lock: lock, Stale: !alive}
 }
 

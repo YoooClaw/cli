@@ -120,7 +120,8 @@ func daemonStop(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error
 }
 
 func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	lock := daemon.ReadLock(ctx.Paths)
+	state := daemon.State(ctx.Paths)
+	lock := state.Lock
 	opts := startOptsFromCmd(cmd)
 	if lock != nil {
 		if opts.Bind == "" {
@@ -132,7 +133,7 @@ func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 		if opts.LogLevel == "" {
 			opts.LogLevel = lock.LogLevel
 		}
-		if daemon.IsProcessAlive(lock.PID) {
+		if state.Running {
 			if _, err := daemon.Stop(ctx.Paths); err != nil {
 				return nil, err
 			}
