@@ -1,8 +1,8 @@
 {
   "name": "@yoooclaw/cli",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
-  "description": "yoooclaw 独立 CLI（Go 实现）：本地守护进程接收手机通知、Relay 隧道、灯效规则评估，Agent-Native",
+  "description": "yoooclaw 独立 CLI（Go 实现）：本地守护进程接收手机通知和 Relay 数据，并通过云端 Notification Intelligence 管理灯效规则",
   "scripts": {
     "build": "scripts/build-go.sh",
     "build:current": "scripts/build-go.sh --current",

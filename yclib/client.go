@@ -34,6 +34,12 @@ type Config struct {
 	RootDir string
 	// Logger 可选；nil 表示静默。
 	Logger Logger
+	// APIKey 是 Notification Intelligence 等云端插件 API 使用的账号 key。
+	// 默认空且不做隐式解析，调用云端能力时返回 CodeCredentialMissing。
+	APIKey string
+	// NotificationIntelligenceLightRulesURL 可选覆盖云端灯效规则 API。
+	// 空值使用 production 插件侧默认入口。
+	NotificationIntelligenceLightRulesURL string
 
 	// Credentials 显式注入 daemon 依赖能力所需的凭证（如 gateway token）。
 	// nil 表示不提供；是否回退到隐式来源由 AllowImplicitCredentials 决定。
@@ -54,6 +60,8 @@ type Client struct {
 	logger             Logger
 	creds              CredentialSource
 	allowImplicitCreds bool
+	apiKey             string
+	lightRulesURL      string
 }
 
 // New 按显式 Config 装配 Client。不产生任何 IO 副作用。
@@ -73,6 +81,8 @@ func New(cfg Config) (*Client, error) {
 		logger:             cfg.Logger,
 		creds:              cfg.Credentials,
 		allowImplicitCreds: cfg.AllowImplicitCredentials,
+		apiKey:             strings.TrimSpace(cfg.APIKey),
+		lightRulesURL:      strings.TrimSpace(cfg.NotificationIntelligenceLightRulesURL),
 	}, nil
 }
 
@@ -99,6 +109,7 @@ const (
 	CodeDaemonNotRunning   = errs.CodeDaemonNotRunning
 	CodeUnauthorized       = errs.CodeUnauthorized
 	CodeNetworkError       = errs.CodeNetworkError
+	CodeCredentialMissing  = errs.CodeCredentialMissing
 )
 
 // ErrorCode 提取错误码；非结构化错误返回空串。便于调用方做类型安全分支，

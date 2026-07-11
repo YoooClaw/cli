@@ -169,7 +169,6 @@ func TestDaemonDependentCommandsWithoutDaemon(t *testing.T) {
 	// 这些 🟡 命令在 daemon 未运行时应统一报 DAEMON_NOT_RUNNING
 	cases := [][]string{
 		{"light", "send", "--preset", "red-steady"},
-		{"lightrule", "list"},
 		{"tunnel", "status"},
 	}
 	for _, args := range cases {
@@ -182,6 +181,17 @@ func TestDaemonDependentCommandsWithoutDaemon(t *testing.T) {
 		if errObj["code"] != "YOOOCLAW_DAEMON_NOT_RUNNING" {
 			t.Errorf("%v expected DAEMON_NOT_RUNNING, got %v", args, errObj["code"])
 		}
+	}
+}
+
+func TestLightRuleCreateRequiresRuleTextBeforeNetwork(t *testing.T) {
+	sandbox(t)
+	out, code := execCLI(t, "lightrule", "create")
+	if code == 0 {
+		t.Fatal("lightrule create without ruleText should fail")
+	}
+	if got := decode(t, out)["error"].(map[string]any)["code"]; got != "YOOOCLAW_INVALID_ARGUMENT" {
+		t.Fatalf("error code = %v, output=%s", got, out)
 	}
 }
 

@@ -1,6 +1,9 @@
 package light
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -101,5 +104,72 @@ func TestSendLightEffectBadBody(t *testing.T) {
 	res := SendLightEffect("k", nil, RepeatInput{}, "r", "t", nil)
 	if res.OK {
 		t.Error("empty segments should fail before send")
+	}
+}
+
+func TestSendLightEffectUsesNotificationIntelligence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/plugin/notification-intelligence/light-effects/send" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.Header.Get("X-Api-Key-Id") != "ock_test_key" {
+			t.Fatalf("api key = %q", r.Header.Get("X-Api-Key-Id"))
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["bizUniqueId"] != "tool-call-1" || body["reason"] != "测试亮灯" {
+			t.Fatalf("body = %+v", body)
+		}
+		_, _ = w.Write([]byte(`{"code":"000000","data":{"success":true,"bizUniqueId":"server-id"}}`))
+	}))
+	defer server.Close()
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_EFFECTS_SEND_URL", server.URL)
+
+	segments := []map[string]any{{"mode": "steady", "duration_s": float64(1), "brightness": float64(100), "color": color(255, 0, 0)}}
+	result := SendLightEffect("Bearer ock_test_key", segments, RepeatInput{}, "测试亮灯", "测试", nil, SendOptions{BizUniqueID: "tool-call-1"})
+	if !result.OK || result.Via != "notification-intelligence" || result.BizUniqueID != "server-id" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSendLightEffectFallsBackToLegacy(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/plugin/notification-intelligence/light-effects/send":
+			http.NotFound(w, r)
+		case "/api/message/tob/sendMessage":
+			_, _ = w.Write([]byte(`{"code":"000000","data":{"success":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	previousClient := lightHTTPClient
+	lightHTTPClient = server.Client()
+	defer func() { lightHTTPClient = previousClient }()
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_EFFECTS_SEND_URL", server.URL)
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
+	t.Setenv("OPENCLAW_HOST_PRODUCTION", server.URL)
+	t.Setenv("LIGHT_TEMPLATE_ID", "template-1")
+
+	segments := []map[string]any{{"mode": "steady", "duration_s": float64(1), "brightness": float64(100), "color": color(255, 0, 0)}}
+	result := SendLightEffect("ock_test_key", segments, RepeatInput{}, "测试", "测试", nil)
+	if !result.OK || result.Via != "message-service" || result.BizUniqueID == "" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSendLightEffectDoesNotFallbackOnBusinessFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"000000","data":{"success":false,"message":"rejected"}}`))
+	}))
+	defer server.Close()
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_EFFECTS_SEND_URL", server.URL)
+	t.Setenv("LIGHT_TEMPLATE_ID", "template-1")
+
+	segments := []map[string]any{{"mode": "steady", "duration_s": float64(1), "brightness": float64(100), "color": color(255, 0, 0)}}
+	result := SendLightEffect("ock_test_key", segments, RepeatInput{}, "测试", "测试", nil)
+	if result.OK || result.Via != "notification-intelligence" || result.Error != "rejected" {
+		t.Fatalf("result = %+v", result)
 	}
 }

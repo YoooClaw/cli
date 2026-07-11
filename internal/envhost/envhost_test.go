@@ -56,3 +56,22 @@ func TestIsDefaultHost(t *testing.T) {
 		t.Error("empty host should not be default")
 	}
 }
+
+func TestNotificationIntelligenceURLs(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
+	t.Setenv("OPENCLAW_HOST_TEST", "")
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_RULES_URL", "https://example.com/api/notification-intelligence/light-rules/")
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_EFFECTS_SEND_URL", "")
+
+	if got := NotificationIntelligenceLightRulesURL(); got != "https://example.com/api/plugin/notification-intelligence/light-rules" {
+		t.Fatalf("rules url = %q", got)
+	}
+	if got := NotificationIntelligenceLightEffectsSendURL(); got != "https://example.com/api/plugin/notification-intelligence/light-effects/send" {
+		t.Fatalf("effects url = %q", got)
+	}
+
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_EFFECTS_SEND_URL", "https://override.example/light/send")
+	if got := NotificationIntelligenceLightEffectsSendURL(); got != "https://override.example/light/send/light-effects/send" {
+		t.Fatalf("custom effects url = %q", got)
+	}
+}

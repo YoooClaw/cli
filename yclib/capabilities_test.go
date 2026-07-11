@@ -79,14 +79,14 @@ func TestRecordings_ListGet(t *testing.T) {
 	}
 }
 
-func TestLightRules_RequireDaemon(t *testing.T) {
+func TestLightRules_RequireAPIKey(t *testing.T) {
 	c, _ := yclib.New(yclib.Config{RootDir: t.TempDir()})
 	ctx := context.Background()
-	if _, err := c.LightRules().List(ctx); yclib.ErrorCode(err) != yclib.CodeDaemonNotRunning {
-		t.Fatalf("List ErrorCode = %q, want %q", yclib.ErrorCode(err), yclib.CodeDaemonNotRunning)
+	if _, err := c.LightRules().List(ctx); yclib.ErrorCode(err) != yclib.CodeCredentialMissing {
+		t.Fatalf("List ErrorCode = %q, want credential missing", yclib.ErrorCode(err))
 	}
-	if err := c.LightRules().Delete(ctx, "x"); yclib.ErrorCode(err) != yclib.CodeDaemonNotRunning {
-		t.Fatalf("Delete ErrorCode = %q, want %q", yclib.ErrorCode(err), yclib.CodeDaemonNotRunning)
+	if err := c.LightRules().Delete(ctx, "x"); yclib.ErrorCode(err) != yclib.CodeCredentialMissing {
+		t.Fatalf("Delete ErrorCode = %q, want credential missing", yclib.ErrorCode(err))
 	}
 }
 

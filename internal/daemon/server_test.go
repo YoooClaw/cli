@@ -11,6 +11,7 @@ import (
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/paths"
 )
@@ -140,6 +141,66 @@ func TestServerNotFound(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 404 {
 		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestLightRulesGatewayProxiesCloudAPI(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/plugin/notification-intelligence/light-rules" || r.Method != http.MethodPost {
+			t.Fatalf("upstream request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("X-Api-Key-Id") != "ock_test_key" {
+			t.Fatalf("api key header = %q", r.Header.Get("X-Api-Key-Id"))
+		}
+		_, _ = w.Write([]byte(`{"code":"000000","data":{"success":true,"id":"rule-1","name":"boss-wechat"}}`))
+	}))
+	defer upstream.Close()
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_RULES_URL", upstream.URL)
+
+	_, ts := newTestServer(t, "")
+	if _, err := creds.SetAPIKey("ock_test_key", false); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/gateway/lightrules.create", "application/json", strings.NewReader(`{"ruleText":"老板发微信时红灯快闪"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true {
+		t.Fatalf("gateway body = %+v", body)
+	}
+}
+
+func TestLightSendRuleResolvesCloudRule(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/plugin/notification-intelligence/light-rules":
+			_, _ = w.Write([]byte(`{"code":"000000","data":{"success":true,"rules":[{"id":"rule-1","name":"boss-wechat","repeat_times":1,"segments":[{"mode":"steady","duration_s":1,"brightness":128,"color":{"r":255,"g":0,"b":0}}]}]}}`))
+		case "/api/plugin/notification-intelligence/light-effects/send":
+			_, _ = w.Write([]byte(`{"code":"000000","data":{"success":true,"bizUniqueId":"server-biz"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_RULES_URL", upstream.URL)
+	t.Setenv("NOTIFICATION_INTELLIGENCE_LIGHT_EFFECTS_SEND_URL", upstream.URL)
+
+	_, ts := newTestServer(t, "")
+	if _, err := creds.SetAPIKey("ock_test_key", false); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/light/send", "application/json", strings.NewReader(`{"rule":"rule-1","reason":"rule test"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true || body["bizUniqueId"] != "server-biz" {
+		t.Fatalf("light send body = %+v", body)
 	}
 }
 

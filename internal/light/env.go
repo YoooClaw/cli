@@ -2,9 +2,10 @@ package light
 
 import "github.com/YoooClaw/cli/internal/envhost"
 
-// LightAPIURL 返回灯效云 API 端点（主机随 PHONE_NOTIFICATIONS_ENV 切换，见 internal/envhost）。
-// 一次性亮灯走 Notification Intelligence Service 的插件侧 Facade，
-// 由服务端负责 LightSegment 校验、线协议编码与 message-service 调用。
+// LightAPIURL 返回 Notification Intelligence Service 的插件侧一次性亮灯端点。
 func LightAPIURL() string {
-	return "https://" + envhost.Host() + "/api/plugin/notification-intelligence/light-effects/send"
+	return envhost.NotificationIntelligenceLightEffectsSendURL()
 }
+
+// LegacyLightAPIURL 返回 OpenClaw plugin 用于兼容旧部署的 message-service 入口。
+func LegacyLightAPIURL() string { return envhost.LegacyLightMessageServiceURL() }

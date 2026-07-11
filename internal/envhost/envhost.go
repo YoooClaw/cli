@@ -11,6 +11,14 @@ import (
 	"strings"
 )
 
+const (
+	NotificationIntelligenceLightRulesPluginPath       = "/api/plugin/notification-intelligence/light-rules"
+	NotificationIntelligenceLightEffectsSendPluginPath = "/api/plugin/notification-intelligence/light-effects/send"
+	notificationIntelligenceLightRulesAppPath          = "/api/notification-intelligence/light-rules"
+	notificationIntelligencePluginBasePath             = "/api/plugin/notification-intelligence"
+	notificationIntelligenceAppBasePath                = "/api/notification-intelligence"
+)
+
 // defaultHosts 是各环境默认主机（构建期可通过 OPENCLAW_HOST_* 注入覆盖）。
 var defaultHosts = map[string]string{
 	"development": "openclaw-service-dev.yoooclaw.com",
@@ -59,6 +67,72 @@ func Host() string {
 		return h
 	}
 	return defaultHosts[env]
+}
+
+// HTTPSBaseURL 返回当前环境的 HTTPS origin。
+func HTTPSBaseURL() string {
+	return "https://" + Host()
+}
+
+// NotificationIntelligenceLightRulesURL 返回插件侧云端灯效规则 API。
+// 接受与 OpenClaw plugin 相同的 URL 覆盖和归一化规则。
+func NotificationIntelligenceLightRulesURL() string {
+	configured := strings.TrimSpace(os.Getenv("NOTIFICATION_INTELLIGENCE_LIGHT_RULES_URL"))
+	if configured == "" {
+		configured = HTTPSBaseURL() + NotificationIntelligenceLightRulesPluginPath
+	}
+	return NormalizeNotificationIntelligenceLightRulesURL(configured)
+}
+
+// NotificationIntelligenceLightEffectsSendURL 返回插件侧一次性亮灯 API。
+// 未单独配置时由 light-rules URL 推导，使两条接口始终同源。
+func NotificationIntelligenceLightEffectsSendURL() string {
+	configured := strings.TrimSpace(os.Getenv("NOTIFICATION_INTELLIGENCE_LIGHT_EFFECTS_SEND_URL"))
+	if configured == "" {
+		configured = NotificationIntelligenceLightRulesURL()
+	}
+	return NormalizeNotificationIntelligenceLightEffectsSendURL(configured)
+}
+
+// LegacyLightMessageServiceURL 返回 OpenClaw plugin 的历史兼容下发入口。
+func LegacyLightMessageServiceURL() string {
+	return HTTPSBaseURL() + "/api/message/tob/sendMessage"
+}
+
+// NormalizeNotificationIntelligenceLightRulesURL 把 origin、App 侧路径或
+// Notification Intelligence base path 统一成插件侧 light-rules 路径。
+func NormalizeNotificationIntelligenceLightRulesURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" || strings.HasSuffix(trimmed, NotificationIntelligenceLightRulesPluginPath) {
+		return trimmed
+	}
+	if strings.HasSuffix(trimmed, notificationIntelligenceLightRulesAppPath) {
+		return strings.TrimSuffix(trimmed, notificationIntelligenceLightRulesAppPath) + NotificationIntelligenceLightRulesPluginPath
+	}
+	if strings.HasSuffix(trimmed, notificationIntelligencePluginBasePath) {
+		return trimmed + "/light-rules"
+	}
+	if strings.HasSuffix(trimmed, notificationIntelligenceAppBasePath) {
+		return strings.TrimSuffix(trimmed, notificationIntelligenceAppBasePath) + NotificationIntelligenceLightRulesPluginPath
+	}
+	if regexp.MustCompile(`^https?://[^/]+$`).MatchString(trimmed) {
+		return trimmed + NotificationIntelligenceLightRulesPluginPath
+	}
+	return trimmed
+}
+
+// NormalizeNotificationIntelligenceLightEffectsSendURL 把规则 API 或 origin
+// 统一成插件侧 light-effects/send 路径。
+func NormalizeNotificationIntelligenceLightEffectsSendURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" || strings.HasSuffix(trimmed, NotificationIntelligenceLightEffectsSendPluginPath) {
+		return trimmed
+	}
+	rulesURL := NormalizeNotificationIntelligenceLightRulesURL(trimmed)
+	if strings.HasSuffix(rulesURL, NotificationIntelligenceLightRulesPluginPath) {
+		return strings.TrimSuffix(rulesURL, NotificationIntelligenceLightRulesPluginPath) + NotificationIntelligenceLightEffectsSendPluginPath
+	}
+	return trimmed + "/light-effects/send"
 }
 
 // IsDefaultHost 报告 host（归一化后）是否为某个环境的默认域名。

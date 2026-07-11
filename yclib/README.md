@@ -63,7 +63,7 @@ type Config struct {
 | `Daemon().Start(ctx, DaemonStartOpts)` | **显式**启动 daemon（幂等） | `daemon start` |
 | `Daemon().Stop(ctx)` | 停止 daemon（未运行为 no-op） | `daemon stop` |
 | `Light().Send(ctx, LightSendOpts)` / `Blink(ctx)` | 下发灯效 / 连通性测试 | `light send` / `light +blink` |
-| `LightRules().List/Get/Create/Update/Delete/SetEnabled(ctx, …)` | 灯效规则增删改查与启停 | `lightrule …` |
+| `LightRules().List/Get/Create/Update/Delete/SetEnabled(ctx, …)` | 通过 Notification Intelligence 云端 API 管理灯效规则（需 `Config.APIKey`） | `lightrule …` |
 | `Tunnel().Status/Reconnect/Test(ctx, client)` | Relay 隧道状态 / 重连 / 回环自检 | `tunnel …` |
 
 > **daemon 生命周期（arc §5 硬约束）**：library **绝不隐式 fork daemon**。`Light()` 等

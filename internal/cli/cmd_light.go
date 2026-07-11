@@ -3,14 +3,19 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/YoooClaw/cli/internal/clictx"
-	"github.com/YoooClaw/cli/internal/daemon"
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/light"
+	"github.com/YoooClaw/cli/internal/lightrule"
 	"github.com/YoooClaw/cli/internal/prompt"
 	"github.com/spf13/cobra"
 )
+
+var notificationRuleSignalRE = regexp.MustCompile(`(?i)通知|消息|推送|来电|短信|邮件|微信|飞书|钉钉|notification|message|push|incoming\s+call|sms|e-?mail`)
 
 // ── light ──
 
@@ -23,6 +28,9 @@ func newLightCmd() *cobra.Command {
 	send.Flags().String("rule", "", "已保存的 lightrule 名")
 	send.Flags().Bool("repeat", false, "无限循环播放（覆盖来源默认值）")
 	send.Flags().String("repeat-times", "", "整条组合重复次数（0=无限，覆盖来源默认值）")
+	send.Flags().String("reason", "", "本次亮灯原因")
+	send.Flags().String("title", "", "本次亮灯标题")
+	send.Flags().String("biz-unique-id", "", "调用方幂等标识")
 
 	blink := &cobra.Command{Use: "+blink", Short: "灯效连通性测试（red-strobe-3）", Args: cobra.NoArgs, RunE: run(lightBlink)}
 
@@ -59,6 +67,15 @@ func lightSend(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error)
 		}
 		body["repeat_times"] = n
 	}
+	if reason := flagStr(cmd, "reason"); reason != "" {
+		body["reason"] = reason
+	}
+	if title := flagStr(cmd, "title"); title != "" {
+		body["title"] = title
+	}
+	if bizUniqueID := flagStr(cmd, "biz-unique-id"); bizUniqueID != "" {
+		body["bizUniqueId"] = bizUniqueID
+	}
 	c, err := daemonProxy(ctx)
 	if err != nil {
 		return nil, err
@@ -84,7 +101,7 @@ func newLightruleCmd() *cobra.Command {
 	list := &cobra.Command{Use: "list", Short: "列出所有规则及状态", Args: cobra.NoArgs, RunE: run(lightruleList)}
 	show := &cobra.Command{Use: "show <id>", Short: "查看单条规则详情", Args: cobra.ExactArgs(1), RunE: run(lightruleShow)}
 
-	create := &cobra.Command{Use: "create", Short: "创建规则（--from-file / --intent ...）", Args: cobra.NoArgs, RunE: run(lightruleCreate)}
+	create := &cobra.Command{Use: "create", Short: "通过云端 Agent 创建规则（--rule-text / --from-file）", Args: cobra.NoArgs, RunE: run(lightruleCreate)}
 	addRuleFlags(create)
 	update := &cobra.Command{Use: "update <id>", Short: "更新现有规则", Args: cobra.ExactArgs(1), RunE: run(lightruleUpdate)}
 	addRuleFlags(update)
@@ -102,48 +119,43 @@ func newLightruleCmd() *cobra.Command {
 }
 
 func addRuleFlags(c *cobra.Command) {
-	c.Flags().String("from-file", "", "从 JSON 读规则（- 为 stdin）")
-	c.Flags().String("name", "", "规则名")
-	c.Flags().String("intent", "", "自然语言意图描述")
-	c.Flags().String("light-action", "", "命中后的 light 动作 JSON")
-	c.Flags().String("match-rules", "", "前置硬过滤规则 JSON")
+	c.Flags().String("from-file", "", "从 JSON 读 ruleText 或更新 patch（- 为 stdin）")
+	c.Flags().String("rule-text", "", "用户自然语言灯效规则，由云端 Agent 编译")
+	c.Flags().String("intent", "", "兼容别名：等同 --rule-text")
+	c.Flags().String("title", "", "展示名（仅 update）")
+	c.Flags().String("description", "", "触发描述（仅 update）")
+	c.Flags().String("segments", "", "灯效段 JSON（仅 update）")
+	c.Flags().String("light-action", "", "兼容别名：灯效段 JSON（仅 update）")
+	c.Flags().String("repeat-times", "", "重复次数 0/1（仅 update）")
+	c.Flags().String("enabled", "", "true/false（仅 update）")
 }
 
-func lightruleListRules(c *daemon.Client) ([]any, error) {
-	_, body, err := c.Request("POST", "/gateway/lightrules.list", map[string]any{})
-	if err != nil {
-		return nil, err
-	}
-	if m, ok := body.(map[string]any); ok {
-		if data, ok := m["data"].(map[string]any); ok {
-			if rules, ok := data["rules"].([]any); ok {
-				return rules, nil
-			}
-		}
-	}
-	return []any{}, nil
+func cloudLightRuleClient() (*lightrule.CloudClient, error) {
+	return lightrule.NewCloudClient()
 }
 
 func lightruleList(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	c, err := daemonProxy(ctx)
+	_ = ctx
+	c, err := cloudLightRuleClient()
 	if err != nil {
 		return nil, err
 	}
-	rules, err := lightruleListRules(c)
+	rules, err := c.List()
 	if err != nil {
-		return nil, err
+		return nil, cloudRuleError(err)
 	}
 	return map[string]any{"ok": true, "rules": rules}, nil
 }
 
 func lightruleShow(ctx *clictx.Context, _ *cobra.Command, args []string) (any, error) {
-	c, err := daemonProxy(ctx)
+	_ = ctx
+	c, err := cloudLightRuleClient()
 	if err != nil {
 		return nil, err
 	}
-	rules, err := lightruleListRules(c)
+	rules, err := c.List()
 	if err != nil {
-		return nil, err
+		return nil, cloudRuleError(err)
 	}
 	id := args[0]
 	for _, r := range rules {
@@ -154,7 +166,7 @@ func lightruleShow(ctx *clictx.Context, _ *cobra.Command, args []string) (any, e
 	return nil, errs.New(errs.CodeNotFound, "规则不存在："+id)
 }
 
-func buildRuleParams(cmd *cobra.Command, name string) (map[string]any, error) {
+func buildRuleParams(cmd *cobra.Command) (map[string]any, error) {
 	if ff := flagStr(cmd, "from-file"); ff != "" {
 		var raw string
 		if ff == "-" {
@@ -178,28 +190,36 @@ func buildRuleParams(cmd *cobra.Command, name string) (map[string]any, error) {
 	}
 
 	params := map[string]any{}
-	if name != "" {
-		params["name"] = name
+	if ruleText := firstNonEmptyStr(flagStr(cmd, "rule-text"), flagStr(cmd, "intent")); ruleText != "" {
+		params["ruleText"] = ruleText
 	}
-	if n := flagStr(cmd, "name"); n != "" {
-		params["name"] = n
+	if title := flagStr(cmd, "title"); title != "" {
+		params["title"] = title
 	}
-	if intent := flagStr(cmd, "intent"); intent != "" {
-		params["description"] = intent
+	if description := flagStr(cmd, "description"); description != "" {
+		params["description"] = description
 	}
-	if la := flagStr(cmd, "light-action"); la != "" {
-		action, err := parseJSONArg(la, "--light-action")
+	segmentsJSON := firstNonEmptyStr(flagStr(cmd, "segments"), flagStr(cmd, "light-action"))
+	if segmentsJSON != "" {
+		action, err := parseJSONArg(segmentsJSON, "--segments")
 		if err != nil {
 			return nil, err
 		}
 		params["segments"] = segmentsFromAction(action)
 	}
-	if mr := flagStr(cmd, "match-rules"); mr != "" {
-		match, err := parseJSONArg(mr, "--match-rules")
+	if rt := flagStr(cmd, "repeat-times"); rt != "" {
+		repeatTimes, err := strconv.ParseFloat(rt, 64)
 		if err != nil {
-			return nil, err
+			return nil, errs.New(errs.CodeInvalidArgument, "--repeat-times 必须是数字")
 		}
-		params["matchRules"] = match
+		params["repeat_times"] = repeatTimes
+	}
+	if enabled := flagStr(cmd, "enabled"); enabled != "" {
+		value, err := strconv.ParseBool(enabled)
+		if err != nil {
+			return nil, errs.New(errs.CodeInvalidArgument, "--enabled 必须是 true 或 false")
+		}
+		params["enabled"] = value
 	}
 	return params, nil
 }
@@ -218,39 +238,56 @@ func segmentsFromAction(action any) any {
 }
 
 func lightruleCreate(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	c, err := daemonProxy(ctx)
+	_ = ctx
+	params, err := buildRuleParams(cmd)
 	if err != nil {
 		return nil, err
 	}
-	params, err := buildRuleParams(cmd, "")
+	ruleText, _ := params["ruleText"].(string)
+	if strings.TrimSpace(ruleText) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "ruleText is required；请使用 --rule-text 或 --from-file '{\"ruleText\":\"...\"}'")
+	}
+	if len(params) != 1 {
+		return nil, errs.New(errs.CodeInvalidArgument, "create only accepts ruleText")
+	}
+	if !notificationRuleSignalRE.MatchString(ruleText) {
+		return nil, errs.New(errs.CodeInvalidArgument, "持久灯效规则必须包含通知、消息、来电等触发条件；一次性亮灯请使用 light send")
+	}
+	c, err := cloudLightRuleClient()
 	if err != nil {
 		return nil, err
 	}
-	_, body, err := c.Request("POST", "/gateway/lightrules.create", params)
+	result, err := c.Create(ruleText)
 	if err != nil {
-		return nil, err
+		return nil, cloudRuleError(err)
 	}
-	if m, ok := body.(map[string]any); !ok || m["ok"] == false {
-		return nil, errs.New(errs.CodeInvalidArgument, createErrorMessage(body))
-	}
-	return dataOrBody(body), nil
+	result["ok"] = true
+	return result, nil
 }
 
 func lightruleUpdate(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
-	c, err := daemonProxy(ctx)
+	_ = ctx
+	params, err := buildRuleParams(cmd)
 	if err != nil {
 		return nil, err
 	}
-	params, err := buildRuleParams(cmd, args[0])
+	for _, key := range []string{"id", "name", "ruleId", "ruleName"} {
+		delete(params, key)
+	}
+	if err := validateCloudRulePatch(params); err != nil {
+		return nil, err
+	}
+	c, err := cloudLightRuleClient()
 	if err != nil {
 		return nil, err
 	}
-	params["name"] = args[0]
-	_, body, err := c.Request("POST", "/gateway/lightrules.update", params)
+	result, err := c.Update(args[0], params)
 	if err != nil {
-		return nil, err
+		return nil, cloudRuleError(err)
 	}
-	return dataOrBody(body), nil
+	result["ok"] = true
+	result["updated"] = true
+	return result, nil
 }
 
 func lightruleDelete(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
@@ -263,15 +300,18 @@ func lightruleDelete(ctx *clictx.Context, cmd *cobra.Command, args []string) (an
 			return nil, errs.New(errs.CodeConfirmationRequired, "已取消")
 		}
 	}
-	c, err := daemonProxy(ctx)
+	_ = ctx
+	c, err := cloudLightRuleClient()
 	if err != nil {
 		return nil, err
 	}
-	_, body, err := c.Request("POST", "/gateway/lightrules.delete", map[string]any{"name": args[0]})
+	result, err := c.Delete(args[0])
 	if err != nil {
-		return nil, err
+		return nil, cloudRuleError(err)
 	}
-	return dataOrBody(body), nil
+	result["ok"] = true
+	result["deleted"] = true
+	return result, nil
 }
 
 func lightruleEnable(ctx *clictx.Context, _ *cobra.Command, args []string) (any, error) {
@@ -283,15 +323,18 @@ func lightruleDisable(ctx *clictx.Context, _ *cobra.Command, args []string) (any
 }
 
 func lightruleSetEnabled(ctx *clictx.Context, id string, enabled bool) (any, error) {
-	c, err := daemonProxy(ctx)
+	_ = ctx
+	c, err := cloudLightRuleClient()
 	if err != nil {
 		return nil, err
 	}
-	_, body, err := c.Request("POST", "/gateway/lightrules.update", map[string]any{"name": id, "enabled": enabled})
+	result, err := c.Update(id, map[string]any{"enabled": enabled})
 	if err != nil {
-		return nil, err
+		return nil, cloudRuleError(err)
 	}
-	return dataOrBody(body), nil
+	result["ok"] = true
+	result["updated"] = true
+	return result, nil
 }
 
 func lightruleOn(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
@@ -303,45 +346,122 @@ func lightruleOff(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error
 }
 
 func lightruleToggleAll(ctx *clictx.Context, enabled bool) (any, error) {
-	c, err := daemonProxy(ctx)
+	_ = ctx
+	c, err := cloudLightRuleClient()
 	if err != nil {
 		return nil, err
 	}
-	rules, err := lightruleListRules(c)
+	rules, err := c.List()
 	if err != nil {
-		return nil, err
+		return nil, cloudRuleError(err)
 	}
 	results := make([]any, 0, len(rules))
 	for _, r := range rules {
 		m, _ := r.(map[string]any)
-		name := m["name"]
-		_, body, err := c.Request("POST", "/gateway/lightrules.update", map[string]any{"name": name, "enabled": enabled})
-		ok := err == nil
-		if bm, isMap := body.(map[string]any); isMap && bm["ok"] == false {
-			ok = false
-		}
-		results = append(results, map[string]any{"name": name, "ok": ok})
+		identifier := firstNonEmptyStr(stringAny(m["id"]), stringAny(m["name"]))
+		_, updateErr := c.Update(identifier, map[string]any{"enabled": enabled})
+		results = append(results, map[string]any{"id": identifier, "name": m["name"], "ok": updateErr == nil})
 	}
 	return map[string]any{"ok": true, "enabled": enabled, "count": len(results), "results": results}, nil
 }
 
-// dataOrBody 返回 gateway 响应里的 data；缺省回退整个 body。
-func dataOrBody(body any) any {
-	if m, ok := body.(map[string]any); ok {
-		if data, ok := m["data"]; ok {
-			return data
-		}
+func cloudRuleError(err error) error {
+	remote, ok := err.(*lightrule.RemoteError)
+	if !ok {
+		return err
 	}
-	return body
+	switch remote.Status {
+	case 401, 403:
+		return errs.New(errs.CodeUnauthorized, remote.Message)
+	case 404:
+		return errs.New(errs.CodeNotFound, remote.Message)
+	}
+	return errs.New(remote.Code, remote.Message, map[string]any{"status": remote.Status})
 }
 
-func createErrorMessage(body any) string {
-	if m, ok := body.(map[string]any); ok {
-		if e, ok := m["error"]; ok {
-			data, _ := json.Marshal(e)
-			return string(data)
+func validateCloudRulePatch(params map[string]any) error {
+	allowed := map[string]bool{
+		"ruleText": true, "title": true, "description": true, "enabled": true,
+		"segments": true, "repeat": true, "repeat_times": true,
+	}
+	for key := range params {
+		if !allowed[key] {
+			return errs.New(errs.CodeInvalidArgument, "unsupported update field: "+key)
 		}
 	}
-	data, _ := json.Marshal(body)
-	return string(data)
+	if len(params) == 0 {
+		return errs.New(errs.CodeInvalidArgument, "at least one update field is required")
+	}
+	if ruleText, hasRuleText := params["ruleText"]; hasRuleText {
+		text, ok := ruleText.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return errs.New(errs.CodeInvalidArgument, "ruleText must be a non-empty string")
+		}
+		if len(params) != 1 {
+			return errs.New(errs.CodeInvalidArgument, "ruleText cannot be mixed with title/enabled/description/segments/repeat_times")
+		}
+		return nil
+	}
+	if title, ok := params["title"]; ok {
+		text, valid := title.(string)
+		if !valid || strings.TrimSpace(text) == "" {
+			return errs.New(errs.CodeInvalidArgument, "title must be a non-empty string")
+		}
+	}
+	if description, ok := params["description"]; ok {
+		if _, valid := description.(string); !valid {
+			return errs.New(errs.CodeInvalidArgument, "description must be a string")
+		}
+	}
+	if enabled, ok := params["enabled"]; ok {
+		if _, valid := enabled.(bool); !valid {
+			return errs.New(errs.CodeInvalidArgument, "enabled must be a boolean")
+		}
+	}
+	if segments, ok := params["segments"]; ok {
+		validation := light.ValidateSegments(segments)
+		if !validation.Valid {
+			return errs.New(errs.CodeInvalidArgument, validationErrorsText(validation))
+		}
+		params["segments"] = validation.Segments
+	}
+	if repeat, ok := params["repeat"]; ok {
+		if _, valid := repeat.(bool); !valid {
+			return errs.New(errs.CodeInvalidArgument, "repeat must be a boolean")
+		}
+	}
+	if _, hasRepeat := params["repeat"]; hasRepeat || params["repeat_times"] != nil {
+		repeatTimes, err := light.NormalizeRepeatTimes(light.RepeatInputFromAny(params["repeat"], params["repeat_times"]))
+		if err != nil {
+			return errs.New(errs.CodeInvalidArgument, err.Error())
+		}
+		if err := light.AssertAncsRepeatTimes(repeatTimes); err != nil {
+			return errs.New(errs.CodeInvalidArgument, err.Error())
+		}
+		params["repeat_times"] = repeatTimes
+		delete(params, "repeat")
+	}
+	return nil
+}
+
+func validationErrorsText(result light.ValidationResult) string {
+	parts := make([]string, 0, len(result.Errors))
+	for _, item := range result.Errors {
+		parts = append(parts, item.Field+": "+item.Message)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func stringAny(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func firstNonEmptyStr(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

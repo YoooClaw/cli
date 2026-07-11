@@ -2,92 +2,154 @@ package yclib
 
 import (
 	"context"
+	"strings"
+
+	"github.com/YoooClaw/cli/internal/errs"
+	internalrules "github.com/YoooClaw/cli/internal/lightrule"
 )
 
-// LightRulesClient 暴露灯效规则管理（经 daemon 的 gateway/lightrules.* 端点代理）。
-// daemon 未运行时返回 CodeDaemonNotRunning（不自动拉起，见 arc §5）。
-type LightRulesClient struct {
-	c *Client
-}
+const defaultLightRulesURL = "https://openclaw-service.yoooclaw.com/api/plugin/notification-intelligence/light-rules"
+
+// LightRulesClient 直接调用 Notification Intelligence Service 的云端规则 API。
+type LightRulesClient struct{ c *Client }
 
 // LightRules 返回灯效规则子 client。
 func (c *Client) LightRules() *LightRulesClient { return &LightRulesClient{c: c} }
 
-// lightrulesListEnvelope 对应 gateway lightrules.list 的 data 部分。
-type lightrulesListEnvelope struct {
-	Rules []LightRule `json:"rules"`
+func (lr *LightRulesClient) cloudClient() (*internalrules.CloudClient, error) {
+	if strings.TrimSpace(lr.c.apiKey) == "" {
+		return nil, errs.New(errs.CodeCredentialMissing, "yclib Config.APIKey 未设置")
+	}
+	baseURL := lr.c.lightRulesURL
+	if baseURL == "" {
+		baseURL = defaultLightRulesURL
+	}
+	return &internalrules.CloudClient{APIKey: lr.c.apiKey, BaseURL: baseURL}, nil
 }
 
-// List 列出全部灯效规则。等价于 CLI `lightrule list`。
+// List 列出云端全部灯效规则。等价于 CLI `lightrule list`。
 func (lr *LightRulesClient) List(ctx context.Context) ([]LightRule, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var data lightrulesListEnvelope
-	if err := lr.c.gatewayRequest("POST", "/gateway/lightrules.list", map[string]any{}, &data); err != nil {
+	client, err := lr.cloudClient()
+	if err != nil {
 		return nil, err
 	}
-	if data.Rules == nil {
-		data.Rules = []LightRule{}
+	raw, err := client.List()
+	if err != nil {
+		return nil, cloudRuleLibraryError(err)
 	}
-	return data.Rules, nil
+	rules := make([]LightRule, 0, len(raw))
+	for _, item := range raw {
+		var rule LightRule
+		if err := decodeInto(item, &rule); err != nil {
+			return nil, err
+		}
+		rules = append(rules, rule)
+	}
+	return rules, nil
 }
 
-// Get 按 name 取单条规则；不存在返回 CodeNotFound。
+// Get 按 name 取单条云端规则；不存在返回 CodeNotFound。
 func (lr *LightRulesClient) Get(ctx context.Context, name string) (LightRule, error) {
 	rules, err := lr.List(ctx)
 	if err != nil {
 		return LightRule{}, err
 	}
-	for _, r := range rules {
-		if r.Name == name {
-			return r, nil
+	for _, rule := range rules {
+		if rule.Name == name {
+			return rule, nil
 		}
 	}
 	return LightRule{}, newNotFound("规则不存在：" + name)
 }
 
-// Create 创建规则。params 为规则字段（name / description / segments / matchRules 等，
-// 与 CLI `lightrule create --from-file` 的 JSON 同构）。
+// Create 使用 params.ruleText 让云端独立 Agent 编译并创建规则。
 func (lr *LightRulesClient) Create(ctx context.Context, params map[string]any) (LightRule, error) {
 	if err := ctx.Err(); err != nil {
 		return LightRule{}, err
 	}
-	var out LightRule
-	if err := lr.c.gatewayRequest("POST", "/gateway/lightrules.create", params, &out); err != nil {
+	ruleText, _ := params["ruleText"].(string)
+	client, err := lr.cloudClient()
+	if err != nil {
 		return LightRule{}, err
 	}
-	return out, nil
+	result, err := client.Create(ruleText)
+	if err != nil {
+		return LightRule{}, cloudRuleLibraryError(err)
+	}
+	var rule LightRule
+	if nested, ok := result["rule"]; ok {
+		_ = decodeInto(nested, &rule)
+	} else {
+		_ = decodeInto(result, &rule)
+	}
+	return rule, nil
 }
 
-// Update 更新规则（按 name）。params 为要变更的字段。
-func (lr *LightRulesClient) Update(ctx context.Context, name string, params map[string]any) (LightRule, error) {
+// Update 按云端 id/name 局部更新规则。
+func (lr *LightRulesClient) Update(ctx context.Context, identifier string, params map[string]any) (LightRule, error) {
 	if err := ctx.Err(); err != nil {
 		return LightRule{}, err
 	}
-	if params == nil {
-		params = map[string]any{}
-	}
-	params["name"] = name
-	var out LightRule
-	if err := lr.c.gatewayRequest("POST", "/gateway/lightrules.update", params, &out); err != nil {
+	client, err := lr.cloudClient()
+	if err != nil {
 		return LightRule{}, err
 	}
-	return out, nil
+	result, err := client.Update(identifier, params)
+	if err != nil {
+		return LightRule{}, cloudRuleLibraryError(err)
+	}
+	var rule LightRule
+	if nested, ok := result["rule"]; ok {
+		_ = decodeInto(nested, &rule)
+	} else {
+		_ = decodeInto(result, &rule)
+	}
+	return rule, nil
 }
 
-// Delete 删除规则（按 name）。
-func (lr *LightRulesClient) Delete(ctx context.Context, name string) error {
+// Delete 按云端 id/name 删除规则。
+func (lr *LightRulesClient) Delete(ctx context.Context, identifier string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return lr.c.gatewayRequest("POST", "/gateway/lightrules.delete", map[string]any{"name": name}, nil)
+	client, err := lr.cloudClient()
+	if err != nil {
+		return err
+	}
+	_, err = client.Delete(identifier)
+	return cloudRuleLibraryError(err)
 }
 
-// SetEnabled 启用/停用单条规则（按 name）。
-func (lr *LightRulesClient) SetEnabled(ctx context.Context, name string, enabled bool) error {
+// SetEnabled 启用/停用单条云端规则。
+func (lr *LightRulesClient) SetEnabled(ctx context.Context, identifier string, enabled bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return lr.c.gatewayRequest("POST", "/gateway/lightrules.update", map[string]any{"name": name, "enabled": enabled}, nil)
+	client, err := lr.cloudClient()
+	if err != nil {
+		return err
+	}
+	_, err = client.Update(identifier, map[string]any{"enabled": enabled})
+	return cloudRuleLibraryError(err)
+}
+
+func cloudRuleLibraryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	remote, ok := err.(*internalrules.RemoteError)
+	if !ok {
+		return err
+	}
+	switch remote.Status {
+	case 401, 403:
+		return errs.New(errs.CodeUnauthorized, remote.Message)
+	case 404:
+		return errs.New(errs.CodeNotFound, remote.Message)
+	default:
+		return errs.New(remote.Code, remote.Message, map[string]any{"status": remote.Status})
+	}
 }
