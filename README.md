@@ -261,9 +261,13 @@ yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # Chunked summarization for large notification batches: create→next→commit→result
 yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
+yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
+yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
 yoooclaw lightrule create --from-file -          # Submit a rule definition from stdin
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
+
+For ASR language hints, `auto` keeps provider-side detection. Use `zh-TW` for Traditional Chinese in a Taiwan context, or `zh-Hant` when only the Traditional Chinese script preference matters.
 
 ### 3. Raw API
 

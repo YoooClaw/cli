@@ -28,7 +28,7 @@ func newRecordingCmd() *cobra.Command {
 	setupAsr.Flags().String("mode", "", "api | local（默认 api）")
 	setupAsr.Flags().String("api-key", "", "api 模式：可选；留空则用 account ock- key")
 	setupAsr.Flags().String("endpoint", "", "api 模式：自定义 model-proxy 端点")
-	setupAsr.Flags().String("language", "", "api 模式：语言提示，如 zh / en / auto")
+	setupAsr.Flags().String("language", "", "api 模式：语言提示，如 auto / zh / zh-CN / zh-TW / zh-Hant / en")
 	setupAsr.Flags().String("model", "", "local 模式：Whisper 模型名")
 	setupAsr.Flags().Bool("non-interactive", false, "跳过向导，从参数构造配置")
 
@@ -189,7 +189,7 @@ func recordingSetupAsr(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any
 			if endpoint, err = prompt.Ask("model-proxy endpoint（留空走默认）", endpoint); err != nil {
 				return nil, err
 			}
-			if language, err = prompt.Ask("语言提示（zh / en / auto）", firstNonEmpty(language, "auto")); err != nil {
+			if language, err = prompt.Ask("语言提示（auto / zh / zh-CN / zh-TW / zh-Hant / en）", firstNonEmpty(language, "auto")); err != nil {
 				return nil, err
 			}
 		} else if mode == "local" {
