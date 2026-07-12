@@ -263,9 +263,13 @@ yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # 大批量通知分片总结：create→next→commit→result
 yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
+yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
+yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
 yoooclaw lightrule create --from-file -          # 从 stdin 提交规则定义
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
+
+ASR 语言提示中，`auto` 表示保留 provider 侧自动识别；台湾繁体中文场景可使用 `zh-TW`，仅需指定繁体中文脚本时可使用 `zh-Hant`。
 
 ### 3. Raw API
 
