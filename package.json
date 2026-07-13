@@ -1,6 +1,6 @@
 {
   "name": "@yoooclaw/cli",
-  "version": "0.5.3",
+  "version": "0.6.0-beta.0",
   "private": true,
   "description": "yoooclaw 独立 CLI（Go 实现）：本地守护进程接收手机通知、Relay 隧道、灯效规则评估，Agent-Native",
   "scripts": {
