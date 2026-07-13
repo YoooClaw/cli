@@ -133,7 +133,7 @@ This repo ships a SKILL.md under [skills/](skills/) that teaches agents to call 
 | Skill                          | Description                                                                                                                                |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `yoooclaw-notification-query`  | Query/aggregate/summarize phone notifications: "show me recent notifications", "who's contacted me", "summarize the last N notifications". Small batches use `summary`, large batches use `summary-job`; disk-only, no daemon required |
-| `yoooclaw-lightrule-create`    | Create/manage persistent "notification → light effect" rules from natural language or stdin; the daemon evaluates and triggers light effects after ingest (🟡) |
+| `yoooclaw-lightrule-create`    | Create/manage persistent "notification → light effect" rules from natural language; rules are compiled, stored, and evaluated by the cloud Notification Intelligence Service |
 | `yoooclaw-tunnel-debug`        | Debug the phone-side push path: combine auth / daemon / tunnel / gateway status to pinpoint local config, ingest auth, and Relay WebSocket issues (🟡) |
 
 ```bash
@@ -263,7 +263,7 @@ yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
-yoooclaw lightrule create --from-file -          # Submit a rule definition from stdin
+yoooclaw lightrule create --intent "Flash red when my boss messages me on WeChat"  # Compiled & stored by the cloud service
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
 

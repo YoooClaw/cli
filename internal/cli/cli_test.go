@@ -164,12 +164,36 @@ func TestLightSendValidation(t *testing.T) {
 	}
 }
 
+func TestLightruleCloudValidation(t *testing.T) {
+	sandbox(t)
+	// 以下用例都在本地参数校验阶段失败，不触达云端。
+	cases := []struct {
+		args     []string
+		wantCode string
+	}{
+		{[]string{"lightrule", "create"}, "YOOOCLAW_INVALID_ARGUMENT"},                                        // 缺 --intent
+		{[]string{"lightrule", "update", "r1"}, "YOOOCLAW_INVALID_ARGUMENT"},                                  // 无更新字段
+		{[]string{"lightrule", "update", "r1", "--intent", "改绿灯", "--title", "t"}, "YOOOCLAW_INVALID_ARGUMENT"}, // ruleText 与普通字段混用
+		{[]string{"lightrule", "update", "r1", "--repeat-times", "abc"}, "YOOOCLAW_INVALID_ARGUMENT"},
+		{[]string{"lightrule", "update", "r1", "--segments", `[{"mode":"nope"}]`}, "VALIDATION_FAILED"},
+	}
+	for _, tc := range cases {
+		out, code := execCLI(t, tc.args...)
+		if code == 0 {
+			t.Errorf("%v should fail", tc.args)
+			continue
+		}
+		if got := decode(t, out)["error"].(map[string]any)["code"]; got != tc.wantCode {
+			t.Errorf("%v expected %s, got %v: %s", tc.args, tc.wantCode, got, out)
+		}
+	}
+}
+
 func TestDaemonDependentCommandsWithoutDaemon(t *testing.T) {
 	sandbox(t)
-	// 这些 🟡 命令在 daemon 未运行时应统一报 DAEMON_NOT_RUNNING
+	// 这些 🟡 命令在 daemon 未运行时应统一报 DAEMON_NOT_RUNNING。
+	// （light/lightrule 自 daemonless 重构起直连本地文件与灯效云，不再在列。）
 	cases := [][]string{
-		{"light", "send", "--preset", "red-steady"},
-		{"lightrule", "list"},
 		{"tunnel", "status"},
 	}
 	for _, args := range cases {

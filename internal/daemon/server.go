@@ -90,6 +90,13 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 		return errs.New(errs.CodeUnauthorized, "proxied 模式需要至少一个 api-key 供宿主推送鉴权").
 			WithHint("先设置 api-key，或改用 --ingress=standalone")
 	}
+	// standalone daemon 与 hermes 插件的存储写者锁互斥（daemonless plugin
+	// mode）；proxied 模式豁免——那是插件自己托管的 daemon。
+	if mode != config.IngressProxied {
+		if err := checkWriterLock(ctx.Paths); err != nil {
+			return err
+		}
+	}
 
 	storage := notif.NewStorage(ctx.Paths.Notifications, notif.PluginConfig{
 		RetentionDays: cfg.Notification.RetentionDays, IgnoredApps: cfg.Notification.IgnoredApps,
