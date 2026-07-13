@@ -12,6 +12,7 @@ const (
 	CodeNotImplemented          = "YOOOCLAW_NOT_IMPLEMENTED"
 	CodeDaemonNotRunning        = "YOOOCLAW_DAEMON_NOT_RUNNING"
 	CodeDaemonAlreadyRunning    = "YOOOCLAW_DAEMON_ALREADY_RUNNING"
+	CodeDaemonDisabledByPlugin  = "YOOOCLAW_DAEMON_DISABLED_BY_PLUGIN"
 	CodeDaemonLifecycleMismatch = "YOOOCLAW_DAEMON_LIFECYCLE_MISMATCH"
 	CodeUnauthorized            = "YOOOCLAW_UNAUTHORIZED"
 	CodeConfigInvalid           = "YOOOCLAW_CONFIG_INVALID"

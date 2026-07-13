@@ -102,6 +102,11 @@ func daemonStart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 		daemon.RemoveLock(ctx.Paths)
 	}
 	opts := startOptsFromCmd(cmd)
+	// detach 模式下子进程失败只会表现为"等 lock 超时"；先在父进程做
+	// 写者锁预检，把 YOOOCLAW_DAEMON_DISABLED_BY_PLUGIN 直接抛给调用方。
+	if err := daemon.PrecheckStart(ctx, opts); err != nil {
+		return nil, err
+	}
 	if flagBool(cmd, "no-detach") {
 		if err := daemon.RunForeground(ctx, opts); err != nil {
 			return nil, err

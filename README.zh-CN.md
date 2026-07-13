@@ -133,7 +133,7 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | Skill                         | 说明                                                                                                            |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `yoooclaw-notification-query` | 查询/汇总/总结手机通知：「看看最近的通知」「谁找过我」「总结最近约 N 条通知」。小批量走 `summary`、大批量走 `summary-job`，纯读磁盘、不需要 daemon |
-| `yoooclaw-lightrule-create`   | 从自然语言或 stdin 创建/管理「通知 → 灯效」持久规则，由 daemon 在 ingest 后评估命中并触发灯效（🟡）             |
+| `yoooclaw-lightrule-create`   | 从自然语言创建/管理「通知 → 灯效」持久规则，由云端 Notification Intelligence Service 编译、存储并评估触发       |
 | `yoooclaw-tunnel-debug`       | 排查手机端推送链路：组合 auth / daemon / tunnel / gateway 状态定位本地配置、ingest 鉴权与 Relay WebSocket（🟡） |
 
 ```bash
@@ -265,7 +265,7 @@ yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
-yoooclaw lightrule create --from-file -          # 从 stdin 提交规则定义
+yoooclaw lightrule create --intent "老板发微信时红灯快闪"   # 云端 Agent 编译并保存规则
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
 

@@ -1,14 +1,14 @@
 ---
 name: yoooclaw-lightrule-create
-description: 用 yoooclaw CLI 创建/管理"通知→灯效"规则。当用户表达"收到/当/如果某类通知或消息时，亮灯/闪灯/变成某种灯效"这类**持久规则**诉求时激活。规则由 daemon 在通知 ingest 后评估命中并触发灯效。需要 daemon 在运行（🟡）。从 stdin 用 --from-file - 提交规则定义最稳妥。
+description: 用 yoooclaw CLI 创建/管理"通知→灯效"规则。当用户表达"收到/当/如果某类通知或消息时，亮灯/闪灯/变成某种灯效"这类**持久规则**诉求时激活。规则保存在云端 Notification Intelligence Service，由云端评估命中并触发灯效。只需把用户的自然语言诉求原样传给 --intent。
 ---
 
-# yoooclaw 灯效规则创建（从 stdin）
+# yoooclaw 灯效规则创建（云端）
 
-灯效规则是**持久**的：通知到达后 daemon 评估是否命中，命中则播放灯效。
+灯效规则是**持久**的：保存在云端 Notification Intelligence Service，通知到达后由云端评估是否命中，命中则播放灯效。
 和"立即放一次灯效测试"不同（那是 `yoooclaw light send`）。
 
-> 需要 daemon 在跑：先 `yoooclaw daemon status`，未运行则 `yoooclaw daemon start`。
+> 不需要 daemon。规则 CRUD 直接打云端 API（X-Api-Key-Id 鉴权），需要已 `yoooclaw auth login`。
 
 ## 何时激活
 
@@ -19,45 +19,46 @@ description: 用 yoooclaw CLI 创建/管理"通知→灯效"规则。当用户�
 
 不要为这类诉求调用 `light send`（那只用于一次性测试/预览）。
 
-## 创建规则（首选 --from-file - 从 stdin）
+## 创建规则（自然语言 --intent）
+
+把用户的原始自然语言诉求整理成一句话传给 `--intent`，由云端独立 Agent
+编译出 name/title/description/segments/repeat_times 并保存：
 
 ```bash
-cat <<'JSON' | yoooclaw lightrule create --from-file - --format json
-{
-  "name": "wechat-at-me",
-  "title": "微信@我",
-  "description": "微信群里有人@我时红灯快闪",
-  "segments": [
-    { "mode": "strobe", "duration_s": 2, "brightness": 255,
-      "color": { "r": 255, "g": 0, "b": 0 }, "interval_ms": 200 }
-  ]
-}
-JSON
+yoooclaw lightrule create --intent "微信群里有人@我时红灯快闪" --format json
 ```
 
-字段说明：
-
-- `name`（必填）：规则唯一标识。
-- `description`（必填）：自然语言意图，daemon 的 webhook 评估器据此判断通知是否命中。
-- `segments`（必填）：命中后播放的灯效，遵循 light protocol（mode/duration_s/brightness/color/interval_ms 等）。
-- 也可用 flag 形式：`--name --intent <描述> --light-action <segments JSON> --match-rules <硬过滤 JSON>`。
+返回 `{ok, id, name}`（可能带 `warning`）。**不需要**自己构造 segments。
 
 ## 管理
 
 ```bash
-yoooclaw lightrule list --format json          # 列出全部规则及 enabled 状态
-yoooclaw lightrule show <name> --format json   # 单条详情
-yoooclaw lightrule disable <name>              # 停用（不删除）
-yoooclaw lightrule enable <name>               # 启用
+yoooclaw lightrule list --format json          # 列出云端全部规则及 enabled 状态
+yoooclaw lightrule show <id> --format json     # 单条详情（id 或 name 均可）
+yoooclaw lightrule disable <id>                # 停用（不删除）
+yoooclaw lightrule enable <id>                 # 启用
 yoooclaw lightrule +off                        # 停用所有
 yoooclaw lightrule +on                         # 启用所有
-yoooclaw lightrule delete <name> --yes         # 删除
+yoooclaw lightrule delete <id> --yes           # 删除（云端软删除）
 ```
+
+## 更新
+
+两种互斥形态：
+
+```bash
+# 语义重编译：传新的自然语言，云端 Agent 重新生成灯效
+yoooclaw lightrule update <id> --intent "改成绿灯呼吸"
+
+# 普通字段局部更新（不重编译）
+yoooclaw lightrule update <id> --title "老板微信" --repeat-times 3
+yoooclaw lightrule update <id> --segments '[{"mode":"strobe","duration_s":2,"brightness":255,"color":{"r":255,"g":0,"b":0},"interval_ms":200}]'
+```
+
+`--intent` 不能与 `--title/--description/--segments/--repeat-times` 混用。
 
 ## 错误处理
 
-- `YOOOCLAW_DAEMON_NOT_RUNNING`：先 `yoooclaw daemon start` 再重试。
-- 创建失败通常表现为 `YOOOCLAW_INVALID_ARGUMENT`，`error.message` 中会带底层
-  `VALIDATION_FAILED`（segments 不合法）或 `INVALID_PARAMS`（缺 name/description）；
-  按具体校验项修正 JSON 后重新提交。
-- 规则名重复：换 `name` 或先 `delete`。
+- `AUTH_REQUIRED`：先 `yoooclaw auth login` 配置 API Key。
+- `NOT_FOUND`：id/name 不存在，先 `lightrule list` 确认。
+- `VALIDATION_FAILED`：segments 不符合 light protocol，`error.message` 内有逐字段错误。
