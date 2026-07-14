@@ -92,13 +92,14 @@ type Error = errs.Error
 
 // 常用错误码（与 internal/errs 同值，进入对外半正式契约）。
 const (
-	CodeUnknown            = errs.CodeUnknown
-	CodeInvalidArgument    = errs.CodeInvalidArgument
-	CodeNotFound           = errs.CodeNotFound
-	CodeStorageUnavailable = errs.CodeStorageUnavailable
-	CodeDaemonNotRunning   = errs.CodeDaemonNotRunning
-	CodeUnauthorized       = errs.CodeUnauthorized
-	CodeNetworkError       = errs.CodeNetworkError
+	CodeUnknown                = errs.CodeUnknown
+	CodeInvalidArgument        = errs.CodeInvalidArgument
+	CodeNotFound               = errs.CodeNotFound
+	CodeStorageUnavailable     = errs.CodeStorageUnavailable
+	CodeDaemonNotRunning       = errs.CodeDaemonNotRunning
+	CodeDaemonDisabledByPlugin = errs.CodeDaemonDisabledByPlugin
+	CodeUnauthorized           = errs.CodeUnauthorized
+	CodeNetworkError           = errs.CodeNetworkError
 )
 
 // ErrorCode 提取错误码；非结构化错误返回空串。便于调用方做类型安全分支，

@@ -21,14 +21,22 @@ const writerLockFileName = "writer.lock"
 // 模式与 hermes 插件的写者锁互斥。proxied 模式豁免——那是插件自己托管的
 // daemon，不写通知、不拨隧道。
 func PrecheckStart(ctx *clictx.Context, opts StartOpts) error {
-	cfg, err := config.Load(ctx.Paths)
+	return PrecheckStartFor(ctx.Paths, opts)
+}
+
+// PrecheckStartFor is the explicit-path variant used by yclib before it
+// re-execs an embedding host. Keeping the check in the parent process lets
+// callers receive YOOOCLAW_DAEMON_DISABLED_BY_PLUGIN directly instead of a
+// misleading three-second "daemon.lock was not written" timeout.
+func PrecheckStartFor(p paths.Paths, opts StartOpts) error {
+	cfg, err := config.Load(p)
 	if err != nil {
 		return err
 	}
 	if resolveIngressMode(opts, cfg) == config.IngressProxied {
 		return nil
 	}
-	return checkWriterLock(ctx.Paths)
+	return checkWriterLock(p)
 }
 
 // checkWriterLock 探测写者锁；被其他进程持有时返回结构化错误。

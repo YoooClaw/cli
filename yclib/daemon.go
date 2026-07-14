@@ -52,9 +52,13 @@ func (d *DaemonClient) Start(ctx context.Context, opts DaemonStartOpts) (DaemonS
 	if st := daemon.State(d.c.paths); st.Running {
 		return statusFrom(st), nil
 	}
-	lock, err := daemon.SpawnFor(d.c.paths, d.c.rootDir, d.c.profile, daemon.StartOpts{
+	startOpts := daemon.StartOpts{
 		Bind: opts.Bind, Port: opts.Port, LogLevel: opts.LogLevel,
-	})
+	}
+	if err := daemon.PrecheckStartFor(d.c.paths, startOpts); err != nil {
+		return DaemonStatus{}, err
+	}
+	lock, err := daemon.SpawnFor(d.c.paths, d.c.rootDir, d.c.profile, startOpts)
 	if err != nil {
 		return DaemonStatus{}, err
 	}
