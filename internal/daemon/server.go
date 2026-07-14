@@ -375,8 +375,9 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request, auth authR
 	result := s.storage.Ingest(filtered, auth.clientLabel)
 	s.recordIngest(result)
 	writeJSON(w, 200, map[string]any{
-		"ok": true, "received": result.Received, "ingested": result.Ingested,
+		"ok": result.Failed == 0, "received": result.Received, "ingested": result.Ingested,
 		"dedupedById": result.DedupedByID, "dedupedByContent": result.DedupedByContent, "invalid": result.Invalid,
+		"failed": result.Failed,
 	})
 }
 
