@@ -431,7 +431,6 @@ jobs:
       - name: Notify Feishu
         if: success()
         env:
-          HOOK_1: ${{ secrets.FEISHU_WEBHOOK_1 }}
           HOOK_2: ${{ secrets.FEISHU_WEBHOOK_2 }}
         run: |
           CURRENT_TAG="cli-v${VERSION}"
@@ -470,7 +469,7 @@ jobs:
 
           PAYLOAD=$(jq -nc --arg t "$TEXT" '{msg_type:"text", content:{text:$t}}')
 
-          for hook in "$HOOK_1" "$HOOK_2"; do
+          for hook in "$HOOK_2"; do
             [ -z "$hook" ] && continue
             if ! curl -fsS -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$hook"; then
               echo "::warning::Feishu webhook 推送失败"

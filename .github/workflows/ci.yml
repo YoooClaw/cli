@@ -39,3 +39,33 @@ jobs:
 
       - name: Build npm distribution (current platform)
         run: scripts/build-go.sh --current
+
+      - name: Notify Feishu (build complete)
+        if: success() && github.event_name == 'push'
+        env:
+          HOOK: ${{ secrets.FEISHU_WEBHOOK_2 }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::warning::FEISHU_WEBHOOK_2 未配置，跳过构建通知"
+            exit 0
+          fi
+
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          SHORT_SHA="$(git rev-parse --short=12 "$GITHUB_SHA")"
+          TEXT="✅ @yoooclaw/cli 构建完成
+
+          🌿 分支：${GITHUB_REF_NAME}
+          🔖 Commit：${SHORT_SHA}
+          🔎 ${RUN_URL}"
+          PAYLOAD=$(jq -nc --arg t "$TEXT" '{msg_type:"text", content:{text:$t}}')
+
+          if ! resp=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$HOOK"); then
+            echo "::warning::Feishu webhook 推送失败（curl 请求错误）"
+            exit 0
+          fi
+          code=$(printf '%s' "$resp" | jq -r '.code // .StatusCode // empty')
+          if [ "$code" != "0" ]; then
+            echo "::warning::Feishu webhook 推送被拒绝（响应: ${resp}）"
+            exit 0
+          fi
+          echo "::notice::Feishu 构建通知已送达"
