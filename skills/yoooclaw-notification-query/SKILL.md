@@ -61,7 +61,7 @@ yoooclaw notification storage-path --format json
 # → {"ok":true,"path":"/abs/path/to/profiles/<profile>/notifications"}
 ```
 
-按日期文件存储：`<path>/2026-06-16.json` 为当天所有通知的 JSON 数组（append-only）。单条字段：`appName / appDisplayName / title / content / timestamp(ISO 8601 含时区) / senderName / conversationType / conversationName`。常见总结请求可直接调 `summary`，无需先查 storage-path。
+按日期文件存储：`<path>/2026-06-16.jsonl` 为当天通知，每行一条 JSON（append-only）；旧数据可能还是 `2026-06-16.json`（整天一个 JSON 数组，只读兼容）。单条字段：`appName / appDisplayName / title / content / timestamp(ISO 8601 含时区) / senderName / conversationType / conversationName`。常见总结请求可直接调 `summary`，无需先查 storage-path。
 
 ## 查询（非总结类：查某人 / 某 App / 某天 / 某关键词）
 

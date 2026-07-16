@@ -2,6 +2,7 @@ package notif
 
 import (
 	"testing"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/testutil"
 )
@@ -27,6 +28,27 @@ func TestIngestBasic(t *testing.T) {
 	}
 	if len(res.Inserted) != 2 {
 		t.Errorf("inserted should be 2: %+v", res.Inserted)
+	}
+}
+
+func TestIngestEvictsColdDayCache(t *testing.T) {
+	t.Parallel()
+	s := newStorage(t)
+	old := RawNotification{ID: "old", App: "wechat", Title: "t", Body: "b", Timestamp: "2026-06-07T10:00:00+08:00"}
+	s.Ingest([]RawNotification{old}, "phone-a")
+	// 本批触到的日期允许留在缓存；下一批（不含该日期）后必须被逐出，
+	// 否则长期运行会把历史每一天的全量通知都常驻内存。
+	s.Ingest([]RawNotification{{ID: "now", App: "wechat", Title: "t2", Body: "b2", Timestamp: time.Now().Format(time.RFC3339)}}, "phone-a")
+	s.mu.Lock()
+	_, cached := s.dayCache["2026-06-07"]
+	s.mu.Unlock()
+	if cached {
+		t.Fatal("cold day should be evicted from dayCache")
+	}
+	// 逐出后去重依旧生效（从磁盘/索引文件重建）。
+	res := s.Ingest([]RawNotification{old}, "phone-a")
+	if res.DedupedByID != 1 || res.Ingested != 0 {
+		t.Fatalf("dedup must survive cache eviction: %+v", res)
 	}
 }
 

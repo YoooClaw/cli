@@ -2,7 +2,8 @@
 // 对齐 phone-notifications 的 storage.ts / cli ntf-query.ts。
 package notif
 
-// StoredNotification 是落盘的通知条目（date-keyed JSON 数组的元素）。
+// StoredNotification 是落盘的通知条目（date-keyed JSONL 文件的一行；
+// 旧版是 JSON 数组的元素，只读兼容）。
 type StoredNotification struct {
 	// ClientLabel 来源客户端 label；旧数据无该字段，查询时视为 legacy。
 	ClientLabel string `json:"clientLabel,omitempty"`

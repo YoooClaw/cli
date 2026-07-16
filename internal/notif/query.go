@@ -1,9 +1,7 @@
 package notif
 
 import (
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -14,7 +12,6 @@ import (
 )
 
 var isoRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$`)
-var dateFileRE = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})\.json$`)
 
 // QueryOptions 是解析后的查询条件。
 type QueryOptions struct {
@@ -170,37 +167,6 @@ func QueryWithStats(notificationsDir string, opts QueryOptions) ([]StoredNotific
 func dirExists(dir string) bool {
 	info, err := os.Stat(dir)
 	return err == nil && info.IsDir()
-}
-
-// listDateKeys 列出 YYYY-MM-DD 日期 key，降序。
-func listDateKeys(dir string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var keys []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if m := dateFileRE.FindStringSubmatch(e.Name()); m != nil {
-			keys = append(keys, m[1])
-		}
-	}
-	sort.Sort(sort.Reverse(sort.StringSlice(keys)))
-	return keys
-}
-
-func readDateFile(dir, dateKey string) []StoredNotification {
-	raw, err := os.ReadFile(filepath.Join(dir, dateKey+".json"))
-	if err != nil {
-		return nil
-	}
-	var items []StoredNotification
-	if json.Unmarshal(raw, &items) != nil {
-		return nil
-	}
-	return items
 }
 
 func sortByTimestampDesc(items []StoredNotification) {
