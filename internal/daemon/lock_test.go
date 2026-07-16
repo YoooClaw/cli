@@ -54,6 +54,22 @@ func TestLockRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRemoveLockIfOwnedBy(t *testing.T) {
+	p := sandboxPaths(t)
+	if err := WriteLock(p, Lock{PID: 4242, Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// 迟退出的旧进程（pid 不同）不能删掉新 daemon 的锁。
+	RemoveLockIfOwnedBy(p, 1111)
+	if ReadLock(p) == nil {
+		t.Fatal("lock owned by another pid must survive")
+	}
+	RemoveLockIfOwnedBy(p, 4242)
+	if ReadLock(p) != nil {
+		t.Fatal("owner pid should remove the lock")
+	}
+}
+
 func TestStopRejectsLifecycleMismatch(t *testing.T) {
 	p := sandboxPaths(t)
 	if err := WriteLock(p, Lock{PID: os.Getpid(), Owner: "hermes-plugin", Generation: "gen-1", Port: 1}); err != nil {

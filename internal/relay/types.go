@@ -18,6 +18,7 @@ const (
 
 // Logger 是 relay 包依赖的最小日志接口。
 type Logger interface {
+	Debug(string)
 	Info(string)
 	Warn(string)
 	Error(string)

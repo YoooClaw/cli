@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -80,6 +83,17 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	}
 
 	_ = fsutil.EnsureDir(ctx.Paths.Dir, fsutil.DirMode)
+	// OS 级单例互斥。仅靠 daemon.lock 的 check-then-write 有竞态：两个 daemon
+	// 并发启动时端口 +1 回退让双方都能起来，后者的 lock 覆盖前者，之后退出时
+	// 再互删对方的锁。flock 拿不到直接拒绝启动；获取本身出错（受限文件系统等）
+	// 按未持有处理，退回原有 lock 文件语义，不把 daemon 卡死。
+	releaseSingleton, lockErr := acquireProcessLock(filepath.Join(ctx.Paths.Dir, daemonSingletonName))
+	if errors.Is(lockErr, errProcessLockHeld) {
+		return errs.New(errs.CodeDaemonAlreadyRunning, "另一个 daemon 进程持有单例锁，拒绝重复启动")
+	}
+	if releaseSingleton != nil {
+		defer releaseSingleton()
+	}
 	ctx.Paths.MigrateLogs()
 	logger := NewLogger(ctx.Paths.DaemonLog, logLevel, false)
 	st := &runtimeState{startedAt: time.Now().UTC().Format(time.RFC3339)}
@@ -133,7 +147,15 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	defer ln.Close()
 	srv.port = actualPort
 
-	httpSrv := &http.Server{Handler: srv}
+	// ReadHeaderTimeout/IdleTimeout 防止半开连接把 goroutine/fd 无限攒下去
+	// （长期运行后 accept 堆死是「daemon 还在但没响应」的典型来源）。
+	// 不设 WriteTimeout/ReadTimeout：慢速手机端上传大 payload 是合法场景，
+	// 请求体大小由 ServeHTTP 里的 MaxBytesReader 兜底。
+	httpSrv := &http.Server{
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 	if err := WriteLock(ctx.Paths, Lock{
 		PID: os.Getpid(), StartedAt: st.startedAt, Bind: bind, Port: actualPort, LogLevel: logLevel,
 		Owner: opts.Owner, Generation: opts.Generation, Executable: executable, Version: version.Version, Profile: ctx.Profile,
@@ -141,8 +163,10 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 		return err
 	}
 	// Every non-os.Exit return path must retire the lock. This includes startup
-	// failures and unexpected http.Server termination.
-	defer RemoveLock(ctx.Paths)
+	// failures and unexpected http.Server termination. Removal is PID-guarded:
+	// a lingering old daemon must never delete a newer daemon's lock.
+	selfPID := os.Getpid()
+	defer RemoveLockIfOwnedBy(ctx.Paths, selfPID)
 	logger.Info(fmt.Sprintf("yoooclaw daemon 启动：%s:%d（profile=%s, pid=%d）", bind, actualPort, ctx.Profile, os.Getpid()))
 	switch mode {
 	case config.IngressProxied:
@@ -175,11 +199,17 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	srv.shutdown = func(reason string) {
 		logger.Info("daemon 退出（" + reason + "）")
-		if srv.tunnelSupervisor != nil {
-			srv.tunnelSupervisor.StopAll(reason)
+		if sup := srv.supervisor(); sup != nil {
+			sup.StopAll(reason)
 		}
-		_ = httpSrv.Close()
-		RemoveLock(ctx.Paths)
+		// 给 in-flight 请求 3 秒收尾（正在落盘的 ingest 批次能写完），
+		// 超时再硬关，保证退出不会被慢客户端拖死。
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			_ = httpSrv.Close()
+		}
+		RemoveLockIfOwnedBy(ctx.Paths, selfPID)
 		os.Exit(0)
 	}
 
@@ -190,7 +220,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 
 	if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		logger.Error("HTTP server 异常：" + err.Error())
-		RemoveLock(ctx.Paths)
+		RemoveLockIfOwnedBy(ctx.Paths, selfPID)
 		return err
 	}
 	return nil
@@ -204,11 +234,8 @@ type server struct {
 	storage           *notif.Storage
 	recordingStorage  *recording.Storage
 	recordingEventLog *recording.EventLog
-	tunnelSupervisor  *relay.Supervisor
-	egress            Egress
 	ingressMode       string
 	token             string
-	credentialSet     creds.CredentialSet
 	ignored           map[string]bool
 	bind              string
 	port              int
@@ -216,7 +243,37 @@ type server struct {
 	generation        string
 	executable        string
 	shutdown          func(string)
+
+	// shareMu 保护下面三个字段：/daemon/reload 会在请求 goroutine 里整体替换它们，
+	// 而每个并发请求都在读（鉴权、status、egress 推送）。
+	shareMu          sync.RWMutex
+	credentialSet    creds.CredentialSet
+	tunnelSupervisor *relay.Supervisor
+	egress           Egress
 }
+
+func (s *server) snapshotCreds() creds.CredentialSet {
+	s.shareMu.RLock()
+	defer s.shareMu.RUnlock()
+	return s.credentialSet
+}
+
+func (s *server) supervisor() *relay.Supervisor {
+	s.shareMu.RLock()
+	defer s.shareMu.RUnlock()
+	return s.tunnelSupervisor
+}
+
+func (s *server) currentEgress() Egress {
+	s.shareMu.RLock()
+	defer s.shareMu.RUnlock()
+	return s.egress
+}
+
+// maxRequestBodyBytes 是单请求体上限。最大的合法 payload 是 base64 图片同步
+// （config.image.maxBytes 默认 20MB，base64 膨胀 ~1.37x），64MB 足够宽裕；
+// 没有上限的话一个恶意/异常的大 POST 就能把 daemon 直接 OOM。
+const maxRequestBodyBytes = 64 << 20
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
@@ -225,6 +282,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]any{"ok": false, "error": map[string]any{"code": "INTERNAL_ERROR", "message": fmt.Sprintf("%v", rec)}})
 		}
 	}()
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	}
 	path := r.URL.Path
 
 	if path == "/health" && r.Method == http.MethodGet {
@@ -246,27 +306,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("收到 /daemon/stop，准备优雅退出")
 		go func() { time.Sleep(50 * time.Millisecond); s.shutdown("stop-endpoint") }()
 	case path == "/daemon/reload" && r.Method == http.MethodPost:
-		s.credentialSet = creds.ResolveAPIKeyEntries()
-		relayResult := relay.ApplyResult{}
-		if s.ingressMode == config.IngressStandalone && s.cfg.Relay.Enabled {
-			if s.tunnelSupervisor == nil && len(s.credentialSet.Entries) > 0 {
-				s.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
-					TunnelURL:          config.ResolveRelayURL(s.cfg),
-					HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(s.port),
-					HTTPToken:          s.token,
-					HeartbeatSec:       s.cfg.Relay.HeartbeatSec,
-					ReconnectBackoffMs: s.cfg.Relay.ReconnectBackoffMs,
-					StateDir:           s.ctx.Paths.Dir,
-					Logger:             s.logger,
-				})
-			}
-			if s.tunnelSupervisor != nil {
-				relayResult = s.tunnelSupervisor.Apply(s.credentialSet)
-			}
-		}
+		set, relayResult := s.reloadCredentials()
 		writeJSON(w, 200, map[string]any{
-			"ok": true, "running": true, "reloaded": true, "mode": s.credentialSet.Mode,
-			"defaultLabel": defaultEntryLabel(s.credentialSet), "warnings": s.credentialSet.Warnings,
+			"ok": true, "running": true, "reloaded": true, "mode": set.Mode,
+			"defaultLabel": defaultEntryLabel(set), "warnings": set.Warnings,
 			"started": relayResult.Started, "stopped": relayResult.Stopped,
 			"restarted": relayResult.Restarted, "unchanged": relayResult.Unchanged,
 		})
@@ -293,6 +336,37 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, 404, map[string]any{"ok": false, "error": map[string]any{"code": errs.CodeNotFound, "message": "未知路径：" + path}})
 	}
+}
+
+// reloadCredentials 重读凭据并增量刷新隧道。持 shareMu 写锁做整体替换；
+// supervisor.Apply 里的网络操作是非阻塞的（隧道在各自 goroutine 建连），
+// 不会长时间占住写锁。
+func (s *server) reloadCredentials() (creds.CredentialSet, relay.ApplyResult) {
+	set := creds.ResolveAPIKeyEntries()
+	relayResult := relay.ApplyResult{}
+	s.shareMu.Lock()
+	defer s.shareMu.Unlock()
+	s.credentialSet = set
+	if s.ingressMode == config.IngressStandalone && s.cfg.Relay.Enabled {
+		if s.tunnelSupervisor == nil && len(set.Entries) > 0 {
+			s.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
+				TunnelURL:          config.ResolveRelayURL(s.cfg),
+				HTTPBaseURL:        "http://127.0.0.1:" + fmt.Sprint(s.port),
+				HTTPToken:          s.token,
+				HeartbeatSec:       s.cfg.Relay.HeartbeatSec,
+				ReconnectBackoffMs: s.cfg.Relay.ReconnectBackoffMs,
+				StateDir:           s.ctx.Paths.Dir,
+				Logger:             s.logger,
+			})
+			// 启动时没有 api-key 的话 egress 是 Noop；补上隧道后出站事件
+			// 必须跟着切到 Relay，否则 recording.status 等推送会一直被丢弃。
+			s.egress = NewRelayEgress(s.tunnelSupervisor)
+		}
+		if s.tunnelSupervisor != nil {
+			relayResult = s.tunnelSupervisor.Apply(set)
+		}
+	}
+	return set, relayResult
 }
 
 type authResult struct {
@@ -327,7 +401,7 @@ func (s *server) labelForAPIKey(apiKey string) string {
 		return ""
 	}
 	raw := strings.TrimPrefix(apiKey, "Bearer ")
-	for _, e := range s.credentialSet.Entries {
+	for _, e := range s.snapshotCreds().Entries {
 		if strings.TrimPrefix(e.Key, "Bearer ") == raw {
 			return e.Label
 		}
@@ -393,9 +467,10 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 	lastIngest := s.st.lastIngest
 	ingestCount := s.st.ingestCount
 	s.st.mu.Unlock()
+	set := s.snapshotCreds()
 	var defaultLabel any
-	if s.credentialSet.DefaultEntry != nil {
-		defaultLabel = s.credentialSet.DefaultEntry.Label
+	if set.DefaultEntry != nil {
+		defaultLabel = set.DefaultEntry.Label
 	}
 	relayStatus := s.relayStatusPayload()
 	writeJSON(w, 200, map[string]any{
@@ -411,14 +486,14 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 		"ingressMode":    s.ingressMode,
 		"relay":          relayStatus,
 		"tunnels":        relayStatus["tunnels"],
-		"credentialMode": s.credentialSet.Mode, "defaultLabel": defaultLabel,
-		"credentialWarnings": s.credentialSet.Warnings,
+		"credentialMode": set.Mode, "defaultLabel": defaultLabel,
+		"credentialWarnings": set.Warnings,
 	})
 }
 
 func (s *server) relayStatusPayload() map[string]any {
-	if s.tunnelSupervisor != nil {
-		status := s.tunnelSupervisor.Status()
+	if sup := s.supervisor(); sup != nil {
+		status := sup.Status()
 		connected := false
 		reconnectAttempt := 0
 		lastDisconnectReason := ""
@@ -489,7 +564,9 @@ func listenWithFallback(bind string, startPort int, logger *Logger) (net.Listene
 			}
 			return ln, actualPort, nil
 		}
-		if !strings.Contains(err.Error(), "address already in use") {
+		// errno 判断为主（Windows 的报错文案是 "Only one usage of each socket
+		// address"，字符串匹配不到会让端口回退整个失效），字符串匹配只作兜底。
+		if !isAddrInUse(err) && !strings.Contains(err.Error(), "address already in use") {
 			return nil, 0, err
 		}
 		logger.Warn(fmt.Sprintf("端口 %d 被占用，改试 %d", port, port+1))

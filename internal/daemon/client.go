@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -53,8 +54,10 @@ func newClient(p paths.Paths, token string) *Client {
 	}
 }
 
-// Request 调 daemon；localhost 连接失败（包括 reset/EOF/超时）统一报
-// DAEMON_NOT_RUNNING，让生命周期监管可以清理陈旧 lock 并重启 daemon。
+// Request 调 daemon；localhost 连接失败（refused/reset/EOF）报 DAEMON_NOT_RUNNING，
+// 让生命周期监管可以清理陈旧 lock 并重启 daemon。**超时除外**：超时只说明 daemon
+// 忙或慢，进程多半还活着，报 DAEMON_UNRESPONSIVE——监管方拿到它应该退避重试，
+// 而不是删 lock 重启一个活着的进程（那会造成新旧进程并存、端口漂移）。
 func (c *Client) Request(method, path string, body any) (int, any, error) {
 	var reader io.Reader
 	if body != nil {
@@ -75,6 +78,10 @@ func (c *Client) Request(method, path string, body any) (int, any, error) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if isTimeoutErr(err) {
+			return 0, nil, errs.New(errs.CodeDaemonUnresponsive, "daemon 响应超时（进程可能仍在运行，只是繁忙）",
+				map[string]any{"hint": "稍后重试；持续超时再考虑 yoooclaw daemon restart", "baseUrl": c.BaseURL, "cause": err.Error()})
+		}
 		return 0, nil, errs.New(errs.CodeDaemonNotRunning, "daemon 未启动或无响应",
 			map[string]any{"hint": "先执行 yoooclaw daemon start", "baseUrl": c.BaseURL, "cause": err.Error()})
 	}
@@ -91,6 +98,16 @@ func (c *Client) Request(method, path string, body any) (int, any, error) {
 			map[string]any{"status": resp.StatusCode})
 	}
 	return resp.StatusCode, parsed, nil
+}
+
+// isTimeoutErr 识别请求超时（context deadline / net timeout）。
+// 连接建立失败（refused/reset）不算：那些才是「daemon 不在」的信号。
+func isTimeoutErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func daemonBaseURL(bind string, port int) string {

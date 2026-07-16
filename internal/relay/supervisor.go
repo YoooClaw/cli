@@ -196,6 +196,7 @@ type prefixedLogger struct {
 	Prefix string
 }
 
+func (l prefixedLogger) Debug(msg string) { l.Logger.Debug(l.Prefix + msg) }
 func (l prefixedLogger) Info(msg string)  { l.Logger.Info(l.Prefix + msg) }
 func (l prefixedLogger) Warn(msg string)  { l.Logger.Warn(l.Prefix + msg) }
 func (l prefixedLogger) Error(msg string) { l.Logger.Error(l.Prefix + msg) }

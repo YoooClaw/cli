@@ -34,6 +34,26 @@ func TestLoggerWritesLevels(t *testing.T) {
 	}
 }
 
+func TestLoggerCleanupRotated(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "daemon.log")
+	stale := logFile + ".2020-01-01"
+	fresh := logFile + "." + dateKey(time.Now().AddDate(0, 0, -1))
+	for _, f := range []string{stale, fresh} {
+		if err := os.WriteFile(f, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	NewLogger(logFile, "info", false)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("rotated log beyond retention should be removed")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("recent rotated log should survive cleanup")
+	}
+}
+
 func TestLoggerLevelDefaults(t *testing.T) {
 	t.Parallel()
 	l := NewLogger(filepath.Join(t.TempDir(), "x.log"), "", false)

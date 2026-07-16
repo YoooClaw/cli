@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +43,8 @@ type IngestResult struct {
 	Inserted []StoredNotification `json:"-"`
 }
 
-// Storage 是 date-keyed JSON 通知存储（含 id / content-key 双重去重）。
+// Storage 是 date-keyed JSONL 通知存储（含 id / content-key 双重去重）。
+// 文件格式见 dayfile.go：每天一个 .jsonl 追加写；旧 .json 数组只读兼容 + 懒迁移。
 type Storage struct {
 	dir            string
 	idIndexDir     string
@@ -70,26 +72,44 @@ func NewStorage(dir string, cfg PluginConfig, logger Logger) *Storage {
 }
 
 func (s *Storage) dayPath(dateKey string) string {
-	return filepath.Join(s.dir, dateKey+".json")
+	return dayFilePath(s.dir, dateKey)
 }
 
-// loadDay 读取当天已落盘的条目。
-//
-// 当天文件损坏时（例如旧版本非原子写被中断留下的半截 JSON）不能当作「空的一天」
-// 静默继续——那样下一次写入会把残骸连同它代表的数据一起覆盖掉。这里把损坏文件
-// 隔离备份，并丢弃当天的 id / content-key 索引：索引描述的是已经读不出来的数据，
-// 留着它只会让手机重发的同一批通知被判定为重复，永远回不来。
+// loadDay 读取当天已落盘的条目（带内存缓存）。
 func (s *Storage) loadDay(dateKey string) []StoredNotification {
 	if entries, ok := s.dayCache[dateKey]; ok {
 		return entries
 	}
-	filePath := s.dayPath(dateKey)
-	entries, err := readStoredFile(filePath)
-	if err != nil {
-		s.quarantineDay(dateKey, filePath, err)
-		entries = nil
-	}
+	entries := s.loadDayFromDisk(dateKey)
 	s.dayCache[dateKey] = entries
+	return entries
+}
+
+// loadDayFromDisk 读取当天数据，.jsonl 优先，缺失时回退旧 .json 数组。
+//
+// .jsonl 逐行解析、坏行跳过：追加写永不覆盖已有数据，坏行（torn write 的半行）
+// 最多损失那一条，不需要隔离整天。旧 .json 数组则相反——半截 JSON 解析失败时
+// 不能当作「空的一天」静默继续，那样迁移写 .jsonl 时会把残骸代表的数据一起丢掉，
+// 所以保留隔离逻辑：备份损坏文件并重置当天索引，让手机重发的同批通知能重新入库。
+func (s *Storage) loadDayFromDisk(dateKey string) []StoredNotification {
+	raw, err := os.ReadFile(dayFilePath(s.dir, dateKey))
+	if err == nil {
+		entries, skipped := decodeJSONLines(raw)
+		if skipped > 0 {
+			s.logger.Warn("当天通知文件有 " + strconv.Itoa(skipped) + " 个坏行已跳过: " + dateKey)
+		}
+		return entries
+	}
+	if !os.IsNotExist(err) {
+		s.logger.Warn("读取当天通知文件失败，按空处理: " + dateKey + ", " + err.Error())
+		return nil
+	}
+	legacyPath := legacyDayFilePath(s.dir, dateKey)
+	entries, err := readStoredFile(legacyPath)
+	if err != nil {
+		s.quarantineDay(dateKey, legacyPath, err)
+		return nil
+	}
 	return entries
 }
 
@@ -120,7 +140,7 @@ func (s *Storage) Init() error {
 
 // staged 是一天里待落盘的新条目，以及为它们在内存缓存中占位的索引键。
 // 索引键先入缓存（这样同一批里的重复能被挡掉），落盘成功后才写进索引文件；
-// 落盘失败则从缓存回滚，避免索引比数据先一步存在。
+// 落盘失败则整体失效当天缓存，避免索引比数据先一步存在。
 type staged struct {
 	entries    []StoredNotification
 	idKeys     []string
@@ -129,8 +149,7 @@ type staged struct {
 
 // Ingest 写入一批通知，去重后返回统计与新插入条目。clientLabel 为来源（缺省 "default"）。
 //
-// 按日期分组、每天只落盘一次：逐条覆写整个当天数组会带来 O(n²) 的写放大
-// （一批 800 条能为一个 241 KB 的文件写掉近 100 MB）。
+// 按日期分组、每天只追加一次：写入量只与本批大小成正比，与当天已有多少条无关。
 func (s *Storage) Ingest(items []RawNotification, clientLabel string) IngestResult {
 	if clientLabel == "" {
 		clientLabel = "default"
@@ -214,29 +233,54 @@ func (s *Storage) Ingest(items []RawNotification, clientLabel string) IngestResu
 	}
 
 	s.prune()
+	s.evictColdDays(days)
 	return result
 }
 
-// flushDay 把一天的新条目一次性原子写入，成功后才把索引落盘。
+// evictColdDays 在每批 ingest 结束后逐出「今天和本批之外」日期的内存缓存。
+// dayCache 存的是整天的全量通知，不逐出的话长期运行的 daemon 会把历史每一天
+// 都常驻内存，最终被 OOM 杀掉。被逐出的日期下次触到时从磁盘重读，
+// 补发旧日期通知只是偶发场景，这点 IO 可以接受。
+func (s *Storage) evictColdDays(touched map[string]*staged) {
+	today := time.Now().In(time.Local).Format("2006-01-02")
+	cold := func(dateKey string) bool {
+		if dateKey == today {
+			return false
+		}
+		_, ok := touched[dateKey]
+		return !ok
+	}
+	for dateKey := range s.dayCache {
+		if cold(dateKey) {
+			delete(s.dayCache, dateKey)
+		}
+	}
+	for dateKey := range s.idCache {
+		if cold(dateKey) {
+			delete(s.idCache, dateKey)
+		}
+	}
+	for dateKey := range s.contentKeyCach {
+		if cold(dateKey) {
+			delete(s.contentKeyCach, dateKey)
+		}
+	}
+}
+
+// flushDay 把一天的新条目追加写入 .jsonl，成功后才把索引落盘。
+// 当天还是旧 .json 数组时，先把「旧数据 + 本批」原子写成 .jsonl 完成迁移，
+// 再删掉旧文件——crash 在删除前只会留下一份内容已被 .jsonl 包含的过期副本。
 func (s *Storage) flushDay(dateKey string, day *staged) error {
 	if len(day.entries) == 0 {
 		return nil
 	}
-	filePath := s.dayPath(dateKey)
-	arr := append(s.loadDay(dateKey), day.entries...)
-
-	data, err := json.MarshalIndent(arr, "", "  ")
+	existing := s.loadDay(dateKey)
+	err := s.writeDayLines(dateKey, existing, day.entries)
 	if err != nil {
-		s.revertStaged(dateKey, day)
+		s.invalidateDay(dateKey)
 		return err
 	}
-	// 原子写：os.WriteFile 先截断再写，中途崩溃会留下半截 JSON，
-	// 之后解析失败就会把当天数据整份丢掉。
-	if err := fsutil.WriteAtomic(filePath, data, storedFileMode); err != nil {
-		s.revertStaged(dateKey, day)
-		return err
-	}
-	s.dayCache[dateKey] = arr
+	s.dayCache[dateKey] = append(existing, day.entries...)
 
 	for _, key := range day.idKeys {
 		appendLine(filepath.Join(s.idIndexDir, dateKey+".ids"), key)
@@ -247,19 +291,70 @@ func (s *Storage) flushDay(dateKey string, day *staged) error {
 	return nil
 }
 
-// revertStaged 撤回落盘失败那批在内存缓存里的索引占位，否则这些通知会被
-// 永久判定为「已存在」，重发也进不来。
-func (s *Storage) revertStaged(dateKey string, day *staged) {
-	if set, ok := s.idCache[dateKey]; ok {
-		for _, key := range day.idKeys {
-			delete(set, key)
+func (s *Storage) writeDayLines(dateKey string, existing, entries []StoredNotification) error {
+	newLines, err := encodeJSONLines(entries)
+	if err != nil {
+		return err
+	}
+	filePath := dayFilePath(s.dir, dateKey)
+	legacyPath := legacyDayFilePath(s.dir, dateKey)
+
+	if !fsutil.Exists(filePath) && fsutil.Exists(legacyPath) {
+		existingLines, err := encodeJSONLines(existing)
+		if err != nil {
+			return err
+		}
+		if err := fsutil.WriteAtomic(filePath, append(existingLines, newLines...), storedFileMode); err != nil {
+			return err
+		}
+	} else if err := appendDayLines(filePath, newLines); err != nil {
+		return err
+	}
+	// .jsonl 落盘后旧格式文件只是过期副本（含上次迁移 crash 在删除前留下的）。
+	if fsutil.Exists(legacyPath) {
+		_ = os.Remove(legacyPath)
+	}
+	return nil
+}
+
+// appendDayLines 把整批行一次追加到 .jsonl。文件尾若缺换行（上次 torn write
+// 留下的半行），先补一个换行把半行了结成独立的坏行（读取时被跳过），
+// 避免新数据接在半行后面一起变成垃圾。
+func appendDayLines(path string, lines []byte) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, storedFileMode)
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return err
+	}
+	offset := info.Size()
+	if offset > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, offset-1); err != nil {
+			f.Close()
+			return err
+		}
+		if last[0] != '\n' {
+			lines = append([]byte{'\n'}, lines...)
 		}
 	}
-	if set, ok := s.contentKeyCach[dateKey]; ok {
-		for _, key := range day.contentKys {
-			delete(set, key)
-		}
+	if _, err := f.WriteAt(lines, offset); err != nil {
+		f.Close()
+		return err
 	}
+	return f.Close()
+}
+
+// invalidateDay 在落盘失败后丢弃当天的内存缓存与索引占位：追加写可能只写进一半，
+// 内存状态已不可信。下次触到这一天时从磁盘重建（.ids 只在成功后追加，
+// content-key 从数据本身派生），失败批次重发时会与实际落盘的行正确去重。
+func (s *Storage) invalidateDay(dateKey string) {
+	delete(s.dayCache, dateKey)
+	delete(s.idCache, dateKey)
+	delete(s.contentKeyCach, dateKey)
 }
 
 func (s *Storage) buildStored(n RawNotification, clientLabel string) StoredNotification {
@@ -409,7 +504,7 @@ func (s *Storage) prune() {
 		return
 	}
 	cutoff := time.Now().Add(-time.Duration(*s.cfg.RetentionDays) * 24 * time.Hour).In(time.Local).Format("2006-01-02")
-	pruneByDate(s.dir, cutoff, []string{".json", ".md"}, func(k string) {
+	pruneByDate(s.dir, cutoff, []string{".jsonl", ".json", ".md"}, func(k string) {
 		delete(s.idCache, k)
 		delete(s.contentKeyCach, k)
 		delete(s.dayCache, k)
@@ -444,8 +539,8 @@ func pruneByDate(dir, cutoff string, exts []string, evict func(string), filesOnl
 	}
 }
 
-// readStoredFile 读取当天条目。文件不存在返回空；内容损坏返回错误，
-// 交由调用方隔离——静默当成空的一天会让下一次写入覆盖掉当天全部数据。
+// readStoredFile 严格读取旧格式 .json 数组。文件不存在返回空；内容损坏返回错误，
+// 交由调用方隔离——静默当成空的一天会让迁移写 .jsonl 时丢掉当天全部旧数据。
 func readStoredFile(filePath string) ([]StoredNotification, error) {
 	raw, err := os.ReadFile(filePath)
 	if os.IsNotExist(err) {

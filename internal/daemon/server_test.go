@@ -131,6 +131,31 @@ func TestServerIngestNotifications(t *testing.T) {
 	}
 }
 
+// TestReloadConcurrentWithRequests 回归 /daemon/reload 与并发请求的数据竞争：
+// reload 整体替换 credentialSet/tunnelSupervisor/egress，其余请求都在读。
+// 由 -race 检测撕裂读写。
+func TestReloadConcurrentWithRequests(t *testing.T) {
+	_, ts := newTestServer(t, "")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			resp, err := http.Post(ts.URL+"/daemon/reload", "application/json", nil)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		resp, err := http.Get(ts.URL + "/daemon/status")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	<-done
+}
+
 func TestServerNotFound(t *testing.T) {
 	_, ts := newTestServer(t, "")
 	resp, err := http.Get(ts.URL + "/no/such/path")
