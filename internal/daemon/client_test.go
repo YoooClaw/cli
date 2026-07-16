@@ -64,6 +64,23 @@ func TestClientRequestConnectionResetIsDaemonNotRunning(t *testing.T) {
 	}
 }
 
+func TestClientRequestTimeoutIsUnresponsive(t *testing.T) {
+	t.Parallel()
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block // 模拟繁忙的 daemon：连接建立成功但迟迟不响应
+	}))
+	// Cleanup 在 defer 之后执行：srv.Close 会等 in-flight handler 结束，
+	// 必须先 close(block) 放行。
+	t.Cleanup(srv.Close)
+	defer close(block)
+	c := &Client{BaseURL: srv.URL, timeout: 100 * time.Millisecond}
+	_, _, err := c.Request("GET", "/daemon/status", nil)
+	if e, ok := err.(*errs.Error); !ok || e.Code != errs.CodeDaemonUnresponsive {
+		t.Fatalf("timeout should map to DAEMON_UNRESPONSIVE (not NOT_RUNNING), got %v", err)
+	}
+}
+
 func TestClientRequestSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer tok" {

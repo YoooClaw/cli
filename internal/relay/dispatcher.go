@@ -21,6 +21,12 @@ type Dispatcher struct {
 	httpToken   string
 	clientLabel string
 	logger      Logger
+	// rpcClient 用于 gateway RPC 回环，带整体超时：本地 handler 一旦挂住，
+	// 没超时的话 goroutine 永远不回收，手机端重试还会不断叠新的。
+	rpcClient *http.Client
+	// proxyClient 用于 HTTP 代理回环，只限响应头超时——SSE 等流式响应
+	// 合法地长时间不结束，不能设整体超时。
+	proxyClient *http.Client
 
 	wsMu sync.Mutex
 	ws   map[string]*websocket.Conn
@@ -40,6 +46,8 @@ func NewDispatcher(opts DispatcherOptions) *Dispatcher {
 	return &Dispatcher{
 		client: opts.Client, httpBaseURL: strings.TrimRight(opts.HTTPBaseURL, "/"), httpToken: opts.HTTPToken,
 		clientLabel: opts.ClientLabel, logger: opts.Logger, ws: map[string]*websocket.Conn{},
+		rpcClient:   &http.Client{Timeout: 60 * time.Second},
+		proxyClient: &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 60 * time.Second}},
 	}
 }
 
@@ -69,7 +77,7 @@ func (d *Dispatcher) PushEvent(event string, payload any) {
 func (d *Dispatcher) handleFrame(frame Frame) {
 	typ, _ := frame["type"].(string)
 	id, _ := frame["id"].(string)
-	d.logger.Info(fmt.Sprintf("Relay dispatcher: handling frame type=%s id=%s", typ, firstNonEmpty(id, "N/A")))
+	d.logger.Debug(fmt.Sprintf("Relay dispatcher: handling frame type=%s id=%s", typ, firstNonEmpty(id, "N/A")))
 	switch typ {
 	case "req":
 		go d.handleReq(frame)
@@ -153,7 +161,7 @@ func (d *Dispatcher) handleRequest(frame Frame) {
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := d.proxyClient.Do(req)
 	if err != nil {
 		d.sendProxyError(id, 502, "daemon loopback failed: "+err.Error())
 		return
@@ -278,7 +286,7 @@ func (d *Dispatcher) loopbackJSON(method, path string, body any, extra map[strin
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := d.rpcClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

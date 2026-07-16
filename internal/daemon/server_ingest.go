@@ -230,8 +230,8 @@ func (s *server) handleImageGateway(w http.ResponseWriter, r *http.Request, auth
 
 func (s *server) resolveConfiguredASR(caller *recording.AsrConfig) *recording.AsrConfig {
 	fallback := ""
-	if s.credentialSet.DefaultEntry != nil {
-		fallback = s.credentialSet.DefaultEntry.Key
+	if set := s.snapshotCreds(); set.DefaultEntry != nil {
+		fallback = set.DefaultEntry.Key
 	}
 	return recording.ResolveAsrConfig(caller, recording.LoadLocalAsrConfig(s.ctx.Paths.Recordings), fallback)
 }
@@ -243,8 +243,8 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 			s.logger.Warn("[recording-status] 事件落盘失败: " + err.Error())
 		}
 	}
-	if s.egress != nil {
-		if err := s.egress.PushEvent("recording.status", event); err != nil {
+	if egress := s.currentEgress(); egress != nil {
+		if err := egress.PushEvent("recording.status", event); err != nil {
 			s.logger.Warn("[recording-status] 出站事件投递失败: " + err.Error())
 		}
 	}

@@ -13,6 +13,7 @@ import (
 
 type testLogger struct{ t *testing.T }
 
+func (l testLogger) Debug(msg string) { l.t.Log("[DEBUG] " + msg) }
 func (l testLogger) Info(msg string)  { l.t.Log("[INFO] " + msg) }
 func (l testLogger) Warn(msg string)  { l.t.Log("[WARN] " + msg) }
 func (l testLogger) Error(msg string) { l.t.Log("[ERROR] " + msg) }

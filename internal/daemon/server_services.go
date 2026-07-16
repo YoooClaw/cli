@@ -67,15 +67,17 @@ func (s *server) handleTunnel(w http.ResponseWriter, r *http.Request, path strin
 		if client != "" && client != "all" {
 			relayStatus["tunnels"] = filterRelayTunnels(relayStatus["tunnels"], client)
 		}
+		set := s.snapshotCreds()
 		writeJSON(w, 200, map[string]any{
-			"ok": true, "mode": relayStatus["mode"], "credentialMode": s.credentialSet.Mode,
-			"defaultLabel": defaultEntryLabel(s.credentialSet),
+			"ok": true, "mode": relayStatus["mode"], "credentialMode": set.Mode,
+			"defaultLabel": defaultEntryLabel(set),
 			"connected":    relayStatus["connected"], "relayUrl": relayStatus["url"], "enabled": s.cfg.Relay.Enabled,
 			"reconnectAttempt": relayStatus["reconnectAttempt"], "lastDisconnectReason": relayStatus["lastDisconnectReason"],
 			"note": relayStatus["note"], "tunnels": relayStatus["tunnels"],
 		})
 	case "/tunnel/reconnect":
-		if s.tunnelSupervisor == nil {
+		sup := s.supervisor()
+		if sup == nil {
 			relayStatus := s.relayStatusPayload()
 			writeJSON(w, 200, map[string]any{"ok": true, "mode": relayStatus["mode"], "reconnected": false, "note": relayStatus["note"]})
 			return
@@ -90,7 +92,7 @@ func (s *server) handleTunnel(w http.ResponseWriter, r *http.Request, path strin
 		if client == "all" {
 			client = ""
 		}
-		reconnected, missing := s.tunnelSupervisor.Reconnect(client)
+		reconnected, missing := sup.Reconnect(client)
 		if missing != "" {
 			writeJSON(w, 404, errBody("YOOOCLAW_TUNNEL_LABEL_NOT_FOUND", "隧道不存在："+missing))
 			return
@@ -123,7 +125,7 @@ func (s *server) handleTunnel(w http.ResponseWriter, r *http.Request, path strin
 }
 
 func (s *server) hasCredentialLabel(label string) bool {
-	for _, entry := range s.credentialSet.Entries {
+	for _, entry := range s.snapshotCreds().Entries {
 		if entry.Label == label {
 			return true
 		}

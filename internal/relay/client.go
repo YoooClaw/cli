@@ -139,29 +139,19 @@ func (c *Client) connectOnce() error {
 	c.writeStatus("connecting", "")
 
 	dialer := websocket.Dialer{HandshakeTimeout: handshakeTimeout}
-	connCh := make(chan struct {
-		conn *websocket.Conn
-		resp *http.Response
-		err  error
-	}, 1)
+	connCh := make(chan dialResult, 1)
 	go func() {
 		conn, resp, err := dialer.Dial(wsURL.String(), headers)
-		connCh <- struct {
-			conn *websocket.Conn
-			resp *http.Response
-			err  error
-		}{conn: conn, resp: resp, err: err}
+		connCh <- dialResult{conn: conn, resp: resp, err: err}
 	}()
-	var result struct {
-		conn *websocket.Conn
-		resp *http.Response
-		err  error
-	}
+	var result dialResult
 	select {
 	case result = <-connCh:
 	case <-time.After(connectWatchdog):
+		go reapAbandonedDial(connCh)
 		return fmt.Errorf("connect-watchdog-timeout")
 	case <-c.stopCh:
+		go reapAbandonedDial(connCh)
 		return fmt.Errorf("stopped")
 	}
 	if result.err != nil {
@@ -189,7 +179,7 @@ func (c *Client) connectOnce() error {
 	heartbeatDone := make(chan error, 1)
 	conn.SetPongHandler(func(_ string) error {
 		c.markInbound()
-		c.opts.Logger.Info("Relay tunnel: <- pong received")
+		c.opts.Logger.Debug("Relay tunnel: <- pong received")
 		return nil
 	})
 	go c.readLoop(conn, readDone)
@@ -203,6 +193,21 @@ func (c *Client) connectOnce() error {
 	case <-c.stopCh:
 		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client stopping"), time.Now().Add(time.Second))
 		return fmt.Errorf("stopped")
+	}
+}
+
+type dialResult struct {
+	conn *websocket.Conn
+	resp *http.Response
+	err  error
+}
+
+// reapAbandonedDial 关闭被放弃的 dial 迟到成功建立的连接。watchdog 超时或 stop
+// 之后 dial goroutine 仍可能成功返回，不关的话每次弱网重连都漏一个 fd，
+// 长期运行会把 fd 耗尽。
+func reapAbandonedDial(connCh <-chan dialResult) {
+	if result := <-connCh; result.conn != nil {
+		_ = result.conn.Close()
 	}
 }
 
@@ -240,7 +245,7 @@ func (c *Client) readLoop(conn *websocket.Conn, done chan<- error) {
 		if text == "pong" {
 			continue
 		}
-		c.opts.Logger.Info(fmt.Sprintf("Relay tunnel: received message (%d chars): %s", len(text), preview(text, 500)))
+		c.opts.Logger.Debug(fmt.Sprintf("Relay tunnel: received message (%d chars): %s", len(text), preview(text, 500)))
 		var frame Frame
 		if err := json.Unmarshal(data, &frame); err != nil {
 			c.opts.Logger.Warn("Relay tunnel: received invalid frame, ignoring")
@@ -249,18 +254,22 @@ func (c *Client) readLoop(conn *websocket.Conn, done chan<- error) {
 		c.handlersMu.Lock()
 		handlers := append([]func(Frame){}, c.inboundHandlers...)
 		c.handlersMu.Unlock()
+		// 同步分发，保证帧按到达顺序处理：ws_data 若每帧起一个 goroutine，
+		// 会乱序写入本地 WS，还可能对同一连接并发 WriteMessage（gorilla 直接
+		// panic）。慢操作（req/request/ws_open）由 dispatcher 自行异步化。
 		for _, handler := range handlers {
-			h := handler
-			go func() {
-				defer func() {
-					if rec := recover(); rec != nil {
-						c.opts.Logger.Error(fmt.Sprintf("Relay tunnel: handler panic: %v", rec))
-					}
-				}()
-				h(frame)
-			}()
+			c.invokeHandler(handler, frame)
 		}
 	}
+}
+
+func (c *Client) invokeHandler(handler func(Frame), frame Frame) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.opts.Logger.Error(fmt.Sprintf("Relay tunnel: handler panic: %v", rec))
+		}
+	}()
+	handler(frame)
 }
 
 func (c *Client) heartbeatLoop(conn *websocket.Conn, done chan<- error) {
@@ -291,7 +300,7 @@ func (c *Client) sendHeartbeat(conn *websocket.Conn) error {
 		_ = conn.Close()
 		return fmt.Errorf("heartbeat-timeout idleMs=%d", idle.Milliseconds())
 	}
-	c.opts.Logger.Info(`Relay tunnel: -> heartbeat "ping"`)
+	c.opts.Logger.Debug(`Relay tunnel: -> heartbeat "ping"`)
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {

@@ -31,6 +31,7 @@ const (
 	CodeNetworkError            = "YOOOCLAW_NETWORK_ERROR"
 	CodeConfirmationRequired    = "YOOOCLAW_CONFIRMATION_REQUIRED"
 	CodeNotInteractive          = "YOOOCLAW_NOT_INTERACTIVE"
+	CodeDaemonUnresponsive      = "YOOOCLAW_DAEMON_UNRESPONSIVE"
 )
 
 // Error 携带结构化错误码、提示与进程退出码。

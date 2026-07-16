@@ -113,13 +113,18 @@ func spawn(p paths.Paths, executable string, args, env []string, release bool) (
 	if current := ReadLock(p); current != nil && current.PID == cmd.Process.Pid {
 		RemoveLock(p)
 	}
-	return nil, errs.New(errs.CodeUnknown, "daemon 启动失败（3s 内 HTTP 未就绪）："+readyErr.Error()).
+	return nil, errs.New(errs.CodeUnknown, fmt.Sprintf("daemon 启动失败（%s 内 HTTP 未就绪）：%s", daemonReadyTimeout, readyErr.Error())).
 		WithHint("查看 yoooclaw daemon logs 排查")
 }
 
+// daemonReadyTimeout 是等待 fork 出的 daemon 就绪的上限。不能太短：WSL 冷启动、
+// 杀软扫描、高负载机器上 daemon 起来可能超过 3s，等不到就 kill 子进程会让监管方
+// 陷入「反复拉起→反复杀」的重启循环。
+const daemonReadyTimeout = 15 * time.Second
+
 func waitForDaemonReady(p paths.Paths, pid int) (*Lock, error) {
 	var lastErr error = fmt.Errorf("尚未写出 lock")
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(daemonReadyTimeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 		lock := ReadLock(p)
