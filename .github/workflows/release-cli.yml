@@ -292,6 +292,11 @@ jobs:
     needs: build-release
     runs-on: ubuntu-latest
     environment: production
+    env:
+      OSS_REGION: oss-cn-hangzhou
+      OSS_BUCKET: yoooclaw-artifacts
+      OSS_PUBLIC_URL: https://artifact.yoooclaw.com
+      OSS_PREFIX: cli
     steps:
       - uses: actions/checkout@v4
         with:
@@ -301,6 +306,11 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: tools/oss-upload/go.sum
 
       - name: Download native binaries
         uses: actions/download-artifact@v4
@@ -428,6 +438,18 @@ jobs:
             gh release create "cli-v$VERSION" "${assets[@]}" "${args[@]}"
           fi
 
+      - name: Upload artifacts to Alibaba OSS
+        timeout-minutes: 10
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ]; then
+            echo "::error::缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET GitHub Secrets（production environment）"
+            exit 1
+          fi
+          go -C tools/oss-upload run . --version "$VERSION"
+
       - name: Notify Feishu
         if: success()
         env:
@@ -460,7 +482,13 @@ jobs:
           CHANNEL="稳定版"
           [ "$PRERELEASE" = "1" ] && CHANNEL="预发布"
 
+          INSTALL_FLAGS=""
+          [ "$PRERELEASE" = "1" ] && INSTALL_FLAGS=" -s -- --beta"
+
           TEXT="🚀 @yoooclaw/cli ${CURRENT_TAG}（${CHANNEL}）已发布
+
+          📥 安装（阿里云 OSS）：
+          curl -fsSL ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.sh | sh${INSTALL_FLAGS}
 
           📝 改动（${RANGE}）：
           ${CHANGES}
