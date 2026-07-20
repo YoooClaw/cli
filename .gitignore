@@ -20,3 +20,6 @@ dist-npm
 # 测试覆盖率产物
 coverage.out
 coverage.html
+
+# tools 本地构建产物
+tools/oss-upload/oss-upload
