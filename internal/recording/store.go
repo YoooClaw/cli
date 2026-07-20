@@ -463,11 +463,13 @@ func extractAudioExt(rawURL string) string {
 	return ".ogg"
 }
 
+var extRE = regexp.MustCompile(`^\.[A-Za-z0-9]+$`)
+
 func validExt(ext string) bool {
 	if ext == "" || len(ext) > 12 {
 		return false
 	}
-	return regexp.MustCompile(`^\.[A-Za-z0-9]+$`).MatchString(ext)
+	return extRE.MatchString(ext)
 }
 
 var badFilenameChars = strings.NewReplacer("/", "", "\\", "", ":", "", "*", "", "?", "", `"`, "", "<", "", ">", "", "|", "")

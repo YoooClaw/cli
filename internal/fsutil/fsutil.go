@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/YoooClaw/cli/internal/errs"
 )
@@ -86,6 +87,15 @@ func ReadJSON(path string, out any) (exists bool, err error) {
 			WithHint("可手动修复或删除后重新生成")
 	}
 	return true, nil
+}
+
+// IsSafeName 报告 s 能否安全地用作单层文件/目录名（外部输入拼进 filepath.Join 前必须过此检查）：
+// 拒绝空串、"."、".."、路径分隔符、NUL 与冒号（Windows 盘符/ADS），防止目录穿越。
+func IsSafeName(s string) bool {
+	if s == "" || s == "." || s == ".." || len(s) > 200 {
+		return false
+	}
+	return !strings.ContainsAny(s, "/\\:\x00")
 }
 
 // Exists 报告路径是否存在。

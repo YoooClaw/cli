@@ -149,8 +149,12 @@ func resolve(base, name string) *resolved {
 		return nil
 	}
 	dir := tasksDir(base)
-	if meta := readMeta(filepath.Join(dir, norm)); meta != nil {
-		return &resolved{taskDir: filepath.Join(dir, norm), meta: meta}
+	// 直接按目录名探测仅限安全名；带路径分隔符的 name 只能命中下面按 meta.Name
+	// 的扫描（taskDir 恒在 tasks/ 之内），否则 delete 的 RemoveAll 会被穿越出去。
+	if fsutil.IsSafeName(norm) {
+		if meta := readMeta(filepath.Join(dir, norm)); meta != nil {
+			return &resolved{taskDir: filepath.Join(dir, norm), meta: meta}
+		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -203,6 +207,9 @@ func Create(base string, p CreateParams) (*Meta, error) {
 	writeMu.Lock()
 	defer writeMu.Unlock()
 
+	if !fsutil.IsSafeName(p.Name) {
+		return nil, &Error{Code: "INVALID_PARAMS", Message: "灯效规则名含非法字符（不允许路径分隔符等）：" + p.Name}
+	}
 	if resolve(base, p.Name) != nil {
 		return nil, &Error{Code: "ALREADY_EXISTS", Message: "灯效规则 '" + p.Name + "' 已存在"}
 	}
