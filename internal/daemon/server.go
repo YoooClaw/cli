@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -378,11 +379,11 @@ func (s *server) authContext(r *http.Request, path string) (authResult, bool) {
 	bearer := bearerValue(r)
 	internalRelay := r.Header.Get(relay.InternalHTTPHeader) == "1"
 	internalLabel := strings.TrimSpace(r.Header.Get(relay.InternalClientLabelHeader))
-	gatewayTokenOK := s.token == "" || bearer == s.token
+	gatewayTokenOK := s.token == "" || secretEqual(bearer, s.token)
 	if internalRelay && internalLabel != "" && gatewayTokenOK {
 		return authResult{clientLabel: internalLabel, authKind: "relay-api-key"}, true
 	}
-	if s.token != "" && bearer == s.token {
+	if s.token != "" && secretEqual(bearer, s.token) {
 		return authResult{clientLabel: "local", authKind: "gateway-token"}, true
 	}
 	if isIngestPath(path) {
@@ -402,11 +403,17 @@ func (s *server) labelForAPIKey(apiKey string) string {
 	}
 	raw := strings.TrimPrefix(apiKey, "Bearer ")
 	for _, e := range s.snapshotCreds().Entries {
-		if strings.TrimPrefix(e.Key, "Bearer ") == raw {
+		if secretEqual(strings.TrimPrefix(e.Key, "Bearer "), raw) {
 			return e.Label
 		}
 	}
 	return ""
+}
+
+// secretEqual 常数时间比较 token/api-key，避免逐字节短路造成 timing 侧信道
+//（daemon 可经 Relay/非 loopback 暴露，鉴权比较不能用 ==）。
+func secretEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func (s *server) handleIngest(w http.ResponseWriter, r *http.Request, auth authResult, field string) {

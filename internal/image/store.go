@@ -114,6 +114,10 @@ func Ingest(imagesDir string, payload SyncPayload, clientLabel string, maxBytes 
 	if imageID == "" || strings.TrimSpace(payload.Image.OssImageURL) == "" || strings.TrimSpace(payload.Image.CreatedAt) == "" {
 		return IngestResult{}, fmt.Errorf("imageId / image.oss_image_url / image.created_at 必填")
 	}
+	// imageID 会拼进 files/<id>.<ext> 落盘路径，必须挡掉 ../ 之类的穿越。
+	if !fsutil.IsSafeName(imageID) {
+		return IngestResult{}, fmt.Errorf("imageId 含非法字符（不允许路径分隔符等）")
+	}
 	if clientLabel == "" {
 		clientLabel = "default"
 	}

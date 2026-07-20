@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/YoooClaw/cli/internal/fsutil"
 	imgstore "github.com/YoooClaw/cli/internal/image"
 	"github.com/YoooClaw/cli/internal/recording"
 )
@@ -29,6 +30,12 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		recordingID := strings.TrimSpace(body.RecordingID)
 		if recordingID == "" {
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
+			return
+		}
+		// recordingID 直接拼进 transcript/summary/audio 的落盘文件名，
+		// 必须在入口挡掉 ../ 之类的穿越。
+		if !fsutil.IsSafeName(recordingID) {
+			gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符（不允许路径分隔符等）")
 			return
 		}
 		if body.Transcript == nil && body.Summary == nil {
@@ -60,6 +67,10 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		recordingID := strings.TrimSpace(body.RecordingID)
 		if recordingID == "" {
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
+			return
+		}
+		if !fsutil.IsSafeName(recordingID) {
+			gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符（不允许路径分隔符等）")
 			return
 		}
 		if body.ASR != nil {

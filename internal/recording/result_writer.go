@@ -79,6 +79,10 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	if recordingID == "" {
 		return ResultWriteResult{}, errors.New("recordingId is required")
 	}
+	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
+	if !fsutil.IsSafeName(recordingID) {
+		return ResultWriteResult{}, errors.New("recordingId is invalid")
+	}
 	if params.Transcript == nil && params.Summary == nil {
 		return ResultWriteResult{}, errors.New("transcript or summary is required")
 	}
