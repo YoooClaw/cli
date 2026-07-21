@@ -13,6 +13,7 @@ import (
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/paths"
+	"github.com/YoooClaw/cli/internal/relay"
 )
 
 // newTestServer 构造一个最小可用的 server（无 relay、token 可配）。
@@ -156,6 +157,43 @@ func TestReloadConcurrentWithRequests(t *testing.T) {
 	<-done
 }
 
+// App 探活契约：/gateway/health 的响应字段必须与 hermes-plugin 的 req/health 对齐。
+func TestGatewayHealthMatchesHermesShape(t *testing.T) {
+	_, ts := newTestServer(t, "")
+	resp, err := http.Post(ts.URL+"/gateway/health", "application/json", strings.NewReader(`{"echo":"probe_01"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OK   bool           `json:"ok"`
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.OK {
+		t.Fatalf("gateway envelope not ok: %+v", body)
+	}
+	if body.Data["ok"] != true {
+		t.Errorf("payload.ok = %v, want true", body.Data["ok"])
+	}
+	if body.Data["echo"] != "probe_01" {
+		t.Errorf("payload.echo = %v, want probe_01", body.Data["echo"])
+	}
+	for _, key := range []string{"time", "sessionDb", "lastInboundAt"} {
+		if _, ok := body.Data[key]; !ok {
+			t.Errorf("payload missing key %q: %+v", key, body.Data)
+		}
+	}
+	relay, _ := body.Data["relay"].(map[string]any)
+	for _, key := range []string{"stale", "currentUrl", "expectedUrl"} {
+		if _, ok := relay[key]; !ok {
+			t.Errorf("payload.relay missing key %q: %+v", key, relay)
+		}
+	}
+}
+
 func TestServerNotFound(t *testing.T) {
 	_, ts := newTestServer(t, "")
 	resp, err := http.Get(ts.URL + "/no/such/path")
@@ -225,5 +263,23 @@ func TestServerHelpers(t *testing.T) {
 	r.Header.Set("Authorization", "Basic xyz")
 	if bearerValue(r) != "" {
 		t.Error("non-bearer should be empty")
+	}
+}
+
+// health 探针发现 relay 地址过期时要把隧道重指到配置地址（hermes 的
+// _force_reconnect_if_relay_url_stale 对应实现）。
+func TestRetargetRelayIfStale(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	if srv.retargetRelayIfStale() {
+		t.Error("没有 supervisor 时不应重指")
+	}
+	srv.tunnelSupervisor = relay.NewSupervisor(relay.SupervisorOptions{
+		TunnelURL: "wss://stale.example.com/ws", StateDir: t.TempDir(), Logger: srv.logger,
+	})
+	if !srv.retargetRelayIfStale() {
+		t.Error("地址过期应触发重指")
+	}
+	if srv.retargetRelayIfStale() {
+		t.Error("地址已对齐后不应重复重指")
 	}
 }

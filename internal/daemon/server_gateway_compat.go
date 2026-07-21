@@ -3,6 +3,7 @@ package daemon
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/version"
 )
@@ -11,7 +12,17 @@ func (s *server) handleGatewayCompat(w http.ResponseWriter, r *http.Request, pat
 	method := strings.TrimPrefix(path, "/gateway/")
 	switch method {
 	case "health":
-		gatewayOK(w, s.gatewayHealthPayload())
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		payload := s.gatewayHealthPayload(body["echo"])
+		gatewayOK(w, payload)
+		// 与 hermes 一致：探针发现隧道拨的还是旧地址时先如实回 ok:false，
+		// 再顺手把隧道重指到当前配置地址，App 稍后重试即可探到。
+		if healthy, _ := payload["ok"].(bool); !healthy {
+			s.retargetRelayIfStale()
+		}
 	case "channels.status":
 		gatewayOK(w, s.gatewayChannelsPayload())
 	case "agents.list":
@@ -36,20 +47,30 @@ func (s *server) handleGatewayCompat(w http.ResponseWriter, r *http.Request, pat
 	}
 }
 
-func (s *server) gatewayHealthPayload() map[string]any {
+// gatewayHealthPayload 是 App 探活口。字段与 hermes-plugin 的 `req`/`health`
+// 响应对齐（ok/time/sessionDb/lastInboundAt/relay.{stale,currentUrl,expectedUrl}/echo），
+// 其余 yoooclaw 自有字段作为超集保留，老消费者不受影响。
+func (s *server) gatewayHealthPayload(echo any) map[string]any {
 	relayStatus := s.relayStatusPayload()
+	stale, _ := relayStatus["stale"].(bool)
 	s.st.mu.Lock()
 	lastIngest := s.st.lastIngest
 	ingestCount := s.st.ingestCount
 	s.st.mu.Unlock()
-	return map[string]any{
-		"status": "ok", "healthy": true, "server": "yoooclaw", "version": version.Version,
+	payload := map[string]any{
+		"ok": !stale, "time": time.Now().UTC().Format(time.RFC3339), "sessionDb": false,
+		"lastInboundAt": nilIfEmptyStr(lastIngest),
+		"status":        "ok", "healthy": true, "server": "yoooclaw", "version": version.Version,
 		"protocol": ProtocolVersion, "capabilities": Capabilities, "profile": s.ctx.Profile,
 		"bind": s.bind, "port": s.port, "startedAt": s.st.startedAt,
 		"lastIngestAt": nilIfEmptyStr(lastIngest), "ingestCount": ingestCount,
 		"relay":    relayStatus,
 		"features": map[string]any{"methods": gatewayMethodNames(), "capabilities": Capabilities},
 	}
+	if echo != nil {
+		payload["echo"] = echo
+	}
+	return payload
 }
 
 func (s *server) gatewayChannelsPayload() map[string]any {

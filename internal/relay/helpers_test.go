@@ -255,3 +255,36 @@ func TestSupervisorCleansDispatcherWSOnDisconnect(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestSupervisorRetarget(t *testing.T) {
+	t.Parallel()
+
+	supervisor := NewSupervisor(SupervisorOptions{
+		TunnelURL:          "ws://127.0.0.1:1/ws",
+		HTTPBaseURL:        "http://127.0.0.1:1",
+		ReconnectBackoffMs: 50,
+		StateDir:           t.TempDir(),
+		Logger:             testLogger{t},
+	})
+	supervisor.Apply(creds.CredentialSet{
+		Mode:    "single",
+		Entries: []creds.ApiKeyEntry{{Label: "default", Key: "relay-key"}},
+	})
+	defer supervisor.StopAll("test done")
+
+	if changed, _ := supervisor.Retarget("ws://127.0.0.1:1/ws"); changed {
+		t.Error("same URL should not retarget")
+	}
+	if changed, _ := supervisor.Retarget(""); changed {
+		t.Error("empty URL should not retarget")
+	}
+
+	changed, restarted := supervisor.Retarget("ws://127.0.0.1:2/ws")
+	if !changed || len(restarted) != 1 || restarted[0] != "default" {
+		t.Fatalf("retarget changed=%v restarted=%v", changed, restarted)
+	}
+	status := supervisor.Status()
+	if len(status.Tunnels) != 1 || status.Tunnels[0].URL != "ws://127.0.0.1:2/ws" {
+		t.Errorf("tunnel should dial the new URL: %+v", status.Tunnels)
+	}
+}

@@ -265,6 +265,24 @@ func (s *server) supervisor() *relay.Supervisor {
 	return s.tunnelSupervisor
 }
 
+// retargetRelayIfStale 把隧道重指到当前配置解析出的 relay 地址。环境切换（reload
+// 换 profile/env）之后 s.cfg 已经指向新地址，但既有 client 还拨着旧的；health 探针
+// 发现 stale 时调用这里补一次重连，App 下一次探测就能拿到 ok:true。
+func (s *server) retargetRelayIfStale() bool {
+	sup := s.supervisor()
+	if sup == nil {
+		return false
+	}
+	s.shareMu.RLock()
+	expected := config.ResolveRelayURL(s.cfg)
+	s.shareMu.RUnlock()
+	changed, restarted := sup.Retarget(expected)
+	if changed {
+		s.logger.Info(fmt.Sprintf("health 探针发现 relay 地址过期，已重指并重连隧道：%v", restarted))
+	}
+	return changed
+}
+
 func (s *server) currentEgress() Egress {
 	s.shareMu.RLock()
 	defer s.shareMu.RUnlock()
@@ -411,7 +429,7 @@ func (s *server) labelForAPIKey(apiKey string) string {
 }
 
 // secretEqual 常数时间比较 token/api-key，避免逐字节短路造成 timing 侧信道
-//（daemon 可经 Relay/非 loopback 暴露，鉴权比较不能用 ==）。
+// （daemon 可经 Relay/非 loopback 暴露，鉴权比较不能用 ==）。
 func secretEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
@@ -504,11 +522,13 @@ func (s *server) relayStatusPayload() map[string]any {
 		connected := false
 		reconnectAttempt := 0
 		lastDisconnectReason := ""
+		currentURL := ""
 		for _, tunnel := range status.Tunnels {
 			if tunnel.Default || status.DefaultLabel == "" {
 				connected = tunnel.Connected
 				reconnectAttempt = tunnel.ReconnectAttempt
 				lastDisconnectReason = tunnel.LastDisconnectReason
+				currentURL = tunnel.URL
 				break
 			}
 		}
@@ -516,9 +536,13 @@ func (s *server) relayStatusPayload() map[string]any {
 		if !connected {
 			note = "Relay 重连中"
 		}
+		expectedURL := config.ResolveRelayURL(s.cfg)
 		return map[string]any{
-			"mode": "relay", "connected": connected, "env": envhost.Name(), "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
+			"mode": "relay", "connected": connected, "env": envhost.Name(), "url": expectedURL, "enabled": s.cfg.Relay.Enabled,
 			"reconnectAttempt": reconnectAttempt, "lastDisconnectReason": nilIfEmptyStr(lastDisconnectReason),
+			// stale：默认隧道实际拨的地址与配置解析出的地址不一致，说明正在跟随环境切换重连。
+			"stale":      currentURL != "" && currentURL != expectedURL,
+			"currentUrl": nilIfEmptyStr(currentURL), "expectedUrl": expectedURL,
 			"note": note, "tunnels": status.Tunnels,
 		}
 	}
@@ -536,6 +560,7 @@ func (s *server) relayStatusPayload() map[string]any {
 	return map[string]any{
 		"mode": "standalone-http", "connected": false, "env": envhost.Name(), "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
 		"reconnectAttempt": 0, "note": note, "tunnels": []any{},
+		"stale": false, "currentUrl": nil, "expectedUrl": config.ResolveRelayURL(s.cfg),
 	}
 }
 
