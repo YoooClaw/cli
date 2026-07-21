@@ -206,17 +206,24 @@ func TestMask(t *testing.T) {
 }
 
 func TestResolveCloudHost(t *testing.T) {
+	// 环境变量显式设过 → 第 1 优先级，压过配置里的一切。
 	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
 	t.Setenv("OPENCLAW_HOST_TEST", "")
-
-	// 未配置 → 跟随 PHONE_NOTIFICATIONS_ENV。
-	if got := ResolveCloudHost(Config{}); got != "openclaw-service-test.yoooclaw.com" {
-		t.Errorf("empty host should follow env, got %q", got)
+	overridden := Config{Cloud: CloudSection{Host: "my-cloud.example.com"}}
+	if got, src := ResolveCloudHostSource(overridden); got != "openclaw-service-test.yoooclaw.com" || src != "env" {
+		t.Errorf("explicit env should win over cloud.host, got %q from %q", got, src)
 	}
-	// 自定义主机 → 原样保留，环境变量不再有话语权。
-	custom := Config{Cloud: CloudSection{Host: "my-cloud.example.com"}}
-	if got := ResolveCloudHost(custom); got != "my-cloud.example.com" {
-		t.Errorf("custom host should win over env, got %q", got)
+
+	// 以下都在"环境变量没设"的前提下。
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "")
+	t.Setenv("OPENCLAW_HOST_PRODUCTION", "")
+
+	if got, src := ResolveCloudHostSource(Config{}); got != "openclaw-service.yoooclaw.com" || src != "default" {
+		t.Errorf("bare config should fall back to built-in default, got %q from %q", got, src)
+	}
+	// cloud.host → 第 2 优先级。
+	if got, src := ResolveCloudHostSource(overridden); got != "my-cloud.example.com" || src != "cloud.host" {
+		t.Errorf("cloud.host should win, got %q from %q", got, src)
 	}
 	// scheme / 尾斜杠会被归一化掉。
 	messy := Config{Cloud: CloudSection{Host: "https://my-cloud.example.com/"}}
@@ -230,8 +237,39 @@ func TestResolveCloudHost(t *testing.T) {
 	}
 }
 
+// 复现并锁住那个真实故障：relay.url 写着 -test、cloud.host 没设、环境变量没设，
+// 此前灯效与隧道双双跑去生产（灯效 401）。现在配置说什么就是什么。
+func TestResolveCloudHostFollowsRelayURL(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "")
+	t.Setenv("OPENCLAW_HOST_PRODUCTION", "")
+
+	cfg := Config{Relay: RelaySection{URL: "wss://openclaw-service-test.yoooclaw.com" + RelayPath}}
+	if got, src := ResolveCloudHostSource(cfg); got != "openclaw-service-test.yoooclaw.com" || src != "relay.url" {
+		t.Errorf("cloud host should follow relay.url, got %q from %q", got, src)
+	}
+	if got := ResolveRelayURL(cfg); got != "wss://openclaw-service-test.yoooclaw.com"+RelayPath {
+		t.Errorf("relay should stay on the host its own config names, got %q", got)
+	}
+
+	// cloud.host 更高优先级，能压过 relay.url。
+	cfg.Cloud.Host = "openclaw-service-dev.yoooclaw.com"
+	if got, src := ResolveCloudHostSource(cfg); got != "openclaw-service-dev.yoooclaw.com" || src != "cloud.host" {
+		t.Errorf("cloud.host should outrank relay.url, got %q from %q", got, src)
+	}
+
+	// 自定义 relay 主机不外溢到灯效 / ASR：那台机器未必提供插件侧 API。
+	custom := Config{Relay: RelaySection{URL: "wss://my-relay.example.com/custom/path"}}
+	if got, src := ResolveCloudHostSource(custom); got != "openclaw-service.yoooclaw.com" || src != "default" {
+		t.Errorf("custom relay host must not leak into cloud host, got %q from %q", got, src)
+	}
+	// 但隧道自己仍然用它。
+	if got := ResolveRelayURL(custom); got != "wss://my-relay.example.com/custom/path" {
+		t.Errorf("custom relay URL should be preserved, got %q", got)
+	}
+}
+
 func TestResolveRelayURLFollowsCloudHost(t *testing.T) {
-	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "")
 	t.Setenv("OPENCLAW_HOST_PRODUCTION", "")
 
 	// relay.url 还是内置默认形态 → 跟着 cloud.host 走，隧道与灯效/ASR 不会分家。
