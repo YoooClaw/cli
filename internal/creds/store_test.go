@@ -261,29 +261,31 @@ func TestAPIKeyShapeWarning(t *testing.T) {
 		"":                    false,
 		"ock-jyGDxxxxxxxx":    false,
 		"  ock-jyGDxxxxxxxx ": false,
-		"ock-cli-abcdefgh":    true, // relay 认、插件侧不认，是本函数存在的理由
-		"sk-something":        true,
+		// ock-cli-* 是有效的插件侧 key（实测测试环境 light-rules 返回 200），
+		// 不能因为子前缀就报警——0.6.2-beta.0 犯过这个错。
+		"ock-cli-abcdefgh": false,
+		"sk-something":     true,
 	}
 	for key, want := range cases {
 		if got := APIKeyShapeWarning(key) != ""; got != want {
 			t.Errorf("APIKeyShapeWarning(%q) warned=%v, want %v", key, got, want)
 		}
 	}
-	if w := APIKeyShapeWarning("ock-cli-abcdefgh"); !strings.Contains(w, "ock-cli-") {
-		t.Errorf("CLI key warning should name the prefix: %s", w)
-	}
 }
 
 func TestPluginAPIKeyRejectedHint(t *testing.T) {
 	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
-	hint := PluginAPIKeyRejectedHint("ock-cli-abcdefgh")
-	for _, want := range []string{"test", "openclaw-service-test.yoooclaw.com", "ock-cli-", MaskSecret("ock-cli-abcdefgh")} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("hint missing %q: %s", want, hint)
+	// 形态正常的 key（含 ock-cli-*）一律走"环境不匹配"这一支——这才是 401 的实际成因。
+	for _, key := range []string{"ock-cli-abcdefgh", "ock-jyGDxxxxxxxx"} {
+		hint := PluginAPIKeyRejectedHint(key)
+		for _, want := range []string{"test", "openclaw-service-test.yoooclaw.com", MaskSecret(key), "PHONE_NOTIFICATIONS_ENV"} {
+			if !strings.Contains(hint, want) {
+				t.Errorf("hint for %q missing %q: %s", key, want, hint)
+			}
 		}
 	}
-	// 形态正常的 key 走环境不匹配那一支。
-	if h := PluginAPIKeyRejectedHint("ock-jyGDxxxxxxxx"); !strings.Contains(h, "PHONE_NOTIFICATIONS_ENV") {
-		t.Errorf("well-formed key should hint at env mismatch: %s", h)
+	// 形态确实可疑的 key 才给形态提示。
+	if h := PluginAPIKeyRejectedHint("sk-something"); !strings.Contains(h, "不是 "+PluginAPIKeyPrefix+" 开头") {
+		t.Errorf("odd-shaped key should hint at shape: %s", h)
 	}
 }
