@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/YoooClaw/cli/internal/creds"
 )
 
 // Logger 是 sender 依赖的最小日志接口。
@@ -28,8 +30,9 @@ type SendResult struct {
 
 // SendLightEffect 把结构化 segments POST 到 Notification Intelligence Service 的
 // 插件侧一次性亮灯 Facade（线协议编码与 message-service 调用由服务端完成）。
-func SendLightEffect(apiKey string, segments []map[string]any, repeatInput RepeatInput, reason, title string, logger Logger) SendResult {
-	apiURL := LightAPIURL()
+// host 见 LightAPIURL。
+func SendLightEffect(host, apiKey string, segments []map[string]any, repeatInput RepeatInput, reason, title string, logger Logger) SendResult {
+	apiURL := LightAPIURL(host)
 	resolvedTitle := resolveLightTitle(title, reason, segments)
 
 	if logger != nil {
@@ -86,7 +89,7 @@ func SendLightEffect(apiKey string, segments []map[string]any, repeatInput Repea
 		if logger != nil {
 			logger.Warn(fmt.Sprintf("Light sender: FAILED %d, url=%s, resBody=%s", res.StatusCode, apiURL, truncate(string(resBody), 500)))
 		}
-		return SendResult{OK: false, Status: res.StatusCode, Error: string(resBody)}
+		return SendResult{OK: false, Status: res.StatusCode, Error: decorateSendError(string(resBody), apiKey)}
 	}
 
 	// 响应外壳：{code, msg, date, data:{success, requestId, bizUniqueId, message}}，code=000000 为成功。
@@ -108,6 +111,15 @@ func SendLightEffect(apiKey string, segments []map[string]any, repeatInput Repea
 		parsed = string(resBody)
 	}
 	return SendResult{OK: true, BizUniqueID: bizUniqueID, Response: parsed}
+}
+
+// decorateSendError 为 “Invalid plugin API Key” 401 补一句排障指引（话术见
+// creds.PluginAPIKeyRejectedHint，与灯效规则链路保持一致）。
+func decorateSendError(body, apiKey string) string {
+	if !strings.Contains(strings.ToLower(body), "invalid plugin api key") {
+		return body
+	}
+	return body + creds.PluginAPIKeyRejectedHint(apiKey)
 }
 
 func resolveLightTitle(title, reason string, segments []map[string]any) string {

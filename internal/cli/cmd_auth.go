@@ -61,11 +61,15 @@ func authSetAPIKey(_ *clictx.Context, cmd *cobra.Command, args []string) (any, e
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	out := map[string]any{
 		"ok": true, "source": result.Source, "location": result.Location, "label": result.Label,
 		"masked": creds.MaskSecret(result.Value),
 		"hint":   "插件 / CLI / daemon 共用同一份；daemon 在跑时会经文件 watch 热生效",
-	}, nil
+	}
+	if warning := creds.APIKeyShapeWarning(key); warning != "" {
+		out["warning"] = warning
+	}
+	return out, nil
 }
 
 func authAddAPIKey(_ *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
@@ -84,13 +88,17 @@ func authAddAPIKey(_ *clictx.Context, cmd *cobra.Command, args []string) (any, e
 	}
 	after := creds.ResolveAPIKeyEntries()
 	isDefault := after.DefaultEntry != nil && after.DefaultEntry.Label == label
-	return map[string]any{
+	out := map[string]any{
 		"ok": true, "mode": after.Mode, "label": label, "default": isDefault,
 		"source": result.Source, "location": result.Location, "masked": creds.MaskSecret(key),
 		"shadowedKeychainPresent": after.ShadowedKeychainPresent,
 		"migratedLegacyApiKey":    before.Mode == "legacy-file-single",
 		"hint":                    "daemon 在跑时会经文件 watch 热生效；watch 不可靠时执行 yc daemon reload",
-	}, nil
+	}
+	if warning := creds.APIKeyShapeWarning(key); warning != "" {
+		out["warning"] = warning
+	}
+	return out, nil
 }
 
 func entryToItem(e creds.ApiKeyEntry) map[string]any {
@@ -169,10 +177,18 @@ func authStatus(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) 
 	if state.Lock != nil {
 		daemonInfo["pid"] = state.Lock.PID
 	}
+	// key 形态可疑（如 CLI 签发的 ock-cli-*）时在这里就说破：它只在灯效 / ASR 这类
+	// 插件侧接口上炸，Relay 隧道照连，等到 401 才发现太晚。
+	warnings := apiKeys.Warnings
+	for _, e := range apiKeys.Entries {
+		if w := creds.APIKeyShapeWarning(e.Key); w != "" {
+			warnings = append(warnings, "api-key["+e.Label+"]："+w)
+		}
+	}
 	return map[string]any{
 		"ok": true, "profile": ctx.Profile, "mode": apiKeys.Mode, "defaultLabel": defaultLabelOrNil(apiKeys),
 		"apiKeys": entriesToItems(apiKeys.Entries), "legacyApiKeyPresent": apiKeys.LegacyAPIKeyPresent,
-		"shadowedKeychainPresent": apiKeys.ShadowedKeychainPresent, "warnings": apiKeys.Warnings,
+		"shadowedKeychainPresent": apiKeys.ShadowedKeychainPresent, "warnings": warnings,
 		"apiKey": map[string]any{
 			"present": apiKey.Value != "", "source": apiKey.Source, "location": apiKey.Location,
 			"label": apiKey.Label, "masked": creds.MaskSecret(apiKey.Value),

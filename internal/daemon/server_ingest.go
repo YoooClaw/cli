@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	imgstore "github.com/YoooClaw/cli/internal/image"
 	"github.com/YoooClaw/cli/internal/recording"
@@ -244,7 +245,8 @@ func (s *server) resolveConfiguredASR(caller *recording.AsrConfig) *recording.As
 	if set := s.snapshotCreds(); set.DefaultEntry != nil {
 		fallback = set.DefaultEntry.Key
 	}
-	return recording.ResolveAsrConfig(caller, recording.LoadLocalAsrConfig(s.ctx.Paths.Recordings), fallback)
+	return recording.ResolveAsrConfig(caller, recording.LoadLocalAsrConfig(s.ctx.Paths.Recordings), fallback,
+		config.ResolveCloudHost(s.cfg))
 }
 
 func (s *server) notifyRecordingStatus(event recording.StatusEvent) {

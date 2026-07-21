@@ -23,6 +23,8 @@ import (
 	"github.com/YoooClaw/cli/internal/envhost"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/light"
+	"github.com/YoooClaw/cli/internal/lightrule"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
@@ -509,11 +511,24 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 		},
 		"lastIngestAt": nilIfEmptyStr(lastIngest), "ingestCount": ingestCount,
 		"ingressMode":    s.ingressMode,
+		"cloud":          s.cloudStatusPayload(),
 		"relay":          relayStatus,
 		"tunnels":        relayStatus["tunnels"],
 		"credentialMode": set.Mode, "defaultLabel": defaultLabel,
 		"credentialWarnings": set.Warnings,
 	})
+}
+
+// cloudStatusPayload 暴露灯效 / 灯效规则 / ASR 实际打到的主机。这三条链路曾经只认
+// 环境变量、状态里也看不见，出问题时只能看到 relay 是绿的——所以在这里一并吐出来。
+func (s *server) cloudStatusPayload() map[string]any {
+	host := config.ResolveCloudHost(s.cfg)
+	return map[string]any{
+		"env": envhost.Name(), "host": host,
+		"custom":       envhost.Normalize(s.cfg.Cloud.Host) != "",
+		"lightApiUrl":  light.LightAPIURL(host),
+		"lightRuleApi": lightrule.APIURL(host),
+	}
 }
 
 func (s *server) relayStatusPayload() map[string]any {

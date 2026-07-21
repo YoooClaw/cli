@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/YoooClaw/cli/internal/clictx"
+	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/light"
@@ -60,7 +61,7 @@ func lightSend(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error)
 	}
 	if rule != "" {
 		// 规则存在云端，先解析成 segments 再下发（本地规则文件仅供 +gateway 兼容路径）。
-		resolved, err := lightruleFind(rule)
+		resolved, err := lightruleFind(ctx, rule)
 		if err != nil {
 			return nil, err
 		}
@@ -86,8 +87,18 @@ func lightBlink(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) 
 	return lightSendDirect(ctx, map[string]any{"preset": "red-strobe-3"})
 }
 
+// cloudHost 解析当前 profile 的云端主机；profile 还没 init（config 读不到）时按
+// 零值走环境默认值，保证 light/lightrule 在裸装状态下仍可用。
+func cloudHost(ctx *clictx.Context) string {
+	cfg, err := config.Load(ctx.Paths)
+	if err != nil {
+		return config.ResolveCloudHost(config.Config{})
+	}
+	return config.ResolveCloudHost(cfg)
+}
+
 func lightSendDirect(ctx *clictx.Context, body map[string]any) (any, error) {
-	result, gerr := lightgw.Send(ctx.Paths.LightRules, body, creds.ResolveAPIKey().Value, noopLightLogger{})
+	result, gerr := lightgw.Send(ctx.Paths.LightRules, body, cloudHost(ctx), creds.ResolveAPIKey().Value, noopLightLogger{})
 	if gerr != nil {
 		return nil, errs.New(gerr.Code, gerr.Message)
 	}
@@ -109,7 +120,7 @@ func lightGateway(ctx *clictx.Context, _ *cobra.Command, args []string) (any, er
 	}
 	method := args[0]
 	if method == "light.send" {
-		result, gerr := lightgw.Send(ctx.Paths.LightRules, body, creds.ResolveAPIKey().Value, noopLightLogger{})
+		result, gerr := lightgw.Send(ctx.Paths.LightRules, body, cloudHost(ctx), creds.ResolveAPIKey().Value, noopLightLogger{})
 		if gerr != nil {
 			status := gerr.Status
 			if status == 0 {
@@ -172,8 +183,8 @@ func newLightruleCmd() *cobra.Command {
 	return c
 }
 
-func lightruleClient() *lightrule.Client {
-	return &lightrule.Client{APIKey: creds.ResolveAPIKey().Value, Logger: noopLightLogger{}}
+func lightruleClient(ctx *clictx.Context) *lightrule.Client {
+	return &lightrule.Client{APIKey: creds.ResolveAPIKey().Value, Host: cloudHost(ctx), Logger: noopLightLogger{}}
 }
 
 // lightruleErr 把云端 APIError 转成 CLI 结构化错误（code 原样透传）。
@@ -185,8 +196,8 @@ func lightruleErr(err error) error {
 }
 
 // lightruleFind 按 id/name 从云端解析单条规则。
-func lightruleFind(id string) (map[string]any, error) {
-	rules, err := lightruleClient().List()
+func lightruleFind(ctx *clictx.Context, id string) (map[string]any, error) {
+	rules, err := lightruleClient(ctx).List()
 	if err != nil {
 		return nil, lightruleErr(err)
 	}
@@ -198,28 +209,28 @@ func lightruleFind(id string) (map[string]any, error) {
 	return nil, errs.New(errs.CodeNotFound, "灯效规则不存在："+id)
 }
 
-func lightruleList(_ *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	rules, err := lightruleClient().List()
+func lightruleList(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+	rules, err := lightruleClient(ctx).List()
 	if err != nil {
 		return nil, lightruleErr(err)
 	}
 	return map[string]any{"ok": true, "rules": rules}, nil
 }
 
-func lightruleShow(_ *clictx.Context, _ *cobra.Command, args []string) (any, error) {
-	rule, err := lightruleFind(args[0])
+func lightruleShow(ctx *clictx.Context, _ *cobra.Command, args []string) (any, error) {
+	rule, err := lightruleFind(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"ok": true, "rule": rule}, nil
 }
 
-func lightruleCreate(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+func lightruleCreate(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	intent := flagStr(cmd, "intent")
 	if intent == "" {
 		return nil, errs.New(errs.CodeInvalidArgument, "需要 --intent（自然语言规则，云端 Agent 编译）")
 	}
-	result, err := lightruleClient().Create(intent)
+	result, err := lightruleClient(ctx).Create(intent)
 	if err != nil {
 		return nil, lightruleErr(err)
 	}
@@ -283,12 +294,12 @@ func buildRulePatch(cmd *cobra.Command) (map[string]any, error) {
 	return patch, nil
 }
 
-func lightruleUpdate(_ *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
+func lightruleUpdate(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
 	patch, err := buildRulePatch(cmd)
 	if err != nil {
 		return nil, err
 	}
-	result, err := lightruleClient().Update(args[0], patch)
+	result, err := lightruleClient(ctx).Update(args[0], patch)
 	if err != nil {
 		return nil, lightruleErr(err)
 	}
@@ -296,7 +307,7 @@ func lightruleUpdate(_ *clictx.Context, cmd *cobra.Command, args []string) (any,
 	return result, nil
 }
 
-func lightruleDelete(_ *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
+func lightruleDelete(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
 	if !flagBool(cmd, "yes") {
 		ok, err := prompt.Confirm("确认删除规则 `"+args[0]+"`？", false)
 		if err != nil {
@@ -306,7 +317,7 @@ func lightruleDelete(_ *clictx.Context, cmd *cobra.Command, args []string) (any,
 			return nil, errs.New(errs.CodeConfirmationRequired, "已取消")
 		}
 	}
-	result, err := lightruleClient().Delete(args[0])
+	result, err := lightruleClient(ctx).Delete(args[0])
 	if err != nil {
 		return nil, lightruleErr(err)
 	}
@@ -315,16 +326,16 @@ func lightruleDelete(_ *clictx.Context, cmd *cobra.Command, args []string) (any,
 	return result, nil
 }
 
-func lightruleEnable(_ *clictx.Context, _ *cobra.Command, args []string) (any, error) {
-	return lightruleSetEnabled(args[0], true)
+func lightruleEnable(ctx *clictx.Context, _ *cobra.Command, args []string) (any, error) {
+	return lightruleSetEnabled(ctx, args[0], true)
 }
 
-func lightruleDisable(_ *clictx.Context, _ *cobra.Command, args []string) (any, error) {
-	return lightruleSetEnabled(args[0], false)
+func lightruleDisable(ctx *clictx.Context, _ *cobra.Command, args []string) (any, error) {
+	return lightruleSetEnabled(ctx, args[0], false)
 }
 
-func lightruleSetEnabled(id string, enabled bool) (any, error) {
-	result, err := lightruleClient().Update(id, map[string]any{"enabled": enabled})
+func lightruleSetEnabled(ctx *clictx.Context, id string, enabled bool) (any, error) {
+	result, err := lightruleClient(ctx).Update(id, map[string]any{"enabled": enabled})
 	if err != nil {
 		return nil, lightruleErr(err)
 	}
@@ -332,16 +343,16 @@ func lightruleSetEnabled(id string, enabled bool) (any, error) {
 	return result, nil
 }
 
-func lightruleOn(_ *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	return lightruleToggleAll(true)
+func lightruleOn(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+	return lightruleToggleAll(ctx, true)
 }
 
-func lightruleOff(_ *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	return lightruleToggleAll(false)
+func lightruleOff(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+	return lightruleToggleAll(ctx, false)
 }
 
-func lightruleToggleAll(enabled bool) (any, error) {
-	client := lightruleClient()
+func lightruleToggleAll(ctx *clictx.Context, enabled bool) (any, error) {
+	client := lightruleClient(ctx)
 	rules, err := client.List()
 	if err != nil {
 		return nil, lightruleErr(err)

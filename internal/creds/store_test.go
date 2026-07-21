@@ -1,6 +1,7 @@
 package creds
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/YoooClaw/cli/internal/keychain"
@@ -251,5 +252,38 @@ func TestNormalizeStoredEntriesWarnings(t *testing.T) {
 	}
 	if len(set.Warnings) == 0 {
 		t.Error("expected warnings for skipped entries")
+	}
+}
+
+func TestAPIKeyShapeWarning(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bool{ // key -> 是否应给出警告
+		"":                    false,
+		"ock-jyGDxxxxxxxx":    false,
+		"  ock-jyGDxxxxxxxx ": false,
+		"ock-cli-abcdefgh":    true, // relay 认、插件侧不认，是本函数存在的理由
+		"sk-something":        true,
+	}
+	for key, want := range cases {
+		if got := APIKeyShapeWarning(key) != ""; got != want {
+			t.Errorf("APIKeyShapeWarning(%q) warned=%v, want %v", key, got, want)
+		}
+	}
+	if w := APIKeyShapeWarning("ock-cli-abcdefgh"); !strings.Contains(w, "ock-cli-") {
+		t.Errorf("CLI key warning should name the prefix: %s", w)
+	}
+}
+
+func TestPluginAPIKeyRejectedHint(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
+	hint := PluginAPIKeyRejectedHint("ock-cli-abcdefgh")
+	for _, want := range []string{"test", "openclaw-service-test.yoooclaw.com", "ock-cli-", MaskSecret("ock-cli-abcdefgh")} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint missing %q: %s", want, hint)
+		}
+	}
+	// 形态正常的 key 走环境不匹配那一支。
+	if h := PluginAPIKeyRejectedHint("ock-jyGDxxxxxxxx"); !strings.Contains(h, "PHONE_NOTIFICATIONS_ENV") {
+		t.Errorf("well-formed key should hint at env mismatch: %s", h)
 	}
 }

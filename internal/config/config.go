@@ -32,14 +32,28 @@ func DefaultRelayURL() string {
 	return "wss://" + envhost.Host() + RelayPath
 }
 
+// ResolveCloudHost 返回灯效 / 灯效规则 / ASR 共用的云端主机，是这三条链路唯一的
+// 主机来源：留空则跟随 PHONE_NOTIFICATIONS_ENV（见 internal/envhost），填了就用填的。
+//
+// 这里不套用 ResolveRelayURL 那条"值等于内置默认域名就重新解析"的规则——那条规则是
+// 为 relay.url 的历史包袱准备的（老 profile 里已经写死了一个具体域名，不重解析就跟不上
+// 环境切换）。cloud.host 默认就是空串，再套同一条规则只会让
+// `config set cloud.host openclaw-service-test.yoooclaw.com` 被当成默认值忽略掉。
+func ResolveCloudHost(cfg Config) string {
+	if host := envhost.Normalize(cfg.Cloud.Host); host != "" {
+		return host
+	}
+	return envhost.Host()
+}
+
 // ResolveRelayURL 返回 daemon 实际应连接的 Relay 地址。
-// 若配置里持久化的仍是某个环境的内置默认主机（而非用户自定义 URL），则按当前
-// PHONE_NOTIFICATIONS_ENV 重新解析，使已初始化的 profile 也能跟随环境切换；
-// 用户显式改过的自定义 URL 始终保留。
+// 若配置里持久化的仍是某个环境的内置默认主机（而非用户自定义 URL），则回落到
+// cloud.host —— 这样隧道与灯效 / ASR 天然指向同一套环境，不会出现"隧道连着但灯效
+// 401"；用户显式改过的自定义 URL 始终保留，仍可单独把隧道指向别处。
 func ResolveRelayURL(cfg Config) string {
 	url := cfg.Relay.URL
 	if url == "" || envhost.IsDefaultHost(stripRelayURL(url)) {
-		return DefaultRelayURL()
+		return "wss://" + ResolveCloudHost(cfg) + RelayPath
 	}
 	return url
 }
@@ -68,6 +82,12 @@ type DaemonSection struct {
 type AuthSection struct {
 	Mode     string `json:"mode"`
 	TokenRef string `json:"tokenRef"`
+}
+
+// CloudSection 云端接口主机配置。空字符串表示跟随 PHONE_NOTIFICATIONS_ENV
+// （见 internal/envhost），填了自定义主机则灯效 / 灯效规则 / ASR / Relay 一起改指。
+type CloudSection struct {
+	Host string `json:"host"`
 }
 
 // RelaySection Relay 隧道配置。
@@ -155,6 +175,7 @@ type Config struct {
 	Version      int                 `json:"version"`
 	Daemon       DaemonSection       `json:"daemon"`
 	Auth         AuthSection         `json:"auth"`
+	Cloud        CloudSection        `json:"cloud"`
 	Relay        RelaySection        `json:"relay"`
 	Ingress      IngressSection      `json:"ingress"`
 	Notification NotificationSection `json:"notification"`
@@ -178,6 +199,8 @@ func Default(credentialsPath string) Config {
 			Mode:     "token",
 			TokenRef: "file:" + credentialsPath + "#gatewayToken",
 		},
+		// Cloud.Host 留空：新 profile 默认跟随环境变量，不把当时的域名焊死进配置。
+		Cloud: CloudSection{},
 		Relay: RelaySection{
 			URL:                DefaultRelayURL(),
 			HeartbeatSec:       10,

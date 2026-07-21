@@ -2,6 +2,7 @@ package recording
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/YoooClaw/cli/internal/testutil"
@@ -86,28 +87,28 @@ func TestResolveAsrConfig(t *testing.T) {
 	// caller 优先
 	caller := &AsrConfig{Mode: "api", API: &AsrAPIConfig{APIKey: "caller-key"}}
 	local := &AsrConfig{Mode: "api", API: &AsrAPIConfig{APIKey: "local-key"}}
-	got := ResolveAsrConfig(caller, local, "fallback")
+	got := ResolveAsrConfig(caller, local, "fallback", "")
 	if got.API.APIKey != "caller-key" {
 		t.Errorf("caller key should win: %q", got.API.APIKey)
 	}
 	// caller nil -> local
-	got = ResolveAsrConfig(nil, local, "fallback")
+	got = ResolveAsrConfig(nil, local, "fallback", "")
 	if got.API.APIKey != "local-key" {
 		t.Errorf("local key should be used: %q", got.API.APIKey)
 	}
 	// 空 apiKey -> 注入 fallback
 	noKey := &AsrConfig{Mode: "api", API: &AsrAPIConfig{}}
-	got = ResolveAsrConfig(noKey, nil, "fallback-key")
+	got = ResolveAsrConfig(noKey, nil, "fallback-key", "")
 	if got.API.APIKey != "fallback-key" {
 		t.Errorf("fallback key should be injected: %q", got.API.APIKey)
 	}
 	// 非 api mode 原样返回
 	non := &AsrConfig{Mode: "yoooclaw"}
-	if ResolveAsrConfig(non, nil, "x").Mode != "yoooclaw" {
+	if ResolveAsrConfig(non, nil, "x", "").Mode != "yoooclaw" {
 		t.Error("non-api mode should pass through")
 	}
 	// 全 nil
-	if ResolveAsrConfig(nil, nil, "x") != nil {
+	if ResolveAsrConfig(nil, nil, "x", "") != nil {
 		t.Error("all nil -> nil")
 	}
 }
@@ -157,5 +158,33 @@ func TestParseTranscriptDocument(t *testing.T) {
 	// 非法 JSON
 	if _, ok := ParseTranscriptDocument([]byte(`{bad`)); ok {
 		t.Error("invalid json should fail")
+	}
+}
+
+func TestResolveAsrConfigInjectsEndpoint(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
+	t.Setenv("OPENCLAW_HOST_PRODUCTION", "")
+
+	// endpoint 空 → 按 host 注入（host 就是 config.ResolveCloudHost 的结果）。
+	cfg := &AsrConfig{Mode: "api", API: &AsrAPIConfig{APIKey: "k"}}
+	got := ResolveAsrConfig(cfg, nil, "", "openclaw-service-test.yoooclaw.com")
+	want := "https://openclaw-service-test.yoooclaw.com/api/model-proxy/long-recording/submit-task"
+	if got.API.Endpoint != want {
+		t.Errorf("endpoint = %q, want %q", got.API.Endpoint, want)
+	}
+	// host 空 → 回落环境默认。
+	got = ResolveAsrConfig(cfg, nil, "", "")
+	if !strings.Contains(got.API.Endpoint, "openclaw-service.yoooclaw.com") {
+		t.Errorf("empty host should fall back to env default: %q", got.API.Endpoint)
+	}
+	// 调用方显式传的 endpoint 优先级最高，不被 host 覆盖。
+	explicit := &AsrConfig{Mode: "api", API: &AsrAPIConfig{APIKey: "k", Endpoint: "https://caller.example.com/submit-task"}}
+	got = ResolveAsrConfig(explicit, nil, "", "openclaw-service-test.yoooclaw.com")
+	if got.API.Endpoint != "https://caller.example.com/submit-task" {
+		t.Errorf("caller endpoint should win: %q", got.API.Endpoint)
+	}
+	// 查询端点由 submit 端点派生，跟着一起走。
+	if base := resolveQueryBaseURL(got.API); base != "https://caller.example.com/query-task-result" {
+		t.Errorf("query base should derive from submit endpoint: %q", base)
 	}
 }

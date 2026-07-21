@@ -85,7 +85,7 @@ func TestSendLightEffectConnectionError(t *testing.T) {
 	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
 	t.Setenv("OPENCLAW_HOST_PRODUCTION", "127.0.0.1:1")
 	segs := []map[string]any{{"mode": "steady", "brightness": 100.0, "color": color(255, 0, 0)}}
-	res := SendLightEffect("test-key", segs, RepeatInput{}, "reason", "title", nil)
+	res := SendLightEffect("", "test-key", segs, RepeatInput{}, "reason", "title", nil)
 	if res.OK {
 		t.Error("connection to refused port should fail")
 	}
@@ -98,8 +98,29 @@ func TestSendLightEffectBadBody(t *testing.T) {
 	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
 	t.Setenv("OPENCLAW_HOST_PRODUCTION", "127.0.0.1:1")
 	// 空 segments 在发送前被本地校验拦下，不发起请求。
-	res := SendLightEffect("k", nil, RepeatInput{}, "r", "t", nil)
+	res := SendLightEffect("", "k", nil, RepeatInput{}, "r", "t", nil)
 	if res.OK {
 		t.Error("empty segments should fail before send")
+	}
+}
+
+// LightAPIURL 恒定 https://，httptest 服务器进不来，故直接测装饰逻辑本身。
+func TestDecorateSendError(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
+	body := `{"code":"401","msg":"Invalid plugin API Key"}`
+
+	decorated := decorateSendError(body, "ock-cli-abcdefgh")
+	// 原始响应体保留，后面追加环境与 key 形态的排障指引。
+	if !strings.HasPrefix(decorated, body) {
+		t.Errorf("raw body should be kept as prefix: %s", decorated)
+	}
+	for _, want := range []string{"ock-cli-", "production", "openclaw-service.yoooclaw.com"} {
+		if !strings.Contains(decorated, want) {
+			t.Errorf("401 message missing %q: %s", want, decorated)
+		}
+	}
+
+	if got := decorateSendError(`{"msg":"boom"}`, "ock-cli-abcdefgh"); got != `{"msg":"boom"}` {
+		t.Errorf("non-401 body should pass through untouched: %s", got)
 	}
 }
