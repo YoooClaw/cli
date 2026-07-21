@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/lightgw"
 )
@@ -15,7 +16,7 @@ func (s *server) handleLightSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiKey := creds.ResolveAPIKey().Value
-	result, gerr := lightgw.Send(s.ctx.Paths.LightRules, body, apiKey, s.logger)
+	result, gerr := lightgw.Send(s.ctx.Paths.LightRules, body, config.ResolveCloudHost(s.cfg), apiKey, s.logger)
 	if gerr != nil {
 		status := gerr.Status
 		if status == 0 {

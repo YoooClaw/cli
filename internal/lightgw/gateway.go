@@ -116,8 +116,8 @@ func Rules(base, method string, body map[string]any) (map[string]any, *Err) {
 }
 
 // Send 处理 /light/send 核心（原 daemon handleLightSend）：segments / preset /
-// rule 三选一，编码后下发灯效云 API。
-func Send(base string, body map[string]any, apiKey string, logger light.Logger) (any, *Err) {
+// rule 三选一，编码后下发灯效云 API。host 见 light.LightAPIURL。
+func Send(base string, body map[string]any, host, apiKey string, logger light.Logger) (any, *Err) {
 	repeatInput := light.RepeatInputFromAny(body["repeat"], body["repeat_times"])
 	reason, _ := body["reason"].(string)
 	title, _ := body["title"].(string)
@@ -154,7 +154,7 @@ func Send(base string, body map[string]any, apiKey string, logger light.Logger) 
 		return nil, &Err{Code: "INVALID_PARAMS", Message: "需要 segments / preset / rule 之一", Status: 400}
 	}
 
-	return light.SendLightEffect(apiKey, segments, repeatInput, reason, title, logger), nil
+	return light.SendLightEffect(host, apiKey, segments, repeatInput, reason, title, logger), nil
 }
 
 func ruleErr(err error) *Err {

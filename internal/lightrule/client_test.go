@@ -260,3 +260,23 @@ func TestJwtMissingErrorGetsDecorated(t *testing.T) {
 		t.Errorf("jwt error should be decorated: %s", apiErr.Message)
 	}
 }
+
+func TestInvalidPluginKeyErrorGetsDecorated(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"code":"401","msg":"Invalid plugin API Key"}`))
+	}))
+	defer server.Close()
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
+
+	_, err := (&Client{APIKey: "ock-cli-abcdefgh", BaseURL: server.URL + APIPath}).List()
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.Status != 401 {
+		t.Fatalf("expected 401 APIError, got %v", err)
+	}
+	for _, want := range []string{"Invalid plugin API Key", "ock-cli-", "test"} {
+		if !strings.Contains(apiErr.Message, want) {
+			t.Errorf("401 message missing %q: %s", want, apiErr.Message)
+		}
+	}
+}

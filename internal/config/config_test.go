@@ -204,3 +204,51 @@ func TestMask(t *testing.T) {
 		t.Error("Mask must not mutate input")
 	}
 }
+
+func TestResolveCloudHost(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "test")
+	t.Setenv("OPENCLAW_HOST_TEST", "")
+
+	// 未配置 → 跟随 PHONE_NOTIFICATIONS_ENV。
+	if got := ResolveCloudHost(Config{}); got != "openclaw-service-test.yoooclaw.com" {
+		t.Errorf("empty host should follow env, got %q", got)
+	}
+	// 自定义主机 → 原样保留，环境变量不再有话语权。
+	custom := Config{Cloud: CloudSection{Host: "my-cloud.example.com"}}
+	if got := ResolveCloudHost(custom); got != "my-cloud.example.com" {
+		t.Errorf("custom host should win over env, got %q", got)
+	}
+	// scheme / 尾斜杠会被归一化掉。
+	messy := Config{Cloud: CloudSection{Host: "https://my-cloud.example.com/"}}
+	if got := ResolveCloudHost(messy); got != "my-cloud.example.com" {
+		t.Errorf("host should be normalized, got %q", got)
+	}
+	// 显式写成某个内置默认域名也必须生效（不能被当成"还是默认值"忽略掉）。
+	pinned := Config{Cloud: CloudSection{Host: "openclaw-service.yoooclaw.com"}}
+	if got := ResolveCloudHost(pinned); got != "openclaw-service.yoooclaw.com" {
+		t.Errorf("explicitly pinned default domain should be honored, got %q", got)
+	}
+}
+
+func TestResolveRelayURLFollowsCloudHost(t *testing.T) {
+	t.Setenv("PHONE_NOTIFICATIONS_ENV", "production")
+	t.Setenv("OPENCLAW_HOST_PRODUCTION", "")
+
+	// relay.url 还是内置默认形态 → 跟着 cloud.host 走，隧道与灯效/ASR 不会分家。
+	cfg := Config{
+		Cloud: CloudSection{Host: "openclaw-service-test.yoooclaw.com"},
+		Relay: RelaySection{URL: "wss://openclaw-service.yoooclaw.com" + RelayPath},
+	}
+	if got := ResolveRelayURL(cfg); got != "wss://openclaw-service-test.yoooclaw.com"+RelayPath {
+		t.Errorf("relay should derive from cloud.host, got %q", got)
+	}
+	if got := ResolveCloudHost(cfg); !strings.Contains(got, "-test.") {
+		t.Errorf("cloud host mismatch: %q", got)
+	}
+
+	// relay.url 被显式改成自定义地址 → 仍然覆盖 cloud.host（保留单独指向的能力）。
+	cfg.Relay.URL = "wss://my-relay.example.com/custom/path"
+	if got := ResolveRelayURL(cfg); got != "wss://my-relay.example.com/custom/path" {
+		t.Errorf("custom relay URL should still win, got %q", got)
+	}
+}

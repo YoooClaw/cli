@@ -107,8 +107,12 @@ func LoadLocalAsrConfig(recordingsDir string) *AsrConfig {
 	return &cfg
 }
 
-// ResolveAsrConfig 优先使用 caller ASR，再回退本地配置；apiKey 为空时注入 account fallback。
-func ResolveAsrConfig(caller, local *AsrConfig, fallbackAPIKey string) *AsrConfig {
+// ResolveAsrConfig 优先使用 caller ASR，再回退本地配置；apiKey 为空时注入 account
+// fallback，endpoint 为空时按 host 注入默认端点。这里是 ASR 配置的唯一收敛点
+// （InitializeAsr 与 TriggerTranscription 都走它），所以主机只需在此落一次。
+// host 由调用方从 config.ResolveCloudHost 解析后传入，传空则回落到环境默认值；
+// 调用方显式传入的 api.endpoint 优先级最高，不被覆盖。
+func ResolveAsrConfig(caller, local *AsrConfig, fallbackAPIKey, host string) *AsrConfig {
 	chosen := caller
 	if chosen == nil {
 		chosen = local
@@ -123,6 +127,9 @@ func ResolveAsrConfig(caller, local *AsrConfig, fallbackAPIKey string) *AsrConfi
 	}
 	if strings.TrimSpace(api.APIKey) == "" {
 		api.APIKey = strings.TrimSpace(fallbackAPIKey)
+	}
+	if strings.TrimSpace(api.Endpoint) == "" {
+		api.Endpoint = submitEndpointForHost(host)
 	}
 	out.API = &api
 	return &out
@@ -540,11 +547,22 @@ func buildStatusError(data statusResponse, status string) string {
 	return "Model Proxy ASR " + status
 }
 
+// submitEndpointForHost 由 host 拼出提交端点；host 为空时回落到环境默认主机。
+func submitEndpointForHost(host string) string {
+	resolved := envhost.Normalize(host)
+	if resolved == "" {
+		resolved = envhost.Host()
+	}
+	return "https://" + resolved + "/api/model-proxy/long-recording/submit-task"
+}
+
+// resolveSubmitEndpoint 里的 envhost 回退只对没走 ResolveAsrConfig 的直接调用方生效
+// （正常链路上 endpoint 已在 ResolveAsrConfig 注入好）。resolveQueryBaseURL 同理。
 func resolveSubmitEndpoint(apiConfig *AsrAPIConfig) string {
 	if apiConfig != nil && strings.TrimSpace(apiConfig.Endpoint) != "" {
 		return strings.TrimSpace(apiConfig.Endpoint)
 	}
-	return "https://" + envhost.Host() + "/api/model-proxy/long-recording/submit-task"
+	return submitEndpointForHost("")
 }
 
 func resolveQueryBaseURL(apiConfig *AsrAPIConfig) string {

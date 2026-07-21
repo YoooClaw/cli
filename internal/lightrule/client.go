@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/envhost"
 )
 
@@ -23,9 +24,14 @@ import (
 // APIPath 是插件侧灯效规则 API 前缀（与 plugin env.ts 的常量一致）。
 const APIPath = "/api/plugin/notification-intelligence/light-rules"
 
-// APIURL 返回云端灯效规则 API 端点（主机随 PHONE_NOTIFICATIONS_ENV 切换）。
-func APIURL() string {
-	return "https://" + envhost.Host() + APIPath
+// APIURL 返回云端灯效规则 API 端点。host 由调用方从 config.ResolveCloudHost 解析后
+// 传入；传空则回落到 PHONE_NOTIFICATIONS_ENV 的环境默认值（见 internal/envhost）。
+func APIURL(host string) string {
+	resolved := envhost.Normalize(host)
+	if resolved == "" {
+		resolved = envhost.Host()
+	}
+	return "https://" + resolved + APIPath
 }
 
 // APIError 是云端请求的结构化错误。Code 可能是业务码（INVALID_PARAMS /
@@ -47,7 +53,8 @@ type ClientLogger interface {
 // Client 是云端灯效规则 client。零值不可用，APIKey 必填。
 type Client struct {
 	APIKey     string
-	BaseURL    string       // 空则用 APIURL()
+	Host       string       // 空则回落到环境默认主机；BaseURL 非空时忽略
+	BaseURL    string       // 空则用 APIURL(Host)
 	Logger     ClientLogger // 可为 nil
 	HTTPClient *http.Client // 可为 nil，默认 30s 超时
 }
@@ -202,7 +209,7 @@ func (c *Client) request(method, path string, body map[string]any) (map[string]a
 
 	base := c.BaseURL
 	if base == "" {
-		base = APIURL()
+		base = APIURL(c.Host)
 	}
 	url := base + path
 
@@ -240,7 +247,7 @@ func (c *Client) request(method, path string, body map[string]any) (map[string]a
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		message := remoteErrorMessage(parsed, string(text), res.StatusCode)
 		c.logWarn(fmt.Sprintf("Light rules API: %s %s failed status=%d message=%s", method, url, res.StatusCode, message))
-		return nil, &APIError{Code: strconv.Itoa(res.StatusCode), Message: decorateRemoteErrorMessage(message, url), Status: res.StatusCode}
+		return nil, &APIError{Code: strconv.Itoa(res.StatusCode), Message: decorateRemoteErrorMessage(message, url, apiKey), Status: res.StatusCode}
 	}
 	if parseErr != nil || parsed == nil {
 		return nil, &APIError{Code: "INVALID_RESPONSE", Message: "empty or invalid JSON response"}
@@ -332,8 +339,14 @@ func remoteErrorMessage(parsed map[string]any, text string, status int) string {
 	return "HTTP " + strconv.Itoa(status)
 }
 
-// decorateRemoteErrorMessage 为 “jwt is missing” 401 补充排障指引（对齐 TS 同名函数）。
-func decorateRemoteErrorMessage(message, url string) string {
+// decorateRemoteErrorMessage 为两类 401 补充排障指引：
+// “jwt is missing” 说明网关没把插件前缀放行到 API Key 鉴权（对齐 TS 同名函数）；
+// “Invalid plugin API Key” 说明 key 本身不被插件侧接受——多半是环境不对或拿了非
+// plugin key（如 CLI 签发的 ock-cli-*），此时 Relay 隧道照样连得上，极难自查。
+func decorateRemoteErrorMessage(message, url, apiKey string) string {
+	if strings.Contains(strings.ToLower(message), "invalid plugin api key") {
+		return message + creds.PluginAPIKeyRejectedHint(apiKey)
+	}
 	if !strings.Contains(strings.ToLower(message), "jwt is missing") {
 		return message
 	}
