@@ -522,10 +522,11 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 // cloudStatusPayload 暴露灯效 / 灯效规则 / ASR 实际打到的主机。这三条链路曾经只认
 // 环境变量、状态里也看不见，出问题时只能看到 relay 是绿的——所以在这里一并吐出来。
 func (s *server) cloudStatusPayload() map[string]any {
-	host := config.ResolveCloudHost(s.cfg)
+	host, source := config.ResolveCloudHostSource(s.cfg)
 	return map[string]any{
-		"env": envhost.Name(), "host": host,
-		"custom":       envhost.Normalize(s.cfg.Cloud.Host) != "",
+		// source 说明这台主机是谁定的（env|cloud.host|relay.url|default）——
+		// 光给 host 不够，排查时最费时间的恰恰是"配置写着 A 为什么打到 B"。
+		"env": envhost.Name(), "host": host, "source": source,
 		"lightApiUrl":  light.LightAPIURL(host),
 		"lightRuleApi": lightrule.APIURL(host),
 	}

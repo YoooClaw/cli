@@ -32,18 +32,53 @@ func DefaultRelayURL() string {
 	return "wss://" + envhost.Host() + RelayPath
 }
 
-// ResolveCloudHost 返回灯效 / 灯效规则 / ASR 共用的云端主机，是这三条链路唯一的
-// 主机来源：留空则跟随 PHONE_NOTIFICATIONS_ENV（见 internal/envhost），填了就用填的。
-//
-// 这里不套用 ResolveRelayURL 那条"值等于内置默认域名就重新解析"的规则——那条规则是
-// 为 relay.url 的历史包袱准备的（老 profile 里已经写死了一个具体域名，不重解析就跟不上
-// 环境切换）。cloud.host 默认就是空串，再套同一条规则只会让
-// `config set cloud.host openclaw-service-test.yoooclaw.com` 被当成默认值忽略掉。
+// ResolveCloudHost 返回灯效 / 灯效规则 / ASR 共用的云端主机（优先级见 resolveCloudHost）。
 func ResolveCloudHost(cfg Config) string {
-	if host := envhost.Normalize(cfg.Cloud.Host); host != "" {
-		return host
+	host, _ := resolveCloudHost(cfg)
+	return host
+}
+
+// ResolveCloudHostSource 返回主机及其来源（env|cloud.host|relay.url|default），
+// 供 daemon status / doctor 说清楚"为什么打到这台机器"。
+func ResolveCloudHostSource(cfg Config) (string, string) {
+	return resolveCloudHost(cfg)
+}
+
+// resolveCloudHost 是主机来源的唯一决策点，灯效 / 灯效规则 / ASR / Relay 共用：
+//
+//  1. PHONE_NOTIFICATIONS_ENV / OPENCLAW_HOST_* 显式设过 —— 环境变量说了算
+//  2. cloud.host
+//  3. relay.url 里那个域名，且它是某个内置环境的默认域名
+//  4. 内置默认（production）
+//
+// 第 3 条是回应一个真实故障：profile 里 relay.url 白纸黑字写着 -test，解析出来却是生产。
+// 此前的规则是"relay.url 的 host 等于内置默认域名就当它还是默认值、按环境变量重解析"，
+// 于是配置文件在骗读它的人，隧道和灯效一起跑去生产（灯效因此 401 Invalid plugin API Key）。
+// 现在没设环境变量时就认这个域名；反过来第 1 条保证 `PHONE_NOTIFICATIONS_ENV=x yc ...`
+// 这种临时翻环境仍然压得住配置。
+//
+// 第 3 条只认内置默认域名：relay.url 被改成自定义地址时（自建隧道 / 代理），那台机器未必
+// 提供插件侧 API，把灯效 / ASR 一起指过去只会把 401 换成 404，所以自定义值只对隧道生效。
+func resolveCloudHost(cfg Config) (string, string) {
+	if envhost.Explicit() {
+		return envhost.Host(), "env"
 	}
-	return envhost.Host()
+	if host := envhost.Normalize(cfg.Cloud.Host); host != "" {
+		return host, "cloud.host"
+	}
+	if host := relayHost(cfg.Relay.URL); envhost.IsDefaultHost(host) {
+		return host, "relay.url"
+	}
+	return envhost.Host(), "default"
+}
+
+// relayHost 从 Relay URL 中取出纯主机名（去 scheme 与路径）。
+func relayHost(url string) string {
+	host := envhost.Normalize(url)
+	if i := strings.Index(host, "/"); i >= 0 {
+		host = host[:i]
+	}
+	return host
 }
 
 // ResolveRelayURL 返回 daemon 实际应连接的 Relay 地址。
@@ -52,16 +87,10 @@ func ResolveCloudHost(cfg Config) string {
 // 401"；用户显式改过的自定义 URL 始终保留，仍可单独把隧道指向别处。
 func ResolveRelayURL(cfg Config) string {
 	url := cfg.Relay.URL
-	if url == "" || envhost.IsDefaultHost(stripRelayURL(url)) {
+	if url == "" || envhost.IsDefaultHost(relayHost(url)) {
 		return "wss://" + ResolveCloudHost(cfg) + RelayPath
 	}
 	return url
-}
-
-// stripRelayURL 从 Relay URL 中提取主机部分（去掉 scheme 与已知路径）供默认值判定。
-func stripRelayURL(url string) string {
-	host := envhost.Normalize(url)
-	return strings.TrimSuffix(host, RelayPath)
 }
 
 // SecretRefPaths 是 config.json 里需要遮罩展示的敏感引用字段（点号路径）。

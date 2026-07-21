@@ -43,22 +43,38 @@ func Name() string {
 	}
 }
 
+// hostOverride 返回当前环境对应的 OPENCLAW_HOST_* 覆盖（已归一化，可能为空）。
+func hostOverride() string {
+	switch Name() {
+	case "development":
+		return Normalize(os.Getenv("OPENCLAW_HOST_DEVELOPMENT"))
+	case "test":
+		return Normalize(os.Getenv("OPENCLAW_HOST_TEST"))
+	default:
+		return Normalize(os.Getenv("OPENCLAW_HOST_PRODUCTION"))
+	}
+}
+
+// Explicit 报告调用方是否用环境变量显式指定过环境/主机：PHONE_NOTIFICATIONS_ENV
+// 被设成已知环境名，或当前环境的 OPENCLAW_HOST_* 覆盖非空。
+//
+// Name() 对「没设」和「显式设成 production」都返回 production，二者不可区分；
+// 而主机解析要让显式环境变量压过配置文件，就必须区分这两种情况——没设时配置说了算，
+// 设了才轮到环境变量。见 config.ResolveCloudHost。
+func Explicit() bool {
+	switch strings.TrimSpace(os.Getenv("PHONE_NOTIFICATIONS_ENV")) {
+	case "development", "test", "production":
+		return true
+	}
+	return hostOverride() != ""
+}
+
 // Host 返回当前环境主机：先看 OPENCLAW_HOST_* 覆盖，否则取默认域名。
 func Host() string {
-	env := Name()
-	var override string
-	switch env {
-	case "development":
-		override = os.Getenv("OPENCLAW_HOST_DEVELOPMENT")
-	case "test":
-		override = os.Getenv("OPENCLAW_HOST_TEST")
-	case "production":
-		override = os.Getenv("OPENCLAW_HOST_PRODUCTION")
-	}
-	if h := Normalize(override); h != "" {
+	if h := hostOverride(); h != "" {
 		return h
 	}
-	return defaultHosts[env]
+	return defaultHosts[Name()]
 }
 
 // IsDefaultHost 报告 host（归一化后）是否为某个环境的默认域名。
