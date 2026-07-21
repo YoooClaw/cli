@@ -120,6 +120,26 @@ func (s *Supervisor) Reconnect(label string) (reconnected []string, missing stri
 	return reconnected, ""
 }
 
+// Retarget 把隧道目标地址换成 url 并重连全部隧道；地址未变时返回 false 不动。
+// 环境切换后 daemon 的 config 已经指向新 relay，但已建的 client 仍拨着旧地址，
+// 靠这里把旧 socket 关掉让隧道重新按新地址建连（health 探针触发）。
+func (s *Supervisor) Retarget(url string) (changed bool, restarted []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if url == "" || url == s.opts.TunnelURL {
+		return false, nil
+	}
+	s.opts.Logger.Info("Relay retarget: " + redactURL(s.opts.TunnelURL) + " -> " + redactURL(url))
+	s.opts.TunnelURL = url
+	for label, managed := range s.tunnels {
+		managed.client.Stop("relay-retarget")
+		managed.dispatcher.Cleanup()
+		s.tunnels[label] = s.startLocked(managed.entry)
+		restarted = append(restarted, label)
+	}
+	return true, restarted
+}
+
 // PushEvent 给所有已管理隧道广播事件。
 func (s *Supervisor) PushEvent(event string, payload any) {
 	s.mu.Lock()
