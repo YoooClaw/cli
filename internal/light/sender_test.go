@@ -110,11 +110,11 @@ func TestDecorateSendError(t *testing.T) {
 	body := `{"code":"401","msg":"Invalid plugin API Key"}`
 
 	decorated := decorateSendError(body, "ock-cli-abcdefgh")
-	// 原始响应体保留，后面追加环境与 key 形态的排障指引。
+	// 原始响应体保留，后面追加环境 + 遮罩 key + 下一步的排障指引。
 	if !strings.HasPrefix(decorated, body) {
 		t.Errorf("raw body should be kept as prefix: %s", decorated)
 	}
-	for _, want := range []string{"ock-cli-", "production", "openclaw-service.yoooclaw.com"} {
+	for _, want := range []string{"production", "openclaw-service.yoooclaw.com", "PHONE_NOTIFICATIONS_ENV"} {
 		if !strings.Contains(decorated, want) {
 			t.Errorf("401 message missing %q: %s", want, decorated)
 		}

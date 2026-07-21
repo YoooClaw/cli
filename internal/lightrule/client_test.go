@@ -274,7 +274,7 @@ func TestInvalidPluginKeyErrorGetsDecorated(t *testing.T) {
 	if !ok || apiErr.Status != 401 {
 		t.Fatalf("expected 401 APIError, got %v", err)
 	}
-	for _, want := range []string{"Invalid plugin API Key", "ock-cli-", "test"} {
+	for _, want := range []string{"Invalid plugin API Key", "PHONE_NOTIFICATIONS_ENV", "test"} {
 		if !strings.Contains(apiErr.Message, want) {
 			t.Errorf("401 message missing %q: %s", want, apiErr.Message)
 		}

@@ -418,30 +418,23 @@ func SetDefaultAPIKey(label string) (ApiKeyResolution, error) {
 	return writeAPIKeys(entries)
 }
 
-const (
-	// PluginAPIKeyPrefix 是插件侧 API Key 的前缀。灯效 / ASR 等 X-Api-Key-Id 接口
-	// 只认这类 key。
-	PluginAPIKeyPrefix = "ock-"
-	// cliAPIKeyPrefix 是 CLI 签发的 key 前缀。它能通过 Relay 隧道握手，却没有登记进
-	// 插件侧 API Key 表——用户会看到"隧道连着但灯效 401"，所以单独给一句提示。
-	cliAPIKeyPrefix = "ock-cli-"
-)
+// PluginAPIKeyPrefix 是插件侧 API Key 的前缀。灯效 / ASR 等 X-Api-Key-Id 接口只认
+// 这类 key；ock-cli-* 也属于其中一种，同样有效——别再按子前缀细分（见下）。
+const PluginAPIKeyPrefix = "ock-"
 
 // APIKeyShapeWarning 在 api-key 形态明显不是插件侧 API Key 时返回一句排障提示，
 // 否则返回空串。前缀规则由云端掌握且会变，所以这里只提示、不拦截。
+//
+// 这里刻意不对 ock-cli-* 单独报警：0.6.2-beta.0 曾断言它"只能连 Relay、插件侧必
+// 401"，实测是错的（同一把 ock-cli- key 在测试环境的 light-rules 接口返回 200），
+// 那条提示只会把人往错误方向带。key 与环境不匹配才是 401 的实际成因，交给
+// PluginAPIKeyRejectedHint 的环境话术处理。
 func APIKeyShapeWarning(apiKey string) string {
 	key := strings.TrimSpace(apiKey)
-	switch {
-	case key == "":
-		return ""
-	case strings.HasPrefix(key, cliAPIKeyPrefix):
-		return cliAPIKeyPrefix + "* 是 CLI 签发的 key：Relay 隧道能连上，但灯效 / ASR 等插件侧 API 会返回 " +
-			"401 Invalid plugin API Key；请改用 App / 控制台里 " + PluginAPIKeyPrefix + " 开头的 plugin API Key"
-	case !strings.HasPrefix(key, PluginAPIKeyPrefix):
-		return "api-key 不是 " + PluginAPIKeyPrefix + " 开头，灯效 / ASR 等插件侧 API 可能返回 401 Invalid plugin API Key"
-	default:
+	if key == "" || strings.HasPrefix(key, PluginAPIKeyPrefix) {
 		return ""
 	}
+	return "api-key 不是 " + PluginAPIKeyPrefix + " 开头，灯效 / ASR 等插件侧 API 可能返回 401 Invalid plugin API Key"
 }
 
 // PluginAPIKeyRejectedHint 组装插件侧 API 回 401 Invalid plugin API Key 时追加的排障
