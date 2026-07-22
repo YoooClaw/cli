@@ -72,6 +72,7 @@ yoooclaw recording list --status transcribed --format json
   `1. [名称] ([时间], [时长])`
   等待用户输入序号（支持 `1,3` 或 `1-3` 或 `all`）。
 - 若用户表示找不到某条录音，说明该录音可能仍在转录中，告知用户稍后再试。
+- 用户追问「到底卡在哪一步」时，用 `yoooclaw recording events --since 24h --format json`（或 `--id <recording_id>`）看状态事件流：`synced` 及之前是音频还在传，`transcribing` 才是正在转写，`transcribe_failed` 为转写失败。
 
 锁定录音后，对每条选中的录音执行：
 

@@ -204,7 +204,7 @@ func (c *Client) resolveIdentifier(identifier string) (id, name string, err erro
 func (c *Client) request(method, path string, body map[string]any) (map[string]any, error) {
 	apiKey := strings.TrimSpace(c.APIKey)
 	if apiKey == "" {
-		return nil, &APIError{Code: "AUTH_REQUIRED", Message: "API Key 未配置，请先 `yoooclaw auth login`"}
+		return nil, &APIError{Code: "AUTH_REQUIRED", Message: "API Key 未配置，请先 `yoooclaw auth set-api-key -`"}
 	}
 
 	base := c.BaseURL

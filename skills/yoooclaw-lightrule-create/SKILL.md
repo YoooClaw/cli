@@ -8,7 +8,8 @@ description: 用 yoooclaw CLI 创建/管理"通知→灯效"规则。当用户�
 灯效规则是**持久**的：保存在云端 Notification Intelligence Service，通知到达后由云端评估是否命中，命中则播放灯效。
 和"立即放一次灯效测试"不同（那是 `yoooclaw light send`）。
 
-> 不需要 daemon。规则 CRUD 直接打云端 API（X-Api-Key-Id 鉴权），需要已 `yoooclaw auth login`。
+> 不需要 daemon。规则 CRUD 直接打云端 API（X-Api-Key-Id 鉴权），需要先配好 api-key（`yoooclaw auth set-api-key -` 从 stdin 读）。
+> 云端主机按 `env > cloud.host > relay.url > 内置默认` 解析，与灯效 / ASR 共用同一套环境。
 
 ## 何时激活
 
@@ -59,6 +60,7 @@ yoooclaw lightrule update <id> --segments '[{"mode":"strobe","duration_s":2,"bri
 
 ## 错误处理
 
-- `AUTH_REQUIRED`：先 `yoooclaw auth login` 配置 API Key。
+- `AUTH_REQUIRED`：api-key 未配置，先 `yoooclaw auth set-api-key -`（从 stdin 读取，不要把 key 写进命令行）；`yoooclaw auth status --format json` 可确认当前凭据。
 - `NOT_FOUND`：id/name 不存在，先 `lightrule list` 确认。
 - `VALIDATION_FAILED`：segments 不符合 light protocol，`error.message` 内有逐字段错误。
+- 规则创建成功但灯不亮：先 `yoooclaw light +blink` 验证硬件链路，再 `yoooclaw doctor --format json` 看本地环境；灯效走云端下发，规则命中与硬件连通是两件事。

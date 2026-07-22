@@ -30,6 +30,7 @@ yoooclaw recording storage-path --format json
 ```bash
 yoooclaw recording list --format json
 # 只看已转写的：yoooclaw recording list --status transcribed --format json
+# 多设备时按 clientLabel 收窄：yoooclaw recording list --client work --format json（all 为全部）
 ```
 
 返回示例：
@@ -54,6 +55,12 @@ yoooclaw recording list --format json
   ]
 }
 ```
+
+`status` 取值是一条完整的传输 → 转写流水线，不是只有 `transcribed`：
+
+`receiving` → `pending_oss_upload` → `uploading_oss` → `oss_uploaded` → `synced` → `transcribing` → `transcribed`，
+另有两个失败态 `receiving_failed`（传输失败）与 `transcribe_failed`（转写失败）。
+向用户解释「为什么还没有转写」时按实际状态说：`synced` 及之前是**音频还在传**，`transcribing` 才是**正在转写**。
 
 处理规则：
 
@@ -135,10 +142,31 @@ AI 总结文件按需读取：
 
 若读取的是 `summaryFile` 总结文件，说明来源是总结文件；若没有总结文件但读取了转写文件，则基于转写生成简短摘要，并说明"未找到已有总结文件，以下根据转写整理"。
 
-## 6. 边界处理
+## 6. 排查「转写迟迟不出来」
 
-- **未转写**：`status != "transcribed"` 或 `has_transcript != true` 时，告知状态并建议稍后再试。
-- **转写失败**：展示 `error` 字段中的失败原因。
+用户追问进度、或某条录音长期停在非 `transcribed` 状态时，查状态事件流（JSONL，纯读磁盘）：
+
+```bash
+yoooclaw recording events --since 1h --format json          # 最近 1 小时全部状态流转
+yoooclaw recording events --id <recording_id> --format json # 只看某条录音
+yoooclaw recording events --since 24h --limit 500 --format json
+```
+
+`--since` 接受 `10m` / `1h` / `24h` / `7d` 形式；返回 `{ok, path, total, events}`。
+根据事件里最后一次流转判断卡在哪一环，再据此回复用户（还在传 / 正在转写 / 已失败及原因）。
+
+若**所有**录音都从未进入 `transcribing`，多半是 ASR 没配置，提示用户运行：
+
+```bash
+yoooclaw recording setup-asr          # 交互式向导（api 或 local 模式）
+```
+
+本 Skill 只查询，不要替用户执行 `setup-asr`（它会写配置），告知命令即可。
+
+## 7. 边界处理
+
+- **未转写**：`status != "transcribed"` 或 `has_transcript != true` 时，按第 2 节的状态语义告知当前进展并建议稍后再试；需要细节时用 `recording events` 佐证。
+- **转写失败**：`status = "transcribe_failed"`，展示 `error` 字段中的失败原因。
 - **文件不存在**：说明索引存在但本地文件缺失，可能被删除或尚未同步完成。
 - **大量录音**：若用户请求"全部"且数量很多，先展示数量并询问是否继续读取全文；列表查询不需要确认。
 - **只读约束**：本 skill 只查询和读取文件，不写入、不删除、不重命名录音。
