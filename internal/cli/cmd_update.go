@@ -121,15 +121,13 @@ func updateSelf(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) 
 
 	updateAvailable := compareSemver(latest, version.Version) > 0
 	var command any
-	hint := "已是最新版本"
 	if updateAvailable {
 		command = upgradeCommand(tag, latest)
-		hint = "发现新版本；CLI 不做自动更新，请手动执行上面的命令"
 	}
 	return map[string]any{
 		"ok": true, "package": updatePackage, "channel": tag, "dist": version.Dist(),
 		"current": version.Version, "latest": latest, "updateAvailable": updateAvailable,
-		"command": command, "hint": hint,
+		"command": command,
 	}, nil
 }
 
