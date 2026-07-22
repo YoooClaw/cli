@@ -1,6 +1,6 @@
 ---
 name: yoooclaw-tunnel-debug
-description: 用 yoooclaw CLI 排查手机端推送链路是否通。当用户说“手机推送收不到”“通知没同步过来”“检查一下隧道/连接”“daemon 还活着吗”“手机连不上”时激活。组合使用 auth status / daemon status / tunnel status / tunnel +test / gateway test / daemon logs 定位本地配置、daemon、本地 ingest 鉴权与 Relay WebSocket 状态。多数命令需要 daemon 在运行（🟡）。
+description: 用 yoooclaw CLI 排查手机端推送链路是否通。当用户说“手机推送收不到”“通知没同步过来”“检查一下隧道/连接”“daemon 还活着吗”“手机连不上”时激活。组合使用 doctor / auth status / daemon status / tunnel status / tunnel +test / gateway test / daemon logs 定位本地环境、daemon、本地 ingest 鉴权与 Relay WebSocket 状态。多数命令需要 daemon 在运行（🟡）。
 ---
 
 # yoooclaw Relay / 接收链路排查
@@ -10,6 +10,11 @@ description: 用 yoooclaw CLI 排查手机端推送链路是否通。当用户�
 ## 排查顺序
 
 ```bash
+# 0) 本地环境一把梭：运行时/目录/keychain/config/daemon
+yoooclaw doctor --format json
+# 每项 status 为 ok|warn|fail|skip；--fix 可自动修可修的（目录权限等）。
+# doctor 不做网络探测，网络问题继续往下走。
+
 # 1) 本地凭据是否存在；不调 daemon
 yoooclaw auth status --format json
 
@@ -35,12 +40,35 @@ yoooclaw log +errors --format json
 
 ## 判读
 
-- `auth status` 中 api-key 不存在：先用 `yoooclaw auth set-api-key -` 从 stdin 设置，再启动或 reload daemon。
+- `auth status` 中 api-key 不存在：先用 `yoooclaw auth set-api-key -` 从 stdin 设置，再 `yoooclaw daemon reload`（daemon 已在跑时优先 reload：重读凭据并增量刷新隧道，不中断已有连接；没在跑才 `daemon start`）。
 - `daemon status` 报 `YOOOCLAW_DAEMON_NOT_RUNNING`：运行 `yoooclaw daemon start`。
 - `tunnel status` 的 `mode=relay` 且 `connected=true`：daemon 当前已连上 Relay WebSocket。
 - `tunnel status` 的 `mode=relay` 但 `connected=false`：结合 `lastDisconnectReason`、`reconnectAttempt` 和 daemon 日志排查 api-key、网络与 Relay 服务。
-- `tunnel status` 的 `mode=standalone-http`：当前没有 Relay 隧道；按返回的 `note` 检查 `relay.enabled` 和 api-key。只有明确采用直连 fallback 时才检查防火墙、反代和手机端地址。
-- `tunnel +test` 或 `gateway test` 失败：先排查本地 gateway token。运行 `yoooclaw auth status`，必要时 `yoooclaw auth token-rotate`；daemon 已运行时随后执行 `yoooclaw daemon restart`。
+- `tunnel status` 的 `stale=true`：隧道实际拨的 `currentUrl` 与配置解析出的 `expectedUrl` 不一致，说明正在跟随环境切换重连——等一轮重连即可，不是故障。
+- `tunnel status` 的 `mode=standalone-http`：当前没有 Relay 隧道，**先读返回的 `note` 再下结论**，它区分了四种成因：
+  - `Relay 未启用，走直连 HTTP` → `relay.enabled` 为 false。
+  - `Relay 已启用但当前 CredentialSet 没有可用 api-key` → 补 api-key 后 `daemon reload`。
+  - `ingress=proxied：隧道由宿主代理，daemon 仅收 ingest` → 预期行为，隧道归宿主管，别在这儿查。
+  - `ingress=direct：隧道关闭，仅接受直接 POST` → 预期行为，走直连。
+  只有明确采用直连 fallback 时才检查防火墙、反代和手机端地址。
+- `tunnel +test` 或 `gateway test` 失败：先排查本地 gateway token。运行 `yoooclaw auth status`，必要时 `yoooclaw auth token-rotate`；daemon 已运行时随后执行 `yoooclaw daemon restart`（token 轮换必须 restart，reload 不够）。
+
+## 环境 / 主机对不上
+
+`tunnel status` 返回的 `env` 是当前环境名（development|test|production）。隧道、灯效、ASR 共用同一个云端主机，
+解析优先级为 **环境变量 > `cloud.host` > `relay.url` > 内置默认**：
+
+```bash
+yoooclaw config show --format json     # 看 cloud.host / relay.url 实际值（敏感字段已遮罩）
+yoooclaw config set cloud.host openclaw-service.yoooclaw.com
+yoooclaw config unset cloud.host       # 清掉后跟随 PHONE_NOTIFICATIONS_ENV
+```
+
+环境变量：`PHONE_NOTIFICATIONS_ENV`（development|test|production）与对应的
+`OPENCLAW_HOST_DEVELOPMENT` / `OPENCLAW_HOST_TEST` / `OPENCLAW_HOST_PRODUCTION` 覆盖。
+
+若用户报「隧道连着但灯效 / 转写报 401」，八成是手机端账号与本地 api-key 指向了不同环境：
+比对 `tunnel status` 的 `env` 与手机 App 所在环境，再改 `cloud.host` 或环境变量对齐，最后 `yoooclaw daemon reload`。
 
 ## 多 clientLabel
 

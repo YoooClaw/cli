@@ -44,6 +44,22 @@ description: |
 
      基于 `run` 返回的 `markdown`（或 `resultFile`）总结。
 
+     `run` 用的是**抽取式**摘要（不过模型），够快够省。若用户明确要求更高质量的分片总结，
+     可以改走由你自己逐片总结的循环（每片只进上下文一次，仍然不会爆）：
+
+     ```bash
+     yoooclaw notification summary-job next <id> --format json
+     # → {done:false, chunk:{id,...}, notifications:[...], commitCommand:"..."}
+     # 你读 notifications 写出该片摘要，然后：
+     yoooclaw notification summary-job commit <id> --chunk-id <chunk_id> --summary-file <path>
+     # 重复 next/commit 直到 next 返回 done=true，再：
+     yoooclaw notification summary-job result <id> --format json
+     ```
+
+     `summary-job status <id> --format json` 看 `progress`（totalChunks/doneChunks/remainingChunks）；
+     `summary-job cancel <id>` 放弃任务。走这条路时**必须**每片 commit 完再取下一片，
+     不要把多片 `notifications` 攒在上下文里。默认仍用 `run`。
+
 5. **输出精简**：先一段整体概览，再按 App / 主要发送人分组，每组最多 3-5 条要点；不逐条罗列、不粘贴原始通知数组。`sample` / `topSenders` 只是代表性样例，不要当成完整列表复述。用户追问具体细节时，再 `yoooclaw notification search --sender "某某" --limit 20` 小范围补查。
 
 ## 大批量总结硬性规则
@@ -77,10 +93,15 @@ yoooclaw notification search --app 微信 --format ndjson
 yoooclaw notification search --sender 张三 --limit 20 --format json
 yoooclaw notification search --keyword 开会 --format ndjson
 
+# 按来源设备（clientLabel）过滤；all 为全部。search / summary / summary-job create / stats 都支持
+yoooclaw notification search --client work --limit 20 --format json
+
 # 快捷命令
 yoooclaw notification +today --format ndjson      # 今日全部
 yoooclaw notification +recent --format ndjson      # 最近一小时
 ```
+
+`notification +unread` 目前是预留命令，没有真实的已读/未读数据，不要用它回答「未读通知」，按「最近通知」处理。
 
 - 用户提到期望条数（「最近 20 条 / 约 30 条」）时，必须把该数字传给 `--limit`，不要用默认值。
 - `--app` 支持中英文别名：`微信/wechat`、`飞书/feishu/lark`、`钉钉/dingtalk`、`企业微信/wecom` 等；不要把应用名臆测成不确定的包名。
