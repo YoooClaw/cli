@@ -9,13 +9,15 @@
 # 选项：
 #   --version <v>   指定版本（默认最新 stable）
 #   --beta          未指定 --version 时安装最新预发布版
-#   --dir <path>    安装目录（默认 ~/.local/bin，已在 PATH 则用之；否则提示）
+#   --dir <path>    安装目录（默认优先 ~/.local/bin，其次为可写的 /usr/local/bin）
 #   --force         覆盖已存在二进制
+#   --no-modify-path 不自动将安装目录写入 shell 配置
 #
 # 行为：
 #   - 检测 OS/Arch，下载 yoooclaw-<os>-<arch>（OSS 渲染版从 OSS 下载，源码版从 GitHub Release）
 #   - 校验 sha256（从同目录 checksums.txt 取）
 #   - 写入 <dir>/yoooclaw，并 symlink yc -> yoooclaw
+#   - 幂等写入当前 shell 配置，使新终端可直接执行 yoooclaw
 
 set -eu
 
@@ -29,6 +31,7 @@ VERSION=""
 INSTALL_DIR=""
 FORCE=0
 BETA=0
+MODIFY_PATH=1
 
 err() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[34m==>\033[0m %s\n' "$*"; }
@@ -40,8 +43,9 @@ while [ $# -gt 0 ]; do
     --beta)    BETA=1; shift ;;
     --dir)     INSTALL_DIR="${2:?--dir 需要值}"; shift 2 ;;
     --force)   FORCE=1; shift ;;
+    --no-modify-path) MODIFY_PATH=0; shift ;;
     -h|--help)
-      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) err "未知参数: $1" ;;
@@ -113,7 +117,6 @@ if [ -z "$INSTALL_DIR" ]; then
     INSTALL_DIR="/usr/local/bin"
   else
     INSTALL_DIR="$HOME/.local/bin"
-    warn "$INSTALL_DIR 不在 PATH 中；安装后请把它加进 PATH"
   fi
 fi
 mkdir -p "$INSTALL_DIR"
@@ -163,15 +166,119 @@ fi
 info "已安装: $TARGET"
 info "        $YC_LINK -> yoooclaw"
 
-# ---------- verify ----------
-if "$TARGET" --version >/dev/null 2>&1; then
-  installed_version=$("$TARGET" --version)
-  info "yoooclaw $installed_version ready"
-else
-  warn "已写入文件但 --version 执行失败"
-fi
+# ---------- persist PATH ----------
+escape_double_quoted() {
+  printf '%s' "$1" | sed 's/[\\`"$]/\\&/g'
+}
 
-case ":${PATH:-}:" in
-  *:"$INSTALL_DIR":*) ;;
-  *) warn "请把 $INSTALL_DIR 加到 PATH，例如：echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc" ;;
-esac
+configure_path() {
+  if [ "$MODIFY_PATH" -ne 1 ]; then
+    warn "已跳过 PATH 自动配置（--no-modify-path）"
+    return
+  fi
+
+  login_shell=${SHELL:-}
+  if [ -n "$login_shell" ]; then
+    shell_name=${login_shell##*/}
+  elif [ "$OS" = "darwin" ]; then
+    shell_name=zsh
+  else
+    shell_name=sh
+  fi
+  case "$shell_name" in
+    zsh)
+      shell_profile="${ZDOTDIR:-$HOME}/.zshrc"
+      ;;
+    bash)
+      if [ "$OS" = "darwin" ]; then
+        if [ -f "$HOME/.bash_profile" ]; then
+          shell_profile="$HOME/.bash_profile"
+        elif [ -f "$HOME/.bash_login" ]; then
+          shell_profile="$HOME/.bash_login"
+        elif [ -f "$HOME/.profile" ]; then
+          shell_profile="$HOME/.profile"
+        else
+          shell_profile="$HOME/.bash_profile"
+        fi
+      else
+        shell_profile="$HOME/.bashrc"
+      fi
+      ;;
+    fish)
+      shell_profile="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+      ;;
+    sh|dash|ksh)
+      shell_profile="$HOME/.profile"
+      ;;
+    *)
+      warn "无法识别当前 shell（${SHELL:-unknown}），未自动修改 PATH"
+      warn "请将 $INSTALL_DIR 加入当前 shell 的 PATH"
+      return
+      ;;
+  esac
+
+  profile_dir=${shell_profile%/*}
+  if ! mkdir -p "$profile_dir"; then
+    warn "无法创建 shell 配置目录: $profile_dir"
+    warn "请手动将 $INSTALL_DIR 加入 PATH"
+    return
+  fi
+
+  case "$INSTALL_DIR" in
+    "$HOME")
+      profile_install_dir='$HOME'
+      ;;
+    "$HOME"/*)
+      relative_install_dir=${INSTALL_DIR#"$HOME"/}
+      escaped_relative_dir=$(escape_double_quoted "$relative_install_dir")
+      profile_install_dir="\$HOME/$escaped_relative_dir"
+      ;;
+    *)
+      profile_install_dir=$(escape_double_quoted "$INSTALL_DIR")
+      ;;
+  esac
+
+  if [ "$shell_name" = "fish" ]; then
+    path_line="fish_add_path \"$profile_install_dir\""
+  else
+    path_line="export PATH=\"$profile_install_dir:\$PATH\""
+  fi
+  case "$shell_name" in
+    sh|dash|ksh) reload_command=". \"$shell_profile\"" ;;
+    *) reload_command="source \"$shell_profile\"" ;;
+  esac
+
+  path_config_changed=0
+  if [ -f "$shell_profile" ] && grep -Fqx "$path_line" "$shell_profile"; then
+    info "PATH 已配置: $shell_profile"
+  elif printf '\n# Added by yoooclaw installer\n%s\n' "$path_line" >> "$shell_profile"; then
+    info "已将 $INSTALL_DIR 加入 PATH: $shell_profile"
+    path_config_changed=1
+  else
+    warn "无法写入 shell 配置: $shell_profile"
+    warn "请手动将 $INSTALL_DIR 加入 PATH"
+    return
+  fi
+
+  if [ "$path_config_changed" -eq 1 ]; then
+    info "PATH 将在新终端中生效；已打开的终端请重新打开，或执行: $reload_command"
+  else
+    case ":${PATH:-}:" in
+      *:"$INSTALL_DIR":*) ;;
+      *) warn "当前进程尚未加载 PATH 配置；请重新打开终端，或执行: $reload_command" ;;
+    esac
+  fi
+}
+
+configure_path
+
+# 安装器是子进程，无法改变调用它的父 shell；这里仅保证本次验证按命令名执行。
+PATH="$INSTALL_DIR:${PATH:-}"
+export PATH
+
+# ---------- verify ----------
+resolved_yoooclaw=$(command -v yoooclaw 2>/dev/null || true)
+[ -n "$resolved_yoooclaw" ] || err "安装完成但找不到 yoooclaw 命令"
+installed_version=$(yoooclaw --version 2>/dev/null) || err "已写入文件但 --version 执行失败"
+info "yoooclaw $installed_version ready"
+info "命令验证通过: $resolved_yoooclaw"
