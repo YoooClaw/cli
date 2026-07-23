@@ -4,6 +4,7 @@ node_modules
 # 构建产物
 dist-native
 dist-npm
+dist-openharmony
 *.tgz
 
 # Go（本地散落的二进制 + go mod vendor 目录）

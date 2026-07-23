@@ -45,7 +45,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 
 Two distribution channels with **identical functionality** — pick whichever fits. The npm package is now a very thin Node launcher; the actual work is done by the native Go binary installed via optionalDependencies. The direct-install channel skips Node entirely and downloads the same Go binary.
 
-**Platform support**: the npm channel supports `darwin/linux` `x64+arm64` and `win32-x64` (the launcher needs Node ≥ 18); `install.sh` / GitHub Release direct install supports `darwin/linux` `x64+arm64`. On Windows, credentials are stored in plaintext at `~/.yoooclaw/credentials.json` (no OS keychain hardening — `yoooclaw doctor` will warn about this), and the daemon shuts down gracefully over HTTP.
+**Platform support**: the npm channel supports `darwin/linux` `x64+arm64` and `win32-x64` (the launcher needs Node ≥ 18); `install.sh` / GitHub Release direct install supports `darwin/linux` `x64+arm64`. OpenHarmony/HarmonyOS PC requires the host application to install the native CLI as an HNP embedded in its signed HAP; an app sandbox cannot execute an ELF downloaded only through `npm i -g`. See "OpenHarmony / HarmonyOS PC" below. On Windows, credentials are stored in plaintext at `~/.yoooclaw/credentials.json` (no OS keychain hardening — `yoooclaw doctor` will warn about this), and the daemon shuts down gracefully over HTTP.
 
 ### Channel A — npm (thin Node launcher + platform Go binary)
 
@@ -75,6 +75,34 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
 Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`. The Windows Go binary currently ships only via the npm platform subpackage. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
 
 > `yoooclaw update self` gives you the right upgrade command for how you installed (npm → `npm update -g`, binary → install.sh).
+
+### OpenHarmony / HarmonyOS PC
+
+The application sandbox rejects native ELF files downloaded into app data by npm. Changing file mode, copying the Linux ARM64 optional package, or mapping `process.platform` to `linux` does not bypass that policy. The supported delivery path is an OpenHarmony Native Package (HNP) embedded and signed into the WorkBuddy/OpenClaw host HAP.
+
+Build the `openharmony/arm64` binary with the OpenHarmony-SIG Go toolchain and pack it with the SDK's `hnpcli`:
+
+```bash
+OHOS_GO=/path/to/ohos_golang_go/bin/go \
+OHOS_HNPCLI=/path/to/openharmony-sdk/toolchains/hnpcli \
+scripts/build-openharmony.sh
+```
+
+The result is `dist-openharmony/hnp/arm64-v8a/yoooclaw.hnp`. Copy `dist-openharmony/hnp` into the HAP project root and declare it under the module in `entry/src/main/module.json5`:
+
+```json5
+"hnpPackages": [
+  {
+    "package": "yoooclaw.hnp",
+    "type": "private",
+    "independentSign": false
+  }
+]
+```
+
+The npm launcher discovers the versioned private HNP path automatically. A host can also set `YOOOCLAW_NATIVE_BIN` to the installed `bin/yoooclaw` path. Merely downloading the `.hnp` into a user directory does not install it; it must be packaged and signed with the HAP.
+
+For the complete WorkBuddy host integration procedure, see [docs/workbuddy-openharmony.md](docs/workbuddy-openharmony.md).
 
 ### Quickstart (Human Users)
 

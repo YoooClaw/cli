@@ -45,7 +45,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 
 两种分发渠道，二者**功能一致**，按需选择。npm 包现在是极薄 Node launcher，真正执行的是 optionalDependencies 安装的 Go 原生二进制；直接安装渠道则跳过 Node，直接下载同一套 Go binary。
 
-**平台支持**：npm 渠道支持 `darwin/linux` 的 `x64+arm64` 与 `win32-x64`（launcher 需 Node ≥ 18）；`install.sh` / GitHub Release 直装支持 `darwin/linux` 的 `x64+arm64`。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
+**平台支持**：npm 渠道支持 `darwin/linux` 的 `x64+arm64` 与 `win32-x64`（launcher 需 Node ≥ 18）；`install.sh` / GitHub Release 直装支持 `darwin/linux` 的 `x64+arm64`。OpenHarmony/鸿蒙 PC 需由宿主应用通过 HNP 随 HAP 安装，不能在应用沙箱中仅靠 `npm i -g` 落盘并执行原生 ELF，详见下方“OpenHarmony / 鸿蒙 PC”。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
 
 ### 渠道 A — npm（薄 Node launcher + 平台 Go 二进制）
 
@@ -75,6 +75,34 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
 直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。Windows Go binary 目前随 npm 平台子包发布。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 
 > `yoooclaw update self` 会按当前安装来源给出对应升级命令（npm 走 `npm update -g`，二进制走 install.sh）。
+
+### OpenHarmony / 鸿蒙 PC
+
+鸿蒙应用沙箱会拒绝执行 npm 在应用数据目录中新下载的原生 ELF，`chmod`、手工复制 Linux ARM64 子包或把 `process.platform` 映射成 `linux` 都不能绕过该限制。受支持的交付方式是把 Native CLI 打成 HNP，并由 WorkBuddy/OpenClaw 等宿主将 HNP 嵌入、签入 HAP。
+
+仓库提供 OpenHarmony-SIG Go 工具链的构建入口（目前支持 `openharmony/arm64`）：
+
+```bash
+OHOS_GO=/path/to/ohos_golang_go/bin/go \
+OHOS_HNPCLI=/path/to/openharmony-sdk/toolchains/hnpcli \
+scripts/build-openharmony.sh
+```
+
+产物位于 `dist-openharmony/hnp/arm64-v8a/yoooclaw.hnp`。将 `dist-openharmony/hnp` 复制到 HAP 工程根目录，并在 `entry/src/main/module.json5` 的 `module` 下声明：
+
+```json5
+"hnpPackages": [
+  {
+    "package": "yoooclaw.hnp",
+    "type": "private",
+    "independentSign": false
+  }
+]
+```
+
+npm launcher 会按当前 CLI 版本查找私有 HNP 路径，也可由宿主设置 `YOOOCLAW_NATIVE_BIN` 指向安装后的 `bin/yoooclaw`。HNP 必须随 HAP 打包和签名；把 `.hnp` 下载到用户目录本身仍不会完成安装。
+
+面向 WorkBuddy 宿主开发者的完整接入步骤见 [docs/workbuddy-openharmony.md](docs/workbuddy-openharmony.md)。
 
 ### 快速开始（人类用户）
 

@@ -31,6 +31,9 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out ./...
 
+      - name: Test npm launcher
+        run: node --test npm/cli/test/*.test.js
+
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
