@@ -62,7 +62,8 @@ func TestFor(t *testing.T) {
 		p.DaemonLock: "daemon.lock", p.Logs: "logs",
 		p.DaemonLog:     filepath.Join("logs", "daemon.log"),
 		p.Notifications: "notifications", p.Recordings: "recordings",
-		p.Images: "images", p.LightRules: "light-rules", p.State: "state",
+		p.Images: "images", p.WebPages: "web-pages",
+		p.LightRules: "light-rules", p.State: "state",
 	}
 	for got, leaf := range cases {
 		if got != filepath.Join(base, leaf) {

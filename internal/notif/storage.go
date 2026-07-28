@@ -22,7 +22,7 @@ const (
 	idIndexDirName         = ".ids"
 	contentKeyIndexDirName = ".keys"
 	unitSep                = "\x1f"
-	storedFileMode         = 0o644
+	storedFileMode         = fsutil.SecretFileMode
 )
 
 // Logger 是存储层依赖的最小日志接口。
@@ -128,14 +128,14 @@ func (s *Storage) quarantineDay(dateKey, filePath string, cause error) {
 
 // Init 准备目录；content-key 索引每次启动重建。
 func (s *Storage) Init() error {
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+	if err := fsutil.EnsureDir(s.dir, fsutil.DirMode); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.idIndexDir, 0o755); err != nil {
+	if err := fsutil.EnsureDir(s.idIndexDir, fsutil.DirMode); err != nil {
 		return err
 	}
 	_ = os.RemoveAll(s.contentKeyDir)
-	return os.MkdirAll(s.contentKeyDir, 0o755)
+	return fsutil.EnsureDir(s.contentKeyDir, fsutil.DirMode)
 }
 
 // staged 是一天里待落盘的新条目，以及为它们在内存缓存中占位的索引键。
@@ -560,7 +560,7 @@ func readStoredFile(filePath string) ([]StoredNotification, error) {
 }
 
 func appendLine(path, line string) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, storedFileMode)
 	if err != nil {
 		return
 	}

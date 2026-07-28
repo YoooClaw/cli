@@ -69,6 +69,7 @@ type Paths struct {
 	Notifications string
 	Recordings    string
 	Images        string
+	WebPages      string
 	LightRules    string
 	State         string
 }
@@ -93,6 +94,7 @@ func ForRoot(root, profile string) Paths {
 		Notifications: filepath.Join(dir, "notifications"),
 		Recordings:    filepath.Join(dir, "recordings"),
 		Images:        filepath.Join(dir, "images"),
+		WebPages:      filepath.Join(dir, "web-pages"),
 		LightRules:    filepath.Join(dir, "light-rules"),
 		State:         filepath.Join(dir, "state"),
 	}
