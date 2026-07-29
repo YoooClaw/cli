@@ -17,7 +17,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 - **Ships its own daemon** — a local daemon receives notifications, evaluates rules, and connects to Relay, independent of whether the openclaw client is online
 - **Agent-Native** — the bundled [Skill](skills/) works out of the box; agents can call `yoooclaw` commands with zero extra config
 - **Three-tier command system** — Shortcuts (human/AI friendly) → Service Commands (structured) → Raw API (full coverage), pick the granularity you need
-- **Disk-only queries** — notification / recording / image queries read directly from `~/.yoooclaw`, no daemon required
+- **Disk-only queries** — notification / recording / image / captured web-page queries read directly from `~/.yoooclaw`, no daemon required
 - **Unified output contract** — `--format json|pretty|table|ndjson`, success and failure share one channel with predictable structure; local CLI errors return a non-zero exit code, and Raw/daemon HTTP responses should be checked against both `ok` and HTTP status
 - **Credential security** — OS keychain storage by default, multi api-key management, gateway token auth for local ingest
 - **Native Go binary** — a thin npm launcher + platform subpackages, or install the native binary directly; full macOS / Linux / Windows support
@@ -30,6 +30,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 | 🔄 Sync                     | Scan/iterate unprocessed notifications, fetch details by date, commit batches — feeds memory systems       | 🟢     |
 | 🎙️ Recording                | List/query recordings, ASR transcription config (api/model-proxy; local mode deprecated), follow status event stream | 🟢     |
 | 🖼️ Image                    | List/query images, resolve local paths / thumbnails                                                        | 🟢     |
+| 🌐 Web                      | List/search captured web pages, resolve Markdown and storage paths                                         | 🟢     |
 | 💡 Light                    | Send light-effect commands to hardware (segment / preset / rule — pick one), connectivity self-check       | 🟡     |
 | 📐 Lightrule                | CRUD for persistent "notification → light effect" rules, enable / disable                                  | 🟡     |
 | ⏰ Monitor                  | cron-driven scheduled notification monitoring jobs                                                          | 🟡     |
@@ -263,6 +264,10 @@ yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
+yoooclaw web list
+yoooclaw web search "JavaScript" --limit 20
+yoooclaw web path <url-hash>
+yoooclaw web storage-path
 yoooclaw lightrule create --intent "Flash red when my boss messages me on WeChat"  # Compiled & stored by the cloud service
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
