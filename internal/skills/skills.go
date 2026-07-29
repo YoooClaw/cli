@@ -239,9 +239,21 @@ func ResolveTarget(agentRaw, targetRaw string) (Selection, error) {
 // InstallResult 是单个 Skill 的安装结果。
 type InstallResult struct {
 	Name   string `json:"name"`
-	Status string `json:"status"` // installed | skipped
+	Status string `json:"status"` // installed | skipped | removed
 	Reason string `json:"reason,omitempty"`
 	Dest   string `json:"dest"`
+}
+
+// deprecatedBundledSkills 是已并入统一 Skill 的旧目录名。
+// 安装新版 Skill 时清理这些精确名称，避免 Agent 同时发现新旧路由。
+var deprecatedBundledSkills = []string{
+	"yoooclaw-notification-query",
+	"yoooclaw-recording-entity-extraction",
+	"yoooclaw-recording-interview",
+	"yoooclaw-recording-meeting-minutes",
+	"yoooclaw-recording-mindmap",
+	"yoooclaw-recording-query",
+	"yoooclaw-recording-translation",
 }
 
 // Install 把内嵌 Skill 复制到 target；force 时覆盖已存在目录。
@@ -257,6 +269,18 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 	}
 	var results []InstallResult
 	var installed []string
+	for _, name := range deprecatedBundledSkills {
+		dest := filepath.Join(target, name)
+		if !fsutil.Exists(dest) {
+			continue
+		}
+		if err := os.RemoveAll(dest); err != nil {
+			return nil, nil, err
+		}
+		results = append(results, InstallResult{
+			Name: name, Status: "removed", Reason: "已并入统一 Skill", Dest: dest,
+		})
+	}
 	for _, s := range skills {
 		dest := filepath.Join(target, s.Name)
 		if fsutil.Exists(dest) {

@@ -129,23 +129,24 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 
 ### Built-in Skill (bundled in this repo)
 
-This repo ships a SKILL.md under [skills/](skills/) that teaches agents to call `yoooclaw` commands directly. In the openclaw plugin it is auto-registered via `openclaw.plugin.json`; in the standalone CLI form, use `yoooclaw skills install` to symlink it into the agent's skills discovery directory.
+This repo bundles several Skills under [skills/](skills/) that teach agents to call `yoooclaw` directly. Use `yoooclaw skills install` to copy the embedded Skills into an agent's discovery directory.
 
-| Skill                          | Description                                                                                                                                |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `yoooclaw-notification-query`  | Query/aggregate/summarize phone notifications: "show me recent notifications", "who's contacted me", "summarize the last N notifications". Small batches use `summary`, large batches use `summary-job`; disk-only, no daemon required |
-| `yoooclaw-lightrule-create`    | Create/manage persistent "notification → light effect" rules from natural language; rules are compiled, stored, and evaluated by the cloud Notification Intelligence Service |
-| `yoooclaw-tunnel-debug`        | Debug the phone-side push path: combine auth / daemon / tunnel / gateway status to pinpoint local config, ingest auth, and Relay WebSocket issues (🟡) |
+| Skill                           | Description |
+| ------------------------------- | ----------- |
+| `yoooclaw-context-query`        | The sole query Skill for fresh notifications, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
+| `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
+| `yoooclaw-lightrule-create`     | Creates and manages persistent “notification → light effect” rules through the standalone CLI; retained because this package has no Agent light-rule tools |
+| `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
 
 ```bash
 yoooclaw skills list                 # List Skills bundled with this package
 yoooclaw skills targets              # View supported agent targets and detection results
-yoooclaw skills install              # Auto-detect the sole agent and symlink-install
+yoooclaw skills install              # Auto-detect the sole agent and copy-install
 yoooclaw skills install --agent claude
-yoooclaw skills install --copy       # Copy instead of symlink (use on Windows without admin rights)
+yoooclaw skills install --force      # Refresh bundled Skills and remove merged legacy names
 ```
 
-Symlinking is the default rather than copying: after `yoooclaw update self` upgrades the CLI, the Skill content updates automatically along with it. Restart the agent session after installing so it can be discovered.
+Skills are embedded in the native binary and copied during installation. After upgrading the CLI, rerun `yoooclaw skills install --force`, then restart the agent session.
 
 ## Authentication
 

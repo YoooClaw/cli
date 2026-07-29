@@ -62,6 +62,7 @@ func skillsInstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 	}
 	resultsAny := make([]any, 0, len(results))
 	skipped := make([]any, 0)
+	removed := make([]any, 0)
 	for _, r := range results {
 		m := map[string]any{"name": r.Name, "status": r.Status, "dest": r.Dest}
 		if r.Reason != "" {
@@ -71,14 +72,17 @@ func skillsInstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 		if r.Status == "skipped" {
 			skipped = append(skipped, m)
 		}
+		if r.Status == "removed" {
+			removed = append(removed, m)
+		}
 	}
 	hint := "没有新安装的 Skill（已存在则加 --force 覆盖）"
-	if len(installed) > 0 {
+	if len(installed) > 0 || len(removed) > 0 {
 		hint = "重启 agent 会话后即可被发现；升级 CLI 后请重跑本命令刷新"
 	}
 	return map[string]any{
 		"ok": true, "agent": sel.Agent, "agentLabel": sel.AgentLabel, "target": sel.Target,
 		"targetSource": sel.Source, "mode": "copy", "installed": installed,
-		"skipped": skipped, "results": resultsAny, "hint": hint,
+		"removed": removed, "skipped": skipped, "results": resultsAny, "hint": hint,
 	}, nil
 }
