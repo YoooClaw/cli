@@ -265,10 +265,10 @@ yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
-yoooclaw web list
-yoooclaw web search "JavaScript" --limit 20
-yoooclaw web path <url-hash>
-yoooclaw web storage-path
+yoooclaw synced-web-page list
+yoooclaw synced-web-page search "JavaScript" --limit 20
+yoooclaw synced-web-page path <url-hash>
+yoooclaw synced-web-page storage-path
 yoooclaw lightrule create --intent "Flash red when my boss messages me on WeChat"  # Compiled & stored by the cloud service
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```

@@ -88,9 +88,9 @@ func writeWebFixture(t *testing.T) (string, testWebPage, testWebPage) {
 
 func TestWebStoragePath(t *testing.T) {
 	dir, _, _ := writeWebFixture(t)
-	out, code := execCLI(t, "web", "storage-path")
+	out, code := execCLI(t, "synced-web-page", "storage-path")
 	if code != 0 {
-		t.Fatalf("web storage-path failed: %s", out)
+		t.Fatalf("synced-web-page storage-path failed: %s", out)
 	}
 	if got := decode(t, out)["path"]; got != dir {
 		t.Errorf("path = %v, want %s", got, dir)
@@ -99,9 +99,9 @@ func TestWebStoragePath(t *testing.T) {
 
 func TestWebListNewestFirst(t *testing.T) {
 	_, mdn, internal := writeWebFixture(t)
-	out, code := execCLI(t, "web", "list")
+	out, code := execCLI(t, "synced-web-page", "list")
 	if code != 0 {
-		t.Fatalf("web list failed: %s", out)
+		t.Fatalf("synced-web-page list failed: %s", out)
 	}
 	result := decode(t, out)
 	pages := result["pages"].([]any)
@@ -119,9 +119,9 @@ func TestWebListNewestFirst(t *testing.T) {
 
 func TestWebPathAcceptsUniqueEightCharacterPrefix(t *testing.T) {
 	dir, mdn, _ := writeWebFixture(t)
-	out, code := execCLI(t, "web", "path", "36340E4F")
+	out, code := execCLI(t, "synced-web-page", "path", "36340E4F")
 	if code != 0 {
-		t.Fatalf("web path failed: %s", out)
+		t.Fatalf("synced-web-page path failed: %s", out)
 	}
 	if got := decode(t, out)["path"]; got != filepath.Join(dir, mdn.RelativePath) {
 		t.Errorf("path = %v", got)
@@ -130,7 +130,7 @@ func TestWebPathAcceptsUniqueEightCharacterPrefix(t *testing.T) {
 
 func TestWebPathRejectsMissingAndUnsafeEntries(t *testing.T) {
 	dir, mdn, internal := writeWebFixture(t)
-	if out, code := execCLI(t, "web", "path", "deadbeef"); code == 0 {
+	if out, code := execCLI(t, "synced-web-page", "path", "deadbeef"); code == 0 {
 		t.Fatalf("missing page should fail: %s", out)
 	}
 
@@ -142,7 +142,7 @@ func TestWebPathRejectsMissingAndUnsafeEntries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "index.json"), index, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, code := execCLI(t, "web", "path", internal.URLHash)
+	out, code := execCLI(t, "synced-web-page", "path", internal.URLHash)
 	if code == 0 {
 		t.Fatalf("unsafe path should fail: %s", out)
 	}
@@ -155,9 +155,9 @@ func TestWebPathRejectsMissingAndUnsafeEntries(t *testing.T) {
 func TestWebSearchMetadataAndMarkdownOnly(t *testing.T) {
 	_, mdn, internal := writeWebFixture(t)
 
-	out, code := execCLI(t, "web", "search", "javascript")
+	out, code := execCLI(t, "synced-web-page", "search", "javascript")
 	if code != 0 {
-		t.Fatalf("web search failed: %s", out)
+		t.Fatalf("synced-web-page search failed: %s", out)
 	}
 	result := decode(t, out)
 	pages := result["pages"].([]any)
@@ -173,13 +173,13 @@ func TestWebSearchMetadataAndMarkdownOnly(t *testing.T) {
 		t.Errorf("matchedFields = %+v", fields)
 	}
 
-	out, code = execCLI(t, "web", "search", "rolling update")
+	out, code = execCLI(t, "synced-web-page", "search", "rolling update")
 	if code != 0 || decode(t, out)["pages"].([]any)[0].(map[string]any)["urlHash"] != internal.URLHash {
 		t.Errorf("body search failed: %s", out)
 	}
 
 	for _, keyword := range []string{"html-only-secret", "frontmatter-only-secret"} {
-		out, code = execCLI(t, "web", "search", keyword)
+		out, code = execCLI(t, "synced-web-page", "search", keyword)
 		if code != 0 || decode(t, out)["total"] != float64(0) {
 			t.Errorf("%q should not match archive/frontmatter: %s", keyword, out)
 		}
@@ -188,7 +188,7 @@ func TestWebSearchMetadataAndMarkdownOnly(t *testing.T) {
 
 func TestWebSearchLimitAndValidation(t *testing.T) {
 	_, mdn, _ := writeWebFixture(t)
-	out, code := execCLI(t, "web", "search", "https", "--limit", "1")
+	out, code := execCLI(t, "synced-web-page", "search", "https", "--limit", "1")
 	if code != 0 {
 		t.Fatalf("limited search failed: %s", out)
 	}
@@ -199,7 +199,7 @@ func TestWebSearchLimitAndValidation(t *testing.T) {
 	}
 
 	for _, limit := range []string{"0", "-1", "abc"} {
-		out, code = execCLI(t, "web", "search", "test", "--limit", limit)
+		out, code = execCLI(t, "synced-web-page", "search", "test", "--limit", limit)
 		if code == 0 {
 			t.Errorf("--limit %s should fail: %s", limit, out)
 		}

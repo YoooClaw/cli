@@ -55,7 +55,7 @@ For a cross-source query:
 1. Extract a focused phrase plus any time or count constraint.
 2. Query every relevant source for the full scope requested by the user:
    - notifications: focused `notification search`;
-   - pages: `web search`;
+   - pages: `yoooclaw synced-web-page search`;
    - recordings: locate indexed transcripts, then search only those files;
    - images: query metadata and inspect pixels only when requested.
 3. Evaluate each source separately.

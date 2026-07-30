@@ -4,28 +4,28 @@ Apply the parent `yoooclaw-context-query` rules.
 
 ## Source priority
 
-For the user's saved, bookmarked, viewed, read, opened, or captured articles/pages, query `yoooclaw web` first. Do not first use browser automation, browser sessions, or raw bookmark/favorites/history files. Use another collection platform only when the user explicitly names it.
+For the user's saved, bookmarked, viewed, read, opened, or captured articles/pages, query `yoooclaw synced-web-page` first. Do not first use browser automation, browser sessions, or raw bookmark/favorites/history files. Use another collection platform only when the user explicitly names it.
 
 The captured copy is local historical context, not proof of the current live Internet page.
 
 ## Commands
 
 ```bash
-yoooclaw web storage-path --format json
-yoooclaw web list --format json
-yoooclaw web search "<keyword>" --limit <requested-count-or-total-pages> --format json
-yoooclaw web path <urlHash> --format json
+yoooclaw synced-web-page storage-path --format json
+yoooclaw synced-web-page list --format json
+yoooclaw synced-web-page search "<keyword>" --limit <requested-count-or-total-pages> --format json
+yoooclaw synced-web-page path <urlHash> --format json
 ```
 
-`web list` returns newest capture first with fields including `urlHash`, `title`, `siteName`, `canonicalUrl`, `capturedAt`, `firstCapturedAt`, `captureCount`, `relativePath`, and `hasArchive`.
+`yoooclaw synced-web-page list` returns newest capture first with fields including `urlHash`, `title`, `siteName`, `canonicalUrl`, `capturedAt`, `firstCapturedAt`, `captureCount`, `relativePath`, and `hasArchive`.
 
-`web search` searches title, site name, URL, canonical URL, and Markdown body. It intentionally does not search raw HTML archives.
+`yoooclaw synced-web-page search` searches title, site name, URL, canonical URL, and Markdown body. It intentionally does not search raw HTML archives or access the Internet.
 
 ## Route by intent
 
 ### Recent or time-bounded pages
 
-1. Run `web list`.
+1. Run `yoooclaw synced-web-page list`.
 2. Filter `capturedAt`:
    - 最近一天/24 小时: rolling 24-hour window ending now;
    - 今天/昨天: local calendar day;
@@ -33,16 +33,16 @@ yoooclaw web path <urlHash> --format json
 3. Sort by `capturedAt` descending.
 4. Return the requested count or all matching metadata.
 
-Generic collection words such as “收藏”, “保存”, “看过”, or “文章” describe the collection operation; do not pass them literally to `web search` unless the user is searching those words inside page content.
+Generic collection words such as “收藏”, “保存”, “看过”, or “文章” describe the collection operation; do not pass them literally to `yoooclaw synced-web-page search` unless the user is searching those words inside page content.
 
 ### Keyword search
 
-Run `web list` first to obtain the total number of synchronized pages. Run `web search` with the substantive topic phrase and the user-requested count, or use the total page count when no count was requested so the CLI default does not truncate matches. Present page title, site, canonical URL, capture time, matched metadata fields, and short body snippets.
+Run `yoooclaw synced-web-page list` first to obtain the total number of synchronized pages. Run `yoooclaw synced-web-page search` with the substantive topic phrase and the user-requested count, or use the total page count when no count was requested so the CLI default does not truncate matches. Present page title, site, canonical URL, capture time, matched metadata fields, and short body snippets.
 
 ### Read or answer from one page
 
-1. Identify a unique page through `web list` or `web search`.
-2. Run `web path <urlHash>`.
+1. Identify a unique page through `yoooclaw synced-web-page list` or `yoooclaw synced-web-page search`.
+2. Run `yoooclaw synced-web-page path <urlHash>`.
 3. Read the returned Markdown file.
 4. Answer from that file and include its `canonicalUrl`.
 

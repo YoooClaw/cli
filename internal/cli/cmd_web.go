@@ -19,8 +19,11 @@ const (
 	maxWebSnippetRunes    = 240
 )
 
-func newWebCmd() *cobra.Command {
-	c := &cobra.Command{Use: "web", Short: "已同步网页管理 🟢"}
+func newSyncedWebPageCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "synced-web-page",
+		Short: "本地已同步网页管理，不访问互联网 🟢",
+	}
 
 	list := &cobra.Command{
 		Use:   "list",

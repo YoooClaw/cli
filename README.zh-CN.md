@@ -267,10 +267,10 @@ yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
-yoooclaw web list
-yoooclaw web search "JavaScript" --limit 20
-yoooclaw web path <url-hash>
-yoooclaw web storage-path
+yoooclaw synced-web-page list
+yoooclaw synced-web-page search "JavaScript" --limit 20
+yoooclaw synced-web-page path <url-hash>
+yoooclaw synced-web-page storage-path
 yoooclaw lightrule create --intent "老板发微信时红灯快闪"   # 云端 Agent 编译并保存规则
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
