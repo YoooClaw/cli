@@ -3,10 +3,12 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"testing"
 
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
 func TestParseSkillMeta(t *testing.T) {
@@ -54,6 +56,15 @@ func TestList(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(names) {
 		t.Errorf("skills should be sorted: %v", names)
+	}
+	want := []string{
+		"yoooclaw-context-query",
+		"yoooclaw-lightrule-create",
+		"yoooclaw-recordings-process",
+		"yoooclaw-tunnel-debug",
+	}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("bundled skills = %v, want %v", names, want)
 	}
 }
 
@@ -196,5 +207,48 @@ func TestInstall(t *testing.T) {
 		if r.Status != "installed" {
 			t.Errorf("force should reinstall: %+v", r)
 		}
+	}
+}
+
+func TestInstallRemovesMergedLegacySkills(t *testing.T) {
+	t.Parallel()
+	target := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range deprecatedBundledSkills {
+		dir := filepath.Join(target, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("legacy"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unrelated := filepath.Join(target, "my-personal-skill")
+	if err := os.MkdirAll(unrelated, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	results, _, err := Install(target, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := map[string]bool{}
+	for _, result := range results {
+		if result.Status == "removed" {
+			removed[result.Name] = true
+		}
+	}
+	for _, name := range deprecatedBundledSkills {
+		if fsutil.Exists(filepath.Join(target, name)) {
+			t.Errorf("deprecated skill %q was not removed", name)
+		}
+		if !removed[name] {
+			t.Errorf("deprecated skill %q missing removed result", name)
+		}
+	}
+	if !fsutil.Exists(unrelated) {
+		t.Error("unrelated personal skill should remain")
 	}
 }

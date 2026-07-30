@@ -17,7 +17,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 - **自带守护进程** —— 本地 daemon 收通知、跑规则、连 Relay，不依赖 openclaw 客户端在线
 - **Agent-Native** —— 随包 [Skill](skills/) 开箱即用，Agent 零额外配置直接调 `yoooclaw` 命令
 - **三层命令体系** —— Shortcuts（人/AI 友好）→ Service Commands（结构化）→ Raw API（全覆盖），按粒度选择
-- **纯读磁盘的查询** —— 通知 / 录音 / 图片查询直接读 `~/.yoooclaw`，不需要 daemon 在跑
+- **纯读磁盘的查询** —— 通知 / 录音 / 图片 / 已同步网页查询直接读 `~/.yoooclaw`，不需要 daemon 在跑
 - **统一输出契约** —— `--format json|pretty|table|ndjson`，成功失败同通道、结构可预测；本地 CLI 错误返回非零退出码，Raw/daemon HTTP 响应请同时检查 `ok` / HTTP status
 - **凭据安全** —— OS keychain 优先存储，多 api-key 管理，gateway token 鉴权本地 ingest
 - **Go 原生二进制** —— npm 薄 launcher + 平台子包，或直接安装原生 binary；macOS / Linux / Windows 全平台
@@ -30,6 +30,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 | 🔄 同步 Sync          | 扫描/迭代未处理通知、按日期取详情、提交批次，供记忆系统消费   | 🟢     |
 | 🎙️ 录音 Recording     | 列举与查询录音、ASR 转写配置（api/model-proxy；local 已停用）、状态事件流跟随 | 🟢     |
 | 🖼️ 图片 Image         | 列举与查询图片、本地路径 / 缩略图解析                        | 🟢     |
+| 🌐 网页 Web            | 列举与搜索已同步网页、解析 Markdown 文件与存储目录路径       | 🟢     |
 | 💡 灯效 Light         | 下发灯效指令到硬件（段 / 预设 / 规则三选一），连通性自检     | 🟡     |
 | 📐 灯效规则 Lightrule | 「通知 → 灯效」持久规则的增删改查、启用 / 停用               | 🟡     |
 | ⏰ 监控 Monitor       | cron 驱动的定时通知监控任务                                  | 🟡     |
@@ -128,23 +129,24 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 
 ### 本仓库随包内置 Skill
 
-随包发布 [skills/](skills/) 下的 SKILL.md，教 Agent 直接调 `yoooclaw` 命令。在 openclaw 插件里由 `openclaw.plugin.json` 自动注册；独立 CLI 形态下用 `yoooclaw skills install` 软链到 Agent 的 skills 发现目录。
+随包发布 [skills/](skills/) 下的多个 Skill，教 Agent 直接调用 `yoooclaw`。运行 `yoooclaw skills install` 会把二进制内嵌的 Skill 复制到 Agent 的发现目录。
 
-| Skill                         | 说明                                                                                                            |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `yoooclaw-notification-query` | 查询/汇总/总结手机通知：「看看最近的通知」「谁找过我」「总结最近约 N 条通知」。小批量走 `summary`、大批量走 `summary-job`，纯读磁盘、不需要 daemon |
-| `yoooclaw-lightrule-create`   | 从自然语言创建/管理「通知 → 灯效」持久规则，由云端 Notification Intelligence Service 编译、存储并评估触发       |
-| `yoooclaw-tunnel-debug`       | 排查手机端推送链路：组合 auth / daemon / tunnel / gateway 状态定位本地配置、ingest 鉴权与 Relay WebSocket（🟡） |
+| Skill                           | 说明 |
+| ------------------------------- | ---- |
+| `yoooclaw-context-query`        | 查询最新通知、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
+| `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
+| `yoooclaw-lightrule-create`     | 通过独立 CLI 创建和管理「通知 → 灯效」持久规则；CLI 包没有 Agent 灯效规则工具，因此继续保留 |
+| `yoooclaw-tunnel-debug`         | 排查鉴权、daemon、ingest、Relay WebSocket 与手机同步链路（🟡） |
 
 ```bash
 yoooclaw skills list                 # 列出随包发布的内置 Skill
 yoooclaw skills targets              # 查看支持的 Agent 目标和探测结果
-yoooclaw skills install              # 自动探测唯一 Agent 后软链安装
+yoooclaw skills install              # 自动探测唯一 Agent 后复制安装
 yoooclaw skills install --agent claude
-yoooclaw skills install --copy       # 复制而非软链（Windows 无管理员权限时用）
+yoooclaw skills install --force      # 刷新内置 Skill，并清理已合并的旧名称
 ```
 
-默认软链而非复制：`yoooclaw update self` 升级 CLI 后 Skill 内容自动跟随新版本。安装后重启 Agent 会话即可被发现。
+Skill 内嵌在原生二进制中，安装时复制。升级 CLI 后重新运行 `yoooclaw skills install --force`，再重启 Agent 会话。
 
 ## 鉴权
 
@@ -265,6 +267,10 @@ yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
+yoooclaw web list
+yoooclaw web search "JavaScript" --limit 20
+yoooclaw web path <url-hash>
+yoooclaw web storage-path
 yoooclaw lightrule create --intent "老板发微信时红灯快闪"   # 云端 Agent 编译并保存规则
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```

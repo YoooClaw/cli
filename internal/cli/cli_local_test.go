@@ -27,6 +27,8 @@ func TestLocalReadCommandsOnEmptyStore(t *testing.T) {
 		{"recording", "storage-path"},
 		{"image", "list"},
 		{"image", "storage-path"},
+		{"web", "list"},
+		{"web", "storage-path"},
 		{"notification", "storage-path"},
 		{"notification", "search"},
 		{"notification", "stats"},
