@@ -265,13 +265,17 @@ yoooclaw recording list --status synced
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
-yoooclaw synced-web-page list
+yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>
 yoooclaw synced-web-page storage-path
 yoooclaw lightrule create --intent "Flash red when my boss messages me on WeChat"  # Compiled & stored by the cloud service
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
+
+`synced-web-page list` filters the index by `capturedAt`: `--from` is
+inclusive and `--to` is exclusive. Pass ISO 8601 timestamps with an explicit
+timezone.
 
 For ASR language hints, `auto` keeps provider-side detection. Use `zh-TW` for Traditional Chinese in a Taiwan context, or `zh-Hant` when only the Traditional Chinese script preference matters.
 

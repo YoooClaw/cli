@@ -117,6 +117,50 @@ func TestWebListNewestFirst(t *testing.T) {
 	}
 }
 
+func TestWebListFiltersCaptureTime(t *testing.T) {
+	_, mdn, internal := writeWebFixture(t)
+	out, code := execCLI(
+		t,
+		"synced-web-page",
+		"list",
+		"--from",
+		internal.CapturedAt,
+		"--to",
+		mdn.CapturedAt,
+	)
+	if code != 0 {
+		t.Fatalf("time-filtered list failed: %s", out)
+	}
+	result := decode(t, out)
+	pages := result["pages"].([]any)
+	if result["total"] != float64(1) ||
+		pages[0].(map[string]any)["urlHash"] != internal.URLHash {
+		t.Fatalf("unexpected time-filtered pages: %+v", result)
+	}
+
+	if out, code = execCLI(
+		t,
+		"synced-web-page",
+		"list",
+		"--from",
+		mdn.CapturedAt,
+		"--to",
+		internal.CapturedAt,
+	); code == 0 {
+		t.Fatalf("reversed time range should fail: %s", out)
+	}
+
+	if out, code = execCLI(
+		t,
+		"synced-web-page",
+		"list",
+		"--from",
+		"not-a-time",
+	); code == 0 {
+		t.Fatalf("invalid time should fail: %s", out)
+	}
+}
+
 func TestWebPathAcceptsUniqueEightCharacterPrefix(t *testing.T) {
 	dir, mdn, _ := writeWebFixture(t)
 	out, code := execCLI(t, "synced-web-page", "path", "36340E4F")

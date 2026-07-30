@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/webpage"
 	"github.com/spf13/cobra"
 )
@@ -31,6 +33,8 @@ func newSyncedWebPageCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  run(webList),
 	}
+	list.Flags().String("from", "", "包含在该 ISO 8601 时间及之后抓取的网页")
+	list.Flags().String("to", "", "包含在该 ISO 8601 时间之前抓取的网页")
 	pathCmd := &cobra.Command{
 		Use:   "path <urlHash>",
 		Short: "根据 URL 哈希打印网页 Markdown 文件绝对路径 🟢",
@@ -55,12 +59,51 @@ func newSyncedWebPageCmd() *cobra.Command {
 	return c
 }
 
-func webList(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+func parseWebListBoundary(raw, option string) (*time.Time, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, ok := notif.ParseTime(raw)
+	if !ok {
+		return nil, errs.Newf(
+			errs.CodeInvalidArgument,
+			"%s 必须是带时区的 ISO 8601 时间，例如 2026-07-29T00:00:00+08:00",
+			option,
+		)
+	}
+	return &parsed, nil
+}
+
+func webList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	entries := webpage.ReadIndex(ctx.Paths.WebPages)
 	webpage.SortByCapturedDesc(entries)
 
+	from, err := parseWebListBoundary(flagStr(cmd, "from"), "--from")
+	if err != nil {
+		return nil, err
+	}
+	to, err := parseWebListBoundary(flagStr(cmd, "to"), "--to")
+	if err != nil {
+		return nil, err
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return nil, errs.New(errs.CodeInvalidArgument, "--from 不能晚于 --to")
+	}
+
 	pages := make([]any, 0, len(entries))
 	for _, entry := range entries {
+		if from != nil || to != nil {
+			capturedAt, ok := notif.ParseTime(entry.CapturedAt)
+			if !ok {
+				continue
+			}
+			if from != nil && capturedAt.Before(*from) {
+				continue
+			}
+			if to != nil && !capturedAt.Before(*to) {
+				continue
+			}
+		}
 		pages = append(pages, map[string]any{
 			"urlHash":         entry.URLHash,
 			"title":           entry.Title,

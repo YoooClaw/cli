@@ -12,12 +12,12 @@ The captured copy is local historical context, not proof of the current live Int
 
 ```bash
 yoooclaw synced-web-page storage-path --format json
-yoooclaw synced-web-page list --format json
+yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>] --format json
 yoooclaw synced-web-page search "<keyword>" --limit <requested-count-or-total-pages> --format json
 yoooclaw synced-web-page path <urlHash> --format json
 ```
 
-`yoooclaw synced-web-page list` returns newest capture first with fields including `urlHash`, `title`, `siteName`, `canonicalUrl`, `capturedAt`, `firstCapturedAt`, `captureCount`, `relativePath`, and `hasArchive`.
+`yoooclaw synced-web-page list` returns newest capture first with fields including `urlHash`, `title`, `siteName`, `canonicalUrl`, `capturedAt`, `firstCapturedAt`, `captureCount`, `relativePath`, and `hasArchive`. Its optional ISO 8601 `--from` boundary is inclusive and `--to` boundary is exclusive.
 
 `yoooclaw synced-web-page search` searches title, site name, URL, canonical URL, and Markdown body. It intentionally does not search raw HTML archives or access the Internet.
 
@@ -25,13 +25,12 @@ yoooclaw synced-web-page path <urlHash> --format json
 
 ### Recent or time-bounded pages
 
-1. Run `yoooclaw synced-web-page list`.
-2. Filter `capturedAt`:
+1. Convert the requested range to ISO 8601 boundaries in the current local timezone:
    - 最近一天/24 小时: rolling 24-hour window ending now;
    - 今天/昨天: local calendar day;
    - 近 N 天/周/月: rolling interval ending now.
-3. Sort by `capturedAt` descending.
-4. Return the requested count or all matching metadata.
+2. Run `yoooclaw synced-web-page list --from <ISO_FROM> --to <ISO_TO> --format json`. Omit one flag for an open-ended range.
+3. Return the command's matching metadata in its existing `capturedAt` descending order.
 
 Generic collection words such as “收藏”, “保存”, “看过”, or “文章” describe the collection operation; do not pass them literally to `yoooclaw synced-web-page search` unless the user is searching those words inside page content.
 
