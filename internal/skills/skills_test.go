@@ -1,12 +1,15 @@
 package skills
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
+	assets "github.com/YoooClaw/cli"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
@@ -65,6 +68,53 @@ func TestList(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("bundled skills = %v, want %v", names, want)
+	}
+}
+
+func TestContextQueryDescriptionRoutesLiveNews(t *testing.T) {
+	t.Parallel()
+	bundled, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range bundled {
+		if skill.Name != "yoooclaw-context-query" {
+			continue
+		}
+		for _, phrase := range []string{
+			"personal-history or local-sync signal",
+			"Route generic current-news or Internet-search requests to live web",
+		} {
+			if !strings.Contains(skill.Description, phrase) {
+				t.Errorf("context-query description missing %q", phrase)
+			}
+		}
+		return
+	}
+	t.Fatal("yoooclaw-context-query not found")
+}
+
+func TestContextQueryHidesNestedNotificationStatisticsRoute(t *testing.T) {
+	t.Parallel()
+	skill, err := fs.ReadFile(
+		assets.SkillsFS,
+		"skills/yoooclaw-context-query/SKILL.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifications, err := fs.ReadFile(
+		assets.SkillsFS,
+		"skills/yoooclaw-context-query/references/notifications.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(skill), "references/notification-statistics.md") {
+		t.Error("main context-query skill exposes nested notification statistics route")
+	}
+	if !strings.Contains(string(notifications), "notification-statistics.md") {
+		t.Error("notifications reference must route statistics requests")
 	}
 }
 
