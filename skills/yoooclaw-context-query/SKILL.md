@@ -1,8 +1,7 @@
 ---
 name: yoooclaw-context-query
 description: |
-  The sole bundled Skill for querying fresh local data synchronized by yoooclaw: notifications/messages, recordings/transcripts, captured web pages/articles, images, or several of these sources together. Use for view, find, search, read, filter, count, answer, summarize, statistics, paths, and recent/latest requests. For the user's saved/bookmarked/viewed/read/opened articles or pages, use this Skill before browser automation or browser bookmark/history files.
-  使用 yoooclaw 查询本地同步上下文的唯一 Skill。通知触发包括“总结最近的通知”“最近有什么通知”“谁找过我”“看看微信消息”“未读通知”；录音触发包括“有哪些录音”“找最近的录音”“根据录音回答问题”“查看录音摘要/转写”；网页触发包括“最近收藏的文章”“我刚才看的网页”“昨天保存了什么”“过去一周打开过的链接”；也处理已同步图片和“哪里提到过 X”等跨来源查询。灯效规则、录音翻译/会议纪要/思维导图/采访整理/实体提取不使用本 Skill。
+  Query yoooclaw data already synchronized to this computer: notifications/messages (“最近有什么通知”), recordings/transcripts (“有哪些录音”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”), images (“同步图片”), or cross-source local context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
 ---
 
 # YoooClaw local context query
@@ -27,7 +26,6 @@ Do not infer reply language from previous messages, source content, command outp
 ### 1. Route the source
 
 - Notifications/messages, senders, apps, recent/unread summaries: read `references/notifications.md`.
-- Notification counts, rankings, distributions, or trends: also read `references/notification-statistics.md`.
 - Recordings, transcripts, recording summaries, or questions about what was said: read `references/recordings.md`.
 - Saved, viewed, read, opened, bookmarked, or captured pages/articles: read `references/web-pages.md`.
 - Synchronized images, screenshots, metadata, or local image files: read `references/images.md`.
