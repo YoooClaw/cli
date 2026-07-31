@@ -67,6 +67,7 @@ type ResultWriteResult struct {
 	OK             bool              `json:"ok"`
 	RecordingID    string            `json:"recordingId"`
 	TransferStatus string            `json:"transfer_status"`
+	AudioStatus    string            `json:"audio_status,omitempty"`
 	Stored         ResultWriteStored `json:"stored"`
 }
 
@@ -126,12 +127,20 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		return ResultWriteResult{}, err
 	}
 
+	oss := strings.TrimSpace(params.OssURL)
+	if oss != "" {
+		if err := storage.SetResultAudioPending(recordingID, oss); err != nil {
+			return ResultWriteResult{}, err
+		}
+		updated, _ = storage.FindByID(recordingID)
+	}
+
 	if summaryText == "" {
 		summaryText = readSummaryFile(storage, recordingID)
 	}
 	emitResultStatus(recordingID, storage, logger, opts.NotifyStatus, transcript, summaryText, title)
 
-	if oss := strings.TrimSpace(params.OssURL); oss != "" {
+	if oss != "" {
 		go downloadResultAudio(recordingID, oss, storage, logger, opts)
 	}
 
@@ -139,6 +148,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		OK:             true,
 		RecordingID:    recordingID,
 		TransferStatus: updated.Status,
+		AudioStatus:    updated.AudioStatus,
 		Stored: ResultWriteStored{
 			TranscriptDataFile: updated.TranscriptDataFile,
 			TranscriptFile:     updated.TranscriptFile,
@@ -230,19 +240,75 @@ func writeResultSummary(recordingID string, sm ResultSummary, storage *Storage, 
 }
 
 func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Logger, opts SyncOptions) {
+	unlock := storage.lockAudioDownload(recordingID)
+	defer unlock()
+
+	current, err := storage.SetResultAudioDownloading(recordingID, ossURL)
+	if err != nil {
+		logger.Error("[recording-result] 音频下载状态写入失败: " + err.Error() + ": " + recordingID)
+		return
+	}
+	if !current {
+		logger.Info("[recording-result] 音频已存在或 OSS URL 已更新，跳过重复任务: " + recordingID)
+		return
+	}
 	dest := storage.AudioFilePath(recordingID, ossURL)
+	staged := dest + ".incoming"
+	defer os.Remove(staged)
 	logger.Info("[recording-result] 开始下载音频: " + recordingID + ", audio=" + ossURL)
-	result := DownloadFile(ossURL, dest, logger, opts.DownloadOptions)
+	result := DownloadFile(ossURL, staged, logger, opts.DownloadOptions)
 	if !result.OK {
 		message := "音频下载失败: " + result.Error
 		logger.Error("[recording-result] " + message + ": " + recordingID)
-		_ = storage.SetLastError(recordingID, message)
+		applied, setErr := storage.SetResultAudioFailed(recordingID, ossURL, message)
+		if setErr != nil {
+			logger.Error("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID)
+			return
+		}
+		if !applied {
+			logger.Info("[recording-result] OSS URL 已更新，忽略旧音频失败结果: " + recordingID)
+			return
+		}
 		emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
 		return
 	}
-	_ = storage.SetAudioFile(recordingID, AudioFilename(recordingID, ossURL))
+	applied, setErr := storage.CommitResultAudioDownloaded(
+		recordingID, ossURL, staged, AudioFilename(recordingID, ossURL),
+	)
+	if setErr != nil {
+		logger.Error("[recording-result] 音频成功状态写入失败: " + setErr.Error() + ": " + recordingID)
+		return
+	}
+	if !applied {
+		logger.Info("[recording-result] OSS URL 已更新，忽略旧音频成功结果: " + recordingID)
+		return
+	}
 	logger.Info("[recording-result] 音频已更新: " + recordingID)
 	emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
+}
+
+// RecoverMissingResultAudio 在 daemon 启动时顺序补偿索引中缺失的音频。任务来源
+// 和最新 OSS URL 都持久化在 index.json，因此进程退出后不会永久丢失。
+func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions) int {
+	entries := storage.ListMissingAudio()
+	if len(entries) == 0 {
+		return 0
+	}
+	go func() {
+		for _, entry := range entries {
+			ossURL := strings.TrimSpace(entry.Metadata.OssAudioURL)
+			if ossURL == "" {
+				continue
+			}
+			if err := storage.SetResultAudioPending(entry.ID, ossURL); err != nil {
+				logger.Error("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error())
+				continue
+			}
+			logger.Info("[recording-recovery] 补偿缺失音频: " + entry.ID)
+			downloadResultAudio(entry.ID, ossURL, storage, logger, opts)
+		}
+	}()
+	return len(entries)
 }
 
 func emitResultDownloadStatus(recordingID string, storage *Storage, logger Logger, notify func(StatusEvent)) {
@@ -268,6 +334,7 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 	event := StatusEvent{
 		RecordingID:        entry.ID,
 		TransferStatus:     entry.Status,
+		AudioStatus:        entry.AudioStatus,
 		AudioFile:          entry.AudioFile,
 		SrtFile:            entry.SrtFile,
 		TranscriptDataFile: entry.TranscriptDataFile,

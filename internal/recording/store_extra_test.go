@@ -84,6 +84,36 @@ func TestStoreSetFilesAndTitle(t *testing.T) {
 	}
 }
 
+func TestStoreTracksAudioSourceAcrossFailedReplacement(t *testing.T) {
+	t.Parallel()
+	storage := newStore(t)
+	const firstURL = "https://oss.invalid/first.ogg"
+	const secondURL = "https://oss.invalid/second.ogg"
+	_, _ = storage.Ingest("r1", Metadata{Name: "x", CreatedAt: "t", OssAudioURL: firstURL}, "")
+	audioPath := storage.AudioFilePath("r1", firstURL)
+	if err := os.WriteFile(audioPath, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetAudioFile("r1", AudioFilename("r1", firstURL)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := storage.SetResultAudioPending("r1", secondURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.SetResultAudioFailed("r1", secondURL, "音频下载失败: 404"); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetResultAudioPending("r1", firstURL); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := storage.FindByID("r1")
+	if entry.Metadata.OssAudioURL != firstURL || entry.AudioSourceURL != firstURL ||
+		entry.AudioStatus != AudioStatusDownloaded || entry.LastError != "" {
+		t.Fatalf("known-good source was not restored: %+v", entry)
+	}
+}
+
 func TestStoreDelete(t *testing.T) {
 	s := newStore(t)
 	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")
@@ -164,5 +194,39 @@ func TestLoadIndexRecoversTranscribing(t *testing.T) {
 	got, _ := s.FindByID("r1")
 	if got.Status != StatusTranscribeFailed || got.LastError == "" {
 		t.Errorf("interrupted transcribing should recover to failed: %+v", got)
+	}
+}
+
+func TestLoadIndexMarksMissingAudioForRecovery(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "recordings")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{
+	  "recordings": [{
+	    "id": "r1",
+	    "status": "transcribed",
+	    "audioFile": "audio/r1.ogg",
+	    "metadata": {
+	      "name": "x",
+	      "created_at": "2026-06-01T00:00:00Z",
+	      "oss_audio_url": "https://oss.invalid/r1.ogg"
+	    }
+	  }]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	storage := NewStorage(dir, testLogger{t})
+	if err := storage.Init(); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := storage.FindByID("r1")
+	if entry.AudioFile != "" || entry.AudioStatus != AudioStatusPending || entry.LastError == "" {
+		t.Fatalf("missing audio was not queued for recovery: %+v", entry)
+	}
+	if got := storage.ListMissingAudio(); len(got) != 1 || got[0].ID != "r1" {
+		t.Fatalf("missing audio list: %+v", got)
 	}
 }

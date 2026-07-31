@@ -197,6 +197,11 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 			}
 		}
 	}
+	if count := recording.RecoverMissingResultAudio(recordingStorage, logger, recording.SyncOptions{
+		NotifyStatus: srv.notifyRecordingStatus,
+	}); count > 0 {
+		logger.Info(fmt.Sprintf("[recording-recovery] 已恢复 %d 个缺失音频任务", count))
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)

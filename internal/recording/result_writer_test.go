@@ -185,6 +185,160 @@ func TestResultWriteDownloadsOssAudio(t *testing.T) {
 	if string(audioBytes) != "final-audio" {
 		t.Fatalf("unexpected audio content: %s", audioBytes)
 	}
+	if entry.AudioStatus != AudioStatusDownloaded || entry.LastError != "" {
+		t.Fatalf("unexpected audio state after success: %+v", entry)
+	}
+}
+
+func TestResultWritePersistsAudioFailureAndLatestURL(t *testing.T) {
+	t.Parallel()
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	}))
+	defer oss.Close()
+
+	storage := newResultStorage(t)
+	_, _ = storage.Ingest("rec_failed", Metadata{
+		Name: "x", CreatedAt: "t", OssAudioURL: "https://old.invalid/audio.ogg",
+	}, "")
+
+	var mu sync.Mutex
+	var events []StatusEvent
+	result, err := HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_failed",
+		OssURL:      oss.URL + "/latest.ogg",
+		Transcript:  &ResultTranscript{Title: "标题", Text: "正文"},
+	}, storage, testLogger{t}, SyncOptions{
+		NotifyStatus: func(e StatusEvent) {
+			mu.Lock()
+			events = append(events, e)
+			mu.Unlock()
+		},
+		DownloadOptions: DownloadOptions{MaxRetries: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AudioStatus != AudioStatusPending {
+		t.Fatalf("result should report accepted/pending audio: %+v", result)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		entry, ok := storage.FindByID("rec_failed")
+		return ok && entry.AudioStatus == AudioStatusFailed
+	})
+	entry, _ := storage.FindByID("rec_failed")
+	if entry.Metadata.OssAudioURL != oss.URL+"/latest.ogg" {
+		t.Fatalf("latest OSS URL was not persisted: %+v", entry.Metadata)
+	}
+	if entry.Status != StatusTranscribed || entry.LastError == "" || entry.AudioFile != "" {
+		t.Fatalf("audio failure should remain observable: %+v", entry)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) >= 2 && events[len(events)-1].AudioStatus == AudioStatusFailed
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) < 2 {
+		t.Fatalf("missing pending/failure events: %+v", events)
+	}
+	last := events[len(events)-1]
+	if last.AudioStatus != AudioStatusFailed || last.Error == "" {
+		t.Fatalf("failure event was masked: %+v", last)
+	}
+}
+
+func TestRecoverMissingResultAudio(t *testing.T) {
+	t.Parallel()
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("recovered-audio"))
+	}))
+	defer oss.Close()
+
+	storage := newResultStorage(t)
+	_, _ = storage.Ingest("rec_recover", Metadata{
+		Name: "x", CreatedAt: "t", OssAudioURL: oss.URL + "/recover.ogg",
+	}, "")
+
+	if count := RecoverMissingResultAudio(storage, testLogger{t}, SyncOptions{
+		DownloadOptions: DownloadOptions{MaxRetries: 1},
+	}); count != 1 {
+		t.Fatalf("recovery count=%d, want 1", count)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		entry, ok := storage.FindByID("rec_recover")
+		return ok && entry.AudioStatus == AudioStatusDownloaded && entry.AudioFile != ""
+	})
+	entry, _ := storage.FindByID("rec_recover")
+	data, err := os.ReadFile(filepath.Join(storage.dir, entry.AudioFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "recovered-audio" {
+		t.Fatalf("unexpected recovered audio: %q", data)
+	}
+}
+
+func TestResultWriteFailedReplacementKeepsPreviousAudio(t *testing.T) {
+	t.Parallel()
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/good.ogg" {
+			_, _ = w.Write([]byte("known-good-audio"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer oss.Close()
+
+	storage := newResultStorage(t)
+	_, err := HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_replace",
+		OssURL:      oss.URL + "/good.ogg",
+		Transcript:  &ResultTranscript{Title: "标题", Text: "正文"},
+	}, storage, testLogger{t}, SyncOptions{
+		DownloadOptions: DownloadOptions{MaxRetries: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		entry, ok := storage.FindByID("rec_replace")
+		return ok && entry.AudioStatus == AudioStatusDownloaded
+	})
+	before, _ := storage.FindByID("rec_replace")
+	beforePath := filepath.Join(storage.dir, before.AudioFile)
+
+	_, err = HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_replace",
+		OssURL:      oss.URL + "/missing.ogg",
+		Transcript:  &ResultTranscript{Title: "标题", Text: "更新正文"},
+	}, storage, testLogger{t}, SyncOptions{
+		DownloadOptions: DownloadOptions{MaxRetries: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		entry, ok := storage.FindByID("rec_replace")
+		return ok && entry.AudioStatus == AudioStatusFailed
+	})
+	after, _ := storage.FindByID("rec_replace")
+	if after.AudioFile != before.AudioFile || after.AudioSourceURL != oss.URL+"/good.ogg" {
+		t.Fatalf("failed replacement changed known-good audio reference: before=%+v after=%+v", before, after)
+	}
+	data, err := os.ReadFile(beforePath)
+	if err != nil {
+		t.Fatalf("known-good audio was removed: %v", err)
+	}
+	if string(data) != "known-good-audio" {
+		t.Fatalf("known-good audio was overwritten: %q", data)
+	}
+	if missing := storage.ListMissingAudio(); len(missing) != 1 || missing[0].ID != "rec_replace" {
+		t.Fatalf("failed replacement was not queued for recovery: %+v", missing)
+	}
 }
 
 func TestResultWriteOverwritesPreviousFiles(t *testing.T) {
