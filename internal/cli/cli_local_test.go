@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/YoooClaw/cli/internal/paths"
 )
 
 // assertOKJSON 断言退出码 0 且输出是合法 JSON（数组或对象）。
@@ -74,6 +76,28 @@ func TestProfileCreateUseDelete(t *testing.T) {
 	// use 不存在的 profile -> PROFILE_NOT_FOUND
 	if _, code := execCLI(t, "profile", "use", "ghost"); code == 0 {
 		t.Error("use missing profile should fail")
+	}
+}
+
+func TestProfileUseRepairsStaleActiveProfile(t *testing.T) {
+	home := sandbox(t)
+	if err := os.MkdirAll(filepath.Join(home, "profiles", "default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "active-profile"), []byte("deleted-test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := execCLI(t, "profile", "use", "default", "--format", "json")
+	if code != 0 {
+		t.Fatalf("profile use default failed: %s", out)
+	}
+	raw, err := os.ReadFile(paths.ActiveProfilePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(raw)) != paths.DefaultProfile {
+		t.Fatalf("stale active-profile was not repaired: %q", raw)
 	}
 }
 

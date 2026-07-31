@@ -114,6 +114,13 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 			return err
 		}
 	}
+	if needsRelayConsumerLock(mode, cfg) {
+		releaseRelayConsumer, err := acquireRelayConsumerLock(ctx.Paths)
+		if err != nil {
+			return err
+		}
+		defer releaseRelayConsumer()
+	}
 
 	storage := notif.NewStorage(ctx.Paths.Notifications, notif.PluginConfig{
 		RetentionDays: cfg.Notification.RetentionDays, IgnoredApps: cfg.Notification.IgnoredApps,

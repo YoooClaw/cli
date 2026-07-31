@@ -28,11 +28,26 @@ func TestResolveActiveProfileFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("YOOOCLAW_HOME", home)
 	t.Setenv("YOOOCLAW_PROFILE", "")
+	if err := os.MkdirAll(paths.ProfileDir("filep"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(paths.ActiveProfilePath(), []byte("filep\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := ResolveActiveProfile(""); got != "filep" {
 		t.Errorf("file profile should be used: %q", got)
+	}
+}
+
+func TestResolveActiveProfileMissingDirectoryFallsBackToDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOOOCLAW_HOME", home)
+	t.Setenv("YOOOCLAW_PROFILE", "")
+	if err := os.WriteFile(paths.ActiveProfilePath(), []byte("deleted-test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveActiveProfile(""); got != paths.DefaultProfile {
+		t.Errorf("deleted active profile should fall back to default: %q", got)
 	}
 }
 
