@@ -31,6 +31,9 @@ func TestStoreIngestListFindRename(t *testing.T) {
 	if len(all) != 2 || all[0].ID != "r2" {
 		t.Fatalf("ListAll order wrong: %+v", all)
 	}
+	if all[0].Metadata.DurationDisplay != "1s" {
+		t.Fatalf("Ingest duration_display = %q, want %q", all[0].Metadata.DurationDisplay, "1s")
+	}
 	if got, ok := s.FindByID("r1"); !ok || got.ClientLabel != "phone-a" {
 		t.Errorf("FindByID r1: %+v ok=%v", got, ok)
 	}

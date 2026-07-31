@@ -52,9 +52,11 @@ func newRecordingCmd() *cobra.Command {
 func recToListItem(r recording.Entry) map[string]any {
 	return map[string]any{
 		"id": r.ID, "clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
-		"duration_sec": r.Metadata.DurationSec, "status": r.Status, "file_size_bytes": r.Metadata.FileSizeBytes,
-		"audio_status": r.AudioStatus,
-		"has_audio":    r.AudioFile != "", "has_transcript": r.TranscriptFile != "",
+		"duration_sec": r.Metadata.DurationSec, "duration_display": recording.FormatDurationDisplay(r.Metadata.DurationSec),
+		"status":            r.Status,
+		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
+		"audio_status":      r.AudioStatus,
+		"has_audio":         r.AudioFile != "", "has_transcript": r.TranscriptFile != "",
 		"created_at": r.Metadata.CreatedAt, "updated_at": r.UpdatedAt, "error": nilIfEmpty(r.LastError),
 	}
 }
@@ -130,8 +132,10 @@ func recordingDetail(r recording.Entry) map[string]any {
 	}
 	return map[string]any{
 		"id": r.ID, "clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
-		"duration_sec": r.Metadata.DurationSec, "file_size_bytes": r.Metadata.FileSizeBytes,
-		"status": r.Status, "created_at": r.Metadata.CreatedAt, "location": r.Metadata.Location,
+		"duration_sec":      r.Metadata.DurationSec,
+		"duration_display":  recording.FormatDurationDisplay(r.Metadata.DurationSec),
+		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
+		"status":            r.Status, "created_at": r.Metadata.CreatedAt, "location": r.Metadata.Location,
 		"audio_status": r.AudioStatus,
 		"markers":      markers, "audioFile": nilIfEmpty(r.AudioFile), "srtFile": nilIfEmpty(r.SrtFile),
 		"transcriptDataFile": nilIfEmpty(r.TranscriptDataFile), "transcriptFile": nilIfEmpty(r.TranscriptFile),

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,7 @@ type ResultSummary struct {
 type ResultWriteParams struct {
 	RecordingID    string            `json:"recordingId"`
 	OssURL         string            `json:"ossUrl,omitempty"`
+	DurationMillis *float64          `json:"durationMillis,omitempty"`
 	Recording      *Metadata         `json:"recording,omitempty"`
 	CreatedAt      string            `json:"createdAt,omitempty"`
 	CreatedAtSnake string            `json:"created_at,omitempty"`
@@ -195,6 +197,9 @@ func buildPlaceholderMetadata(recordingID string, params ResultWriteParams) (Met
 		createdAt, timeSource = value, source
 	}
 	metadata.Name = name
+	if durationSec, ok := providedResultDurationSec(params); ok {
+		metadata.DurationSec = durationSec
+	}
 	metadata.CreatedAt = createdAt
 	metadata.OssAudioURL = resultOssURL(params)
 	metadata.Status = StatusSynced
@@ -232,11 +237,8 @@ func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, 
 		if value := strings.TrimSpace(incoming.Name); value != "" && value != merged.Name {
 			merged.Name, changed = value, true
 		}
-		if incoming.DurationSec > 0 && incoming.DurationSec != merged.DurationSec {
-			merged.DurationSec, changed = incoming.DurationSec, true
-		}
-		if incoming.FileSizeBytes > 0 && incoming.FileSizeBytes != merged.FileSizeBytes {
-			merged.FileSizeBytes, changed = incoming.FileSizeBytes, true
+		if value := strings.TrimSpace(incoming.FileSizeDisplay); value != "" && value != merged.FileSizeDisplay {
+			merged.FileSizeDisplay, changed = value, true
 		}
 		if incoming.Location != nil {
 			merged.Location, changed = incoming.Location, true
@@ -248,6 +250,13 @@ func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, 
 			merged.OssSrtURL, changed = value, true
 		}
 	}
+	if durationSec, ok := providedResultDurationSec(params); ok && durationSec != merged.DurationSec {
+		merged.DurationSec, changed = durationSec, true
+	}
+	durationDisplay := FormatDurationDisplay(merged.DurationSec)
+	if merged.DurationDisplay != durationDisplay {
+		merged.DurationDisplay, changed = durationDisplay, true
+	}
 	timeSource := ""
 	if value, source, ok := providedResultCreatedAt(params); ok && value != merged.CreatedAt {
 		merged.CreatedAt, timeSource, changed = value, source, true
@@ -256,6 +265,18 @@ func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, 
 		merged.OssAudioURL, changed = oss, true
 	}
 	return merged, timeSource, changed
+}
+
+// providedResultDurationSec 把 App 顶层 durationMillis 向下截断为整数秒。
+// 若没有毫秒字段，则兼容 recording.duration_sec，并统一向下取整。
+func providedResultDurationSec(params ResultWriteParams) (float64, bool) {
+	if params.DurationMillis != nil && *params.DurationMillis >= 0 {
+		return math.Floor(*params.DurationMillis / 1000), true
+	}
+	if params.Recording != nil && params.Recording.DurationSec > 0 {
+		return math.Floor(params.Recording.DurationSec), true
+	}
+	return 0, false
 }
 
 func resultOssURL(params ResultWriteParams) string {

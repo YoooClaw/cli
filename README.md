@@ -341,6 +341,7 @@ yoooclaw --profile work notification +today
 
 The standalone daemon uses a Go implementation of recording storage, the state machine, OSS download, and ASR scheduling, and receives the app/cloud's `recordings.result.write` (writing transcripts/summaries, optionally downloading audio) via `RelayClient + RelayDispatcher`.
 New-recording payloads should include `recording.created_at` (or top-level `createdAt` / `created_at`); `transcript.generatedAt` is artifact-generation time and is never used as the recording time.
+Top-level `durationMillis` is truncated down to integer seconds and stored as numeric `duration_sec`; `duration_display` adds a human-readable unit form such as `16s`, `1m 16s`, or `1h 1m 1s`. After the audio is downloaded, the CLI stores `file_size_display` using the Android `Formatter.formatShortFileSize()`-compatible SI short format; the removed `file_size_bytes` field is not emitted.
 
 ```bash
 yoooclaw recording events --since 1h --limit 50

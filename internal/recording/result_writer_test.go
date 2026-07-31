@@ -2,6 +2,7 @@ package recording
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -125,10 +126,10 @@ func TestResultWriteUsesRecordingCreatedAtInsteadOfTranscriptGeneratedAt(t *test
 	_, err := HandleRecordingResultWrite(ResultWriteParams{
 		RecordingID: "rec_with_metadata",
 		Recording: &Metadata{
-			Name:          "今天的录音",
-			DurationSec:   42,
-			FileSizeBytes: 2048,
-			CreatedAt:     recordingCreatedAt,
+			Name:            "今天的录音",
+			DurationSec:     42,
+			FileSizeDisplay: "2 kB",
+			CreatedAt:       recordingCreatedAt,
 		},
 		Transcript: &ResultTranscript{
 			Title: "转写标题", GeneratedAt: transcriptGeneratedAt, Text: "正文",
@@ -145,8 +146,48 @@ func TestResultWriteUsesRecordingCreatedAtInsteadOfTranscriptGeneratedAt(t *test
 	if entry.Metadata.CreatedAt != recordingCreatedAt {
 		t.Fatalf("created_at = %q, want recording time %q", entry.Metadata.CreatedAt, recordingCreatedAt)
 	}
-	if entry.Metadata.Name != "今天的录音" || entry.Metadata.DurationSec != 42 || entry.Metadata.FileSizeBytes != 2048 {
+	if entry.Metadata.Name != "今天的录音" || entry.Metadata.DurationSec != 42 ||
+		entry.Metadata.DurationDisplay != "42s" || entry.Metadata.FileSizeDisplay != "2 kB" {
 		t.Fatalf("recording metadata was not preserved: %+v", entry.Metadata)
+	}
+}
+
+func TestResultWriteTruncatesTopLevelDurationMillis(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		durationMillis float64
+		wantSeconds    float64
+	}{
+		{"below one second", 999, 0},
+		{"one second", 1_000, 1},
+		{"fractional seconds", 13_480, 13},
+		{"half second still truncates", 13_500, 13},
+		{"observed app payload", 16_780, 16},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := newResultStorage(t)
+			payload := fmt.Sprintf(
+				`{"recordingId":"duration-test","durationMillis":%v,"summary":{"markdown":"x"}}`,
+				tt.durationMillis,
+			)
+			var params ResultWriteParams
+			if err := json.Unmarshal([]byte(payload), &params); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := HandleRecordingResultWrite(params, storage, testLogger{t}, SyncOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			entry, _ := storage.FindByID("duration-test")
+			if entry.Metadata.DurationSec != tt.wantSeconds {
+				t.Fatalf("duration_sec = %v, want %v", entry.Metadata.DurationSec, tt.wantSeconds)
+			}
+			if entry.Metadata.DurationDisplay != FormatDurationDisplay(tt.wantSeconds) {
+				t.Fatalf("duration_display = %q, want %q",
+					entry.Metadata.DurationDisplay, FormatDurationDisplay(tt.wantSeconds))
+			}
+		})
 	}
 }
 
@@ -304,6 +345,18 @@ func TestResultWriteDownloadsOssAudio(t *testing.T) {
 	}
 	if entry.AudioStatus != AudioStatusDownloaded || entry.LastError != "" {
 		t.Fatalf("unexpected audio state after success: %+v", entry)
+	}
+	if entry.Metadata.FileSizeDisplay != "11 B" {
+		t.Fatalf("file_size_display = %q, want %q", entry.Metadata.FileSizeDisplay, "11 B")
+	}
+	rawIndex, err := os.ReadFile(storage.indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawIndex), "file_size_bytes") ||
+		!strings.Contains(string(rawIndex), `"file_size_display": "11 B"`) ||
+		!strings.Contains(string(rawIndex), `"duration_display": "0s"`) {
+		t.Fatalf("index contains unexpected file-size schema: %s", rawIndex)
 	}
 }
 

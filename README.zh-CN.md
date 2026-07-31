@@ -342,6 +342,7 @@ yoooclaw --profile work notification +today
 
 独立 daemon 用 Go 版录音存储、状态机、OSS 下载与 ASR 调度，并通过 `RelayClient + RelayDispatcher` 接收 App/云端的 `recordings.result.write`（写入转录/总结，可选下载音频）。
 新录音请求应携带 `recording.created_at`（也兼容顶层 `createdAt` / `created_at`）；`transcript.generatedAt` 只表示转写产物生成时间，不再充当录音时间。
+顶层 `durationMillis` 向下截断为整数秒，并以数值字段 `duration_sec` 保存；`duration_display` 提供 `16s`、`1m 16s`、`1h 1m 1s` 等带单位展示。音频下载落盘后，CLI 按兼容 Android `Formatter.formatShortFileSize()` 的 SI 短格式保存 `file_size_display`；已删除的 `file_size_bytes` 不再输出。
 
 ```bash
 yoooclaw recording events --since 1h --limit 50

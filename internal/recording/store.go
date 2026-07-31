@@ -39,15 +39,16 @@ type Marker struct {
 
 // Metadata 是录音元数据（index.json entry.metadata）。
 type Metadata struct {
-	Name          string   `json:"name"`
-	DurationSec   float64  `json:"duration_sec"`
-	FileSizeBytes int64    `json:"file_size_bytes"`
-	CreatedAt     string   `json:"created_at"`
-	Status        string   `json:"transfer_status,omitempty"`
-	Location      any      `json:"location,omitempty"`
-	OssAudioURL   string   `json:"oss_audio_url"`
-	OssSrtURL     string   `json:"oss_srt_url,omitempty"`
-	Markers       []Marker `json:"markers,omitempty"`
+	Name            string   `json:"name"`
+	DurationSec     float64  `json:"duration_sec"`
+	DurationDisplay string   `json:"duration_display"`
+	FileSizeDisplay string   `json:"file_size_display,omitempty"`
+	CreatedAt       string   `json:"created_at"`
+	Status          string   `json:"transfer_status,omitempty"`
+	Location        any      `json:"location,omitempty"`
+	OssAudioURL     string   `json:"oss_audio_url"`
+	OssSrtURL       string   `json:"oss_srt_url,omitempty"`
+	Markers         []Marker `json:"markers,omitempty"`
 }
 
 // Entry 是一条录音索引项。
@@ -128,6 +129,13 @@ func (s *Storage) loadIndex() {
 	now := nowISO()
 	for i := range wrapper.Recordings {
 		entry := &wrapper.Recordings[i]
+		durationSec := normalizeDurationSeconds(entry.Metadata.DurationSec)
+		durationDisplay := FormatDurationDisplay(durationSec)
+		if entry.Metadata.DurationSec != durationSec || entry.Metadata.DurationDisplay != durationDisplay {
+			entry.Metadata.DurationSec = durationSec
+			entry.Metadata.DurationDisplay = durationDisplay
+			needsRewrite = true
+		}
 		switch wrapper.Recordings[i].Status {
 		case "transcribing":
 			wrapper.Recordings[i].Status = "transcribe_failed"
@@ -145,6 +153,11 @@ func (s *Storage) loadIndex() {
 		if entry.AudioFile != "" {
 			audioPath := filepath.Join(s.dir, entry.AudioFile)
 			if info, err := os.Stat(audioPath); err == nil && !info.IsDir() {
+				display := FormatShortFileSize(info.Size())
+				if entry.Metadata.FileSizeDisplay != display {
+					entry.Metadata.FileSizeDisplay = display
+					needsRewrite = true
+				}
 				if entry.AudioSourceURL == "" {
 					entry.AudioSourceURL = strings.TrimSpace(entry.Metadata.OssAudioURL)
 					needsRewrite = true
@@ -159,6 +172,7 @@ func (s *Storage) loadIndex() {
 				entry.AudioFile = ""
 				entry.AudioSourceURL = ""
 				entry.AudioStatus = AudioStatusPending
+				entry.Metadata.FileSizeDisplay = ""
 				if strings.TrimSpace(entry.LastError) == "" {
 					entry.LastError = "本地音频文件缺失，等待重新下载"
 				}
@@ -200,6 +214,8 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	if clientLabel == "" {
 		clientLabel = "default"
 	}
+	metadata.DurationSec = normalizeDurationSeconds(metadata.DurationSec)
+	metadata.DurationDisplay = FormatDurationDisplay(metadata.DurationSec)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -341,6 +357,7 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 	if localOnly {
 		entry.AudioFile = ""
 		entry.AudioSourceURL = ""
+		entry.Metadata.FileSizeDisplay = ""
 		if strings.TrimSpace(entry.Metadata.OssAudioURL) != "" {
 			entry.AudioStatus = AudioStatusPending
 		} else {
@@ -406,6 +423,10 @@ func (s *Storage) MarkResultWritten(recordingID string) (Entry, error) {
 
 // SetAudioFile 记录本地音频文件。
 func (s *Storage) SetAudioFile(recordingID, filename string) error {
+	display := ""
+	if info, err := os.Stat(filepath.Join(s.audioDir, filename)); err == nil && !info.IsDir() {
+		display = FormatShortFileSize(info.Size())
+	}
 	return s.updateEntry(recordingID, func(entry *Entry) {
 		next := audioDirName + "/" + filename
 		if entry.AudioFile != "" && entry.AudioFile != next {
@@ -414,6 +435,7 @@ func (s *Storage) SetAudioFile(recordingID, filename string) error {
 		entry.AudioFile = next
 		entry.AudioSourceURL = strings.TrimSpace(entry.Metadata.OssAudioURL)
 		entry.AudioStatus = AudioStatusDownloaded
+		entry.Metadata.FileSizeDisplay = display
 		entry.LastError = ""
 	})
 }
@@ -427,6 +449,7 @@ func (s *Storage) SetResultAudioPending(recordingID, ossURL string) error {
 		if strings.TrimSpace(entry.AudioSourceURL) == nextURL && entry.AudioFile != "" {
 			if info, err := os.Stat(filepath.Join(s.dir, entry.AudioFile)); err == nil && !info.IsDir() {
 				entry.AudioStatus = AudioStatusDownloaded
+				entry.Metadata.FileSizeDisplay = FormatShortFileSize(info.Size())
 				entry.LastError = ""
 				return
 			}
@@ -502,6 +525,13 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 	if filepath.Base(filename) != filename {
 		return false, os.ErrInvalid
 	}
+	info, err := os.Stat(stagedPath)
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, os.ErrInvalid
+	}
 	next := audioDirName + "/" + filename
 	destPath := filepath.Join(s.audioDir, filename)
 	if err := os.Rename(stagedPath, destPath); err != nil {
@@ -512,6 +542,7 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 	entry.AudioFile = next
 	entry.AudioSourceURL = strings.TrimSpace(ossURL)
 	entry.AudioStatus = AudioStatusDownloaded
+	entry.Metadata.FileSizeDisplay = FormatShortFileSize(info.Size())
 	entry.LastError = ""
 	entry.UpdatedAt = nowISO()
 	if err := s.saveIndexLocked(); err != nil {

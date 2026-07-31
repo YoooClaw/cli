@@ -46,6 +46,32 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 	return srv, ts
 }
 
+func TestRecordingPayloadUsesDisplaySizeOnly(t *testing.T) {
+	t.Parallel()
+	entry := recording.Entry{
+		ID: "r1",
+		Metadata: recording.Metadata{
+			Name:            "录音",
+			DurationSec:     13,
+			FileSizeDisplay: "5.9 MB",
+		},
+	}
+	for name, payload := range map[string]map[string]any{
+		"list":   recordingListItem(entry),
+		"detail": recordingDetail(entry),
+	} {
+		if payload["file_size_display"] != "5.9 MB" {
+			t.Fatalf("%s file_size_display = %v", name, payload["file_size_display"])
+		}
+		if payload["duration_display"] != "13s" {
+			t.Fatalf("%s duration_display = %v", name, payload["duration_display"])
+		}
+		if _, exists := payload["file_size_bytes"]; exists {
+			t.Fatalf("%s must not expose removed file_size_bytes: %+v", name, payload)
+		}
+	}
+}
+
 func TestServerHealth(t *testing.T) {
 	_, ts := newTestServer(t, "")
 	resp, err := http.Get(ts.URL + "/health")

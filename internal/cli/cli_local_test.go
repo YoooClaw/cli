@@ -135,7 +135,7 @@ func TestRecordingListAndLatestSortByActualTime(t *testing.T) {
 	}
 	index := `{"recordings":[
 		{"id":"earlier-local","metadata":{"name":"earlier","created_at":"2026-07-29T11:02:00+08:00"},"status":"transcribed"},
-		{"id":"later-utc","metadata":{"name":"later","created_at":"2026-07-29T05:47:00Z"},"status":"transcribed"}
+		{"id":"later-utc","metadata":{"name":"later","duration_sec":16,"created_at":"2026-07-29T05:47:00Z","file_size_display":"5.9 MB"},"status":"transcribed"}
 	]}`
 	if err := os.WriteFile(filepath.Join(recordingsDir, "index.json"), []byte(index), 0o600); err != nil {
 		t.Fatal(err)
@@ -154,6 +154,15 @@ func TestRecordingListAndLatestSortByActualTime(t *testing.T) {
 	if first["id"] != "later-utc" {
 		t.Fatalf("recording list did not put actual latest first: %+v", items)
 	}
+	if first["file_size_display"] != "5.9 MB" {
+		t.Fatalf("recording list file_size_display = %v", first["file_size_display"])
+	}
+	if first["duration_display"] != "16s" {
+		t.Fatalf("recording list duration_display = %v", first["duration_display"])
+	}
+	if _, exists := first["file_size_bytes"]; exists {
+		t.Fatalf("recording list must not expose removed file_size_bytes: %+v", first)
+	}
 
 	out, code = execCLI(t, "recording", "+latest", "--format", "json")
 	if code != 0 {
@@ -163,6 +172,15 @@ func TestRecordingListAndLatestSortByActualTime(t *testing.T) {
 	latest, _ := latestResult["recording"].(map[string]any)
 	if latest["id"] != "later-utc" {
 		t.Fatalf("recording +latest returned wrong item: %+v", latestResult)
+	}
+	if latest["file_size_display"] != "5.9 MB" {
+		t.Fatalf("recording +latest file_size_display = %v", latest["file_size_display"])
+	}
+	if latest["duration_display"] != "16s" {
+		t.Fatalf("recording +latest duration_display = %v", latest["duration_display"])
+	}
+	if _, exists := latest["file_size_bytes"]; exists {
+		t.Fatalf("recording +latest must not expose removed file_size_bytes: %+v", latest)
 	}
 }
 
