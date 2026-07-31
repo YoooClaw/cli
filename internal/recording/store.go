@@ -690,10 +690,64 @@ func ReadIndex(recordingsDir string) []Entry {
 	return wrapper.Recordings
 }
 
-// SortByCreatedDesc 按 created_at 倒序排序。
+var recordingTimeLayoutsWithZone = []string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999Z0700",
+	"2006-01-02 15:04:05.999999999Z07:00",
+	"2006-01-02 15:04:05.999999999Z0700",
+	"2006-01-02 15:04:05.999999999 Z07:00",
+	"2006-01-02 15:04:05.999999999 Z0700",
+}
+
+var recordingTimeLayoutsLocal = []string{
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02",
+}
+
+// parseRecordingTime 兼容标准 RFC3339 和历史客户端上报的无时区/空格格式。
+// 无时区时间按运行 CLI 的本地时区解释，与客户端界面展示的本地录音时间一致。
+func parseRecordingTime(raw string) (time.Time, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range recordingTimeLayoutsWithZone {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, true
+		}
+	}
+	for _, layout := range recordingTimeLayoutsLocal {
+		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// recordingSortTime 优先使用录音创建时间；历史脏数据无法解析时，依次回退到
+// 入库时间和更新时间，避免单条无效 created_at 固定占据 latest。
+func recordingSortTime(entry Entry) (time.Time, bool) {
+	for _, value := range []string{entry.Metadata.CreatedAt, entry.IngestedAt, entry.UpdatedAt} {
+		if parsed, ok := parseRecordingTime(value); ok {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// SortByCreatedDesc 按真实时间点倒序排序，而不是按 created_at 原始字符串排序。
 func SortByCreatedDesc(entries []Entry) {
 	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].Metadata.CreatedAt > entries[j].Metadata.CreatedAt
+		left, leftOK := recordingSortTime(entries[i])
+		right, rightOK := recordingSortTime(entries[j])
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if !leftOK || left.Equal(right) {
+			return false
+		}
+		return left.After(right)
 	})
 }
 

@@ -58,6 +58,73 @@ func TestStoreListByStatus(t *testing.T) {
 	}
 }
 
+func TestSortByCreatedDescUsesActualInstantAcrossTimezones(t *testing.T) {
+	earlier := "2026-07-29T11:02:00+08:00"
+	later := "2026-07-29T05:47:00Z"
+	if earlier <= later {
+		t.Fatal("test fixture must reproduce the old lexical ordering bug")
+	}
+	entries := []Entry{
+		{ID: "earlier-local", Metadata: Metadata{CreatedAt: earlier}},
+		{ID: "later-utc", Metadata: Metadata{CreatedAt: later}},
+	}
+
+	SortByCreatedDesc(entries)
+
+	if entries[0].ID != "later-utc" {
+		t.Fatalf("expected actual latest recording first, got %+v", entries)
+	}
+}
+
+func TestParseRecordingTimeSupportsLegacyFormats(t *testing.T) {
+	cases := []string{
+		"2026-07-29T14:34:22",
+		"2026-07-29 14:34:22",
+		"2026-07-29 14:34:22.123",
+		"2026-07-29 14:34:22+08:00",
+		"2026-07-29 14:34:22 +0800",
+	}
+	for _, input := range cases {
+		if _, ok := parseRecordingTime(input); !ok {
+			t.Errorf("expected legacy time %q to parse", input)
+		}
+	}
+}
+
+func TestSortByCreatedDescFallsBackToIngestedAt(t *testing.T) {
+	entries := []Entry{
+		{
+			ID:         "valid-created",
+			Metadata:   Metadata{CreatedAt: "2026-07-29T05:47:00Z"},
+			IngestedAt: "2026-07-29T05:48:00Z",
+		},
+		{
+			ID:         "invalid-created",
+			Metadata:   Metadata{CreatedAt: "not-a-time"},
+			IngestedAt: "2026-07-29T06:34:22Z",
+		},
+	}
+
+	SortByCreatedDesc(entries)
+
+	if entries[0].ID != "invalid-created" {
+		t.Fatalf("expected ingestedAt fallback to determine latest, got %+v", entries)
+	}
+}
+
+func TestSortByCreatedDescKeepsInvalidTimestampsStable(t *testing.T) {
+	entries := []Entry{
+		{ID: "first", Metadata: Metadata{CreatedAt: "invalid"}},
+		{ID: "second"},
+	}
+
+	SortByCreatedDesc(entries)
+
+	if entries[0].ID != "first" || entries[1].ID != "second" {
+		t.Fatalf("unparseable entries must keep their index order, got %+v", entries)
+	}
+}
+
 func TestStoreSetFilesAndTitle(t *testing.T) {
 	s := newStore(t)
 	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")

@@ -56,6 +56,7 @@ func recToListItem(r recording.Entry) map[string]any {
 
 func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	recs := recording.ReadIndex(ctx.Paths.Recordings)
+	recording.SortByCreatedDesc(recs)
 	status := flagStr(cmd, "status")
 	client := flagStr(cmd, "client")
 	out := make([]any, 0, len(recs))

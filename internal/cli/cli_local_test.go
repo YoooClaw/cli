@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -96,5 +97,44 @@ func TestRecordingStatusNotFound(t *testing.T) {
 	}
 	if !strings.Contains(out, "error") {
 		t.Errorf("expected error payload: %s", out)
+	}
+}
+
+func TestRecordingListAndLatestSortByActualTime(t *testing.T) {
+	home := sandbox(t)
+	recordingsDir := filepath.Join(home, "profiles", "default", "recordings")
+	if err := os.MkdirAll(recordingsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index := `{"recordings":[
+		{"id":"earlier-local","metadata":{"name":"earlier","created_at":"2026-07-29T11:02:00+08:00"},"status":"transcribed"},
+		{"id":"later-utc","metadata":{"name":"later","created_at":"2026-07-29T05:47:00Z"},"status":"transcribed"}
+	]}`
+	if err := os.WriteFile(filepath.Join(recordingsDir, "index.json"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := execCLI(t, "recording", "list", "--format", "json")
+	if code != 0 {
+		t.Fatalf("recording list failed: %s", out)
+	}
+	listResult := decode(t, out)
+	items, ok := listResult["recordings"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("unexpected recording list: %+v", listResult)
+	}
+	first, _ := items[0].(map[string]any)
+	if first["id"] != "later-utc" {
+		t.Fatalf("recording list did not put actual latest first: %+v", items)
+	}
+
+	out, code = execCLI(t, "recording", "+latest", "--format", "json")
+	if code != 0 {
+		t.Fatalf("recording +latest failed: %s", out)
+	}
+	latestResult := decode(t, out)
+	latest, _ := latestResult["recording"].(map[string]any)
+	if latest["id"] != "later-utc" {
+		t.Fatalf("recording +latest returned wrong item: %+v", latestResult)
 	}
 }
