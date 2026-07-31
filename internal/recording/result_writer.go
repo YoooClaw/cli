@@ -49,10 +49,13 @@ type ResultSummary struct {
 
 // ResultWriteParams 是 recordings.result.write 的入参。
 type ResultWriteParams struct {
-	RecordingID string            `json:"recordingId"`
-	OssURL      string            `json:"ossUrl,omitempty"`
-	Transcript  *ResultTranscript `json:"transcript,omitempty"`
-	Summary     *ResultSummary    `json:"summary,omitempty"`
+	RecordingID    string            `json:"recordingId"`
+	OssURL         string            `json:"ossUrl,omitempty"`
+	Recording      *Metadata         `json:"recording,omitempty"`
+	CreatedAt      string            `json:"createdAt,omitempty"`
+	CreatedAtSnake string            `json:"created_at,omitempty"`
+	Transcript     *ResultTranscript `json:"transcript,omitempty"`
+	Summary        *ResultSummary    `json:"summary,omitempty"`
 }
 
 // ResultWriteStored 记录 result.write 落盘的相对路径。
@@ -90,7 +93,8 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 
 	entry, found := storage.FindByID(recordingID)
 	if !found {
-		if _, err := storage.Ingest(recordingID, buildPlaceholderMetadata(recordingID, params), ""); err != nil {
+		metadata, timeSource := buildPlaceholderMetadata(recordingID, params)
+		if _, err := storage.Ingest(recordingID, metadata, ""); err != nil {
 			return ResultWriteResult{}, err
 		}
 		var ok bool
@@ -99,6 +103,19 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 			return ResultWriteResult{}, fmt.Errorf("Recording not found: %s", recordingID)
 		}
 		logger.Info("[recording-result] 录音不存在，已按结果写入新建: " + recordingID)
+		logger.Info("[recording-result] 录音时间已入库: " + recordingID +
+			", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+	} else if merged, timeSource, changed := mergeResultMetadata(entry.Metadata, params); changed {
+		if err := storage.updateEntry(recordingID, func(current *Entry) {
+			current.Metadata = merged
+		}); err != nil {
+			return ResultWriteResult{}, err
+		}
+		entry, _ = storage.FindByID(recordingID)
+		if timeSource != "" {
+			logger.Info("[recording-result] 录音时间已更新: " + recordingID +
+				", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+		}
 	}
 
 	var transcript []TranscriptItem
@@ -127,7 +144,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		return ResultWriteResult{}, err
 	}
 
-	oss := strings.TrimSpace(params.OssURL)
+	oss := resultOssURL(params)
 	if oss != "" {
 		if err := storage.SetResultAudioPending(recordingID, oss); err != nil {
 			return ResultWriteResult{}, err
@@ -158,23 +175,97 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 }
 
 // buildPlaceholderMetadata 在找不到录音时，用请求里能拿到的信息拼一份占位元数据。
-func buildPlaceholderMetadata(recordingID string, params ResultWriteParams) Metadata {
+func buildPlaceholderMetadata(recordingID string, params ResultWriteParams) (Metadata, string) {
+	metadata := Metadata{}
+	if params.Recording != nil {
+		metadata = *params.Recording
+	}
 	name := recordingID
-	createdAt := nowISO()
-	if params.Transcript != nil {
+	if t := strings.TrimSpace(metadata.Name); t != "" {
+		name = t
+	}
+	if name == recordingID && params.Transcript != nil {
 		if t := strings.TrimSpace(params.Transcript.Title); t != "" {
 			name = t
 		}
-		if g := strings.TrimSpace(params.Transcript.GeneratedAt); g != "" {
-			createdAt = g
+	}
+
+	createdAt, timeSource := nowISO(), "ingested_at"
+	if value, source, ok := providedResultCreatedAt(params); ok {
+		createdAt, timeSource = value, source
+	}
+	metadata.Name = name
+	metadata.CreatedAt = createdAt
+	metadata.OssAudioURL = resultOssURL(params)
+	metadata.Status = StatusSynced
+	return metadata, timeSource
+}
+
+func providedResultCreatedAt(params ResultWriteParams) (string, string, bool) {
+	var nested string
+	if params.Recording != nil {
+		nested = params.Recording.CreatedAt
+	}
+	for _, candidate := range []struct {
+		value  string
+		source string
+	}{
+		{nested, "recording.created_at"},
+		{params.CreatedAt, "createdAt"},
+		{params.CreatedAtSnake, "created_at"},
+	} {
+		value := strings.TrimSpace(candidate.value)
+		if value == "" {
+			continue
+		}
+		if _, ok := parseRecordingTime(value); ok {
+			return value, candidate.source, true
 		}
 	}
-	return Metadata{
-		Name:        name,
-		CreatedAt:   createdAt,
-		OssAudioURL: strings.TrimSpace(params.OssURL),
-		Status:      StatusSynced,
+	return "", "", false
+}
+
+func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, string, bool) {
+	merged := current
+	changed := false
+	if incoming := params.Recording; incoming != nil {
+		if value := strings.TrimSpace(incoming.Name); value != "" && value != merged.Name {
+			merged.Name, changed = value, true
+		}
+		if incoming.DurationSec > 0 && incoming.DurationSec != merged.DurationSec {
+			merged.DurationSec, changed = incoming.DurationSec, true
+		}
+		if incoming.FileSizeBytes > 0 && incoming.FileSizeBytes != merged.FileSizeBytes {
+			merged.FileSizeBytes, changed = incoming.FileSizeBytes, true
+		}
+		if incoming.Location != nil {
+			merged.Location, changed = incoming.Location, true
+		}
+		if incoming.Markers != nil {
+			merged.Markers, changed = incoming.Markers, true
+		}
+		if value := strings.TrimSpace(incoming.OssSrtURL); value != "" && value != merged.OssSrtURL {
+			merged.OssSrtURL, changed = value, true
+		}
 	}
+	timeSource := ""
+	if value, source, ok := providedResultCreatedAt(params); ok && value != merged.CreatedAt {
+		merged.CreatedAt, timeSource, changed = value, source, true
+	}
+	if oss := resultOssURL(params); oss != "" && oss != merged.OssAudioURL {
+		merged.OssAudioURL, changed = oss, true
+	}
+	return merged, timeSource, changed
+}
+
+func resultOssURL(params ResultWriteParams) string {
+	if oss := strings.TrimSpace(params.OssURL); oss != "" {
+		return oss
+	}
+	if params.Recording != nil {
+		return strings.TrimSpace(params.Recording.OssAudioURL)
+	}
+	return ""
 }
 
 func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript, storage *Storage, logger Logger) (string, []TranscriptItem, error) {

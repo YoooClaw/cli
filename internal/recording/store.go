@@ -725,6 +725,11 @@ func parseRecordingTime(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// ParseTime 是录音时间解析的导出入口，供 CLI 的 --from/--to 自然日筛选复用。
+func ParseTime(raw string) (time.Time, bool) {
+	return parseRecordingTime(raw)
+}
+
 // recordingSortTime 优先使用录音创建时间；历史脏数据无法解析时，依次回退到
 // 入库时间和更新时间，避免单条无效 created_at 固定占据 latest。
 func recordingSortTime(entry Entry) (time.Time, bool) {
@@ -734,6 +739,12 @@ func recordingSortTime(entry Entry) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// EffectiveTime 返回录音用于查询和排序的有效时间。正常数据取真实 created_at；
+// 历史脏数据才依次回退到 ingestedAt、updatedAt。
+func EffectiveTime(entry Entry) (time.Time, bool) {
+	return recordingSortTime(entry)
 }
 
 // SortByCreatedDesc 按真实时间点倒序排序，而不是按 created_at 原始字符串排序。

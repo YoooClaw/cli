@@ -91,12 +91,98 @@ func TestRenderResultTable(t *testing.T) {
 	}
 }
 
+func TestRenderResultTableAlignsWideCharacters(t *testing.T) {
+	t.Parallel()
+	var b bytes.Buffer
+	RenderResult(&b, []any{
+		map[string]any{"name": "测试录音", "status": "ready"},
+		map[string]any{"name": "ascii", "status": "ready"},
+	}, Table)
+	lines := strings.Split(strings.TrimSpace(b.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("table lines = %d, want 4: %q", len(lines), b.String())
+	}
+	firstStatus := strings.Index(lines[2], "ready")
+	secondStatus := strings.Index(lines[3], "ready")
+	if firstStatus < 0 || secondStatus < 0 {
+		t.Fatalf("table is missing status values: %q", b.String())
+	}
+	if firstWidth, secondWidth := displayWidth(lines[2][:firstStatus]), displayWidth(lines[3][:secondStatus]); firstWidth != secondWidth {
+		t.Errorf("wide-character columns are not aligned: widths %d and %d\n%s", firstWidth, secondWidth, b.String())
+	}
+}
+
+func TestRenderResultTableUnwrapsArrayEnvelope(t *testing.T) {
+	t.Parallel()
+	var b bytes.Buffer
+	RenderResult(&b, map[string]any{
+		"ok":    true,
+		"total": 2,
+		"recordings": []any{
+			map[string]any{"id": "r1", "name": "first"},
+			map[string]any{"id": "r2", "name": "second"},
+		},
+	}, Table)
+	out := b.String()
+	for _, want := range []string{"id", "name", "r1", "first", "r2", "second"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unwrapped table missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, `"recordings"`) {
+		t.Errorf("array envelope fell back to JSON: %s", out)
+	}
+}
+
+func TestRenderResultTableUnwrapsObjectEnvelope(t *testing.T) {
+	t.Parallel()
+	var b bytes.Buffer
+	RenderResult(&b, map[string]any{
+		"ok":        true,
+		"recording": map[string]any{"id": "r1", "name": "latest"},
+	}, Table)
+	out := b.String()
+	for _, want := range []string{"id", "name", "r1", "latest"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unwrapped detail table missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, `"recording"`) {
+		t.Errorf("object envelope fell back to JSON: %s", out)
+	}
+}
+
+func TestRenderResultTableUnwrapsEmptyArrayEnvelope(t *testing.T) {
+	t.Parallel()
+	var b bytes.Buffer
+	RenderResult(&b, map[string]any{
+		"ok":         true,
+		"total":      0,
+		"recordings": []any{},
+	}, Table)
+	if got := strings.TrimSpace(b.String()); got != "(no data)" {
+		t.Errorf("empty envelope table = %q, want %q", got, "(no data)")
+	}
+}
+
 func TestRenderResultTableFallsBackToJSON(t *testing.T) {
 	t.Parallel()
 	var b bytes.Buffer
 	RenderResult(&b, map[string]any{"not": "array"}, Table)
 	if !strings.Contains(b.String(), `"not": "array"`) {
 		t.Errorf("non-array table should fall back to pretty JSON: %q", b.String())
+	}
+}
+
+func TestRenderResultTableAmbiguousEnvelopeFallsBackToJSON(t *testing.T) {
+	t.Parallel()
+	var b bytes.Buffer
+	RenderResult(&b, map[string]any{
+		"installed": []any{map[string]any{"name": "one"}},
+		"skipped":   []any{map[string]any{"name": "two"}},
+	}, Table)
+	if !strings.Contains(b.String(), `"installed"`) || !strings.Contains(b.String(), `"skipped"`) {
+		t.Errorf("ambiguous envelope should fall back to pretty JSON: %q", b.String())
 	}
 }
 

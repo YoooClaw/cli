@@ -21,6 +21,8 @@ func newRecordingCmd() *cobra.Command {
 	list := &cobra.Command{Use: "list", Short: "列出所有录音 🟢", Args: cobra.NoArgs, RunE: run(recordingList)}
 	list.Flags().String("status", "", "按传输状态过滤")
 	list.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
+	list.Flags().String("from", "", "录音时间起点（含，ISO 8601 或 YYYY-MM-DD）")
+	list.Flags().String("to", "", "录音时间终点（不含，ISO 8601 或 YYYY-MM-DD）")
 	status := &cobra.Command{Use: "status <id>", Short: "查看单条录音详情 🟢", Args: cobra.ExactArgs(1), RunE: run(recordingStatusCmd)}
 	storagePath := &cobra.Command{Use: "storage-path", Short: "打印录音存储目录绝对路径 🟢", Args: cobra.NoArgs, RunE: run(recordingStoragePath)}
 
@@ -39,8 +41,11 @@ func newRecordingCmd() *cobra.Command {
 	events.Flags().String("limit", "200", "返回条数上限")
 
 	latest := &cobra.Command{Use: "+latest", Short: "展示最新一条录音详情", Args: cobra.NoArgs, RunE: run(recordingLatest)}
+	today := &cobra.Command{Use: "+today", Short: "列出本地自然日内的今日录音", Args: cobra.NoArgs, RunE: run(recordingToday)}
+	today.Flags().String("status", "", "按传输状态过滤")
+	today.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 
-	c.AddCommand(list, status, storagePath, setupAsr, events, latest)
+	c.AddCommand(list, status, storagePath, setupAsr, events, latest, today)
 	return c
 }
 
@@ -55,10 +60,23 @@ func recToListItem(r recording.Entry) map[string]any {
 }
 
 func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	from, err := parseRecordingBoundary(flagStr(cmd, "from"), "--from")
+	if err != nil {
+		return nil, err
+	}
+	to, err := parseRecordingBoundary(flagStr(cmd, "to"), "--to")
+	if err != nil {
+		return nil, err
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return nil, errs.New(errs.CodeInvalidArgument, "--from 必须早于 --to")
+	}
+	return recordingListRange(ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), from, to)
+}
+
+func recordingListRange(ctx *clictx.Context, status, client string, from, to *time.Time) (map[string]any, error) {
 	recs := recording.ReadIndex(ctx.Paths.Recordings)
 	recording.SortByCreatedDesc(recs)
-	status := flagStr(cmd, "status")
-	client := flagStr(cmd, "client")
 	out := make([]any, 0, len(recs))
 	for _, r := range recs {
 		if status != "" && r.Status != status {
@@ -67,9 +85,33 @@ func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 		if client != "" && client != "all" && labelOrLegacy2(r.ClientLabel) != client {
 			continue
 		}
+		if from != nil || to != nil {
+			occurredAt, ok := recording.EffectiveTime(r)
+			if !ok {
+				continue
+			}
+			if from != nil && occurredAt.Before(*from) {
+				continue
+			}
+			if to != nil && !occurredAt.Before(*to) {
+				continue
+			}
+		}
 		out = append(out, recToListItem(r))
 	}
 	return map[string]any{"ok": true, "total": len(out), "recordings": out}, nil
+}
+
+func parseRecordingBoundary(raw, flagName string) (*time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parsed, ok := recording.ParseTime(raw)
+	if !ok {
+		return nil, errs.Newf(errs.CodeInvalidArgument,
+			"%s 必须是 ISO 8601 时间或 YYYY-MM-DD（收到 %q）", flagName, raw)
+	}
+	return &parsed, nil
 }
 
 func findRecording(ctx *clictx.Context, id string) (recording.Entry, bool) {
@@ -117,6 +159,22 @@ func recordingLatest(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, er
 	}
 	recording.SortByCreatedDesc(recs)
 	return map[string]any{"ok": true, "recording": recordingDetail(recs[0])}, nil
+}
+
+var recordingQueryNow = time.Now
+
+func recordingToday(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	now := recordingQueryNow().In(time.Local)
+	from := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	to := from.AddDate(0, 0, 1)
+	result, err := recordingListRange(ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), &from, &to)
+	if err != nil {
+		return nil, err
+	}
+	result["date"] = from.Format("2006-01-02")
+	result["from"] = from.Format(time.RFC3339)
+	result["to"] = to.Format(time.RFC3339)
+	return result, nil
 }
 
 var sinceRE = regexp.MustCompile(`^(\d+)([smhd])$`)

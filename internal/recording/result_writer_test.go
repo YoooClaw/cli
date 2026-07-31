@@ -116,6 +116,123 @@ func TestResultWriteUpsertsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestResultWriteUsesRecordingCreatedAtInsteadOfTranscriptGeneratedAt(t *testing.T) {
+	t.Parallel()
+	storage := newResultStorage(t)
+	const recordingCreatedAt = "2026-07-29T08:58:00+08:00"
+	const transcriptGeneratedAt = "2026-07-28T23:59:00+08:00"
+
+	_, err := HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_with_metadata",
+		Recording: &Metadata{
+			Name:          "今天的录音",
+			DurationSec:   42,
+			FileSizeBytes: 2048,
+			CreatedAt:     recordingCreatedAt,
+		},
+		Transcript: &ResultTranscript{
+			Title: "转写标题", GeneratedAt: transcriptGeneratedAt, Text: "正文",
+		},
+	}, storage, testLogger{t}, SyncOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry, ok := storage.FindByID("rec_with_metadata")
+	if !ok {
+		t.Fatal("recording not upserted")
+	}
+	if entry.Metadata.CreatedAt != recordingCreatedAt {
+		t.Fatalf("created_at = %q, want recording time %q", entry.Metadata.CreatedAt, recordingCreatedAt)
+	}
+	if entry.Metadata.Name != "今天的录音" || entry.Metadata.DurationSec != 42 || entry.Metadata.FileSizeBytes != 2048 {
+		t.Fatalf("recording metadata was not preserved: %+v", entry.Metadata)
+	}
+}
+
+func TestResultWriteWithoutRecordingTimeFallsBackToIngestedAt(t *testing.T) {
+	t.Parallel()
+	storage := newResultStorage(t)
+	const transcriptGeneratedAt = "2026-07-28T23:59:00+08:00"
+	before := time.Now().Add(-time.Second)
+
+	_, err := HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_without_metadata",
+		Transcript: &ResultTranscript{
+			GeneratedAt: transcriptGeneratedAt, Title: "标题", Text: "正文",
+		},
+	}, storage, testLogger{t}, SyncOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().Add(time.Second)
+
+	entry, _ := storage.FindByID("rec_without_metadata")
+	if entry.Metadata.CreatedAt == transcriptGeneratedAt {
+		t.Fatal("transcript generatedAt must not be used as recording created_at")
+	}
+	createdAt, ok := parseRecordingTime(entry.Metadata.CreatedAt)
+	if !ok || createdAt.Before(before) || createdAt.After(after) {
+		t.Fatalf("created_at should fall back to ingest time, got %q", entry.Metadata.CreatedAt)
+	}
+}
+
+func TestResultWriteRepairsExistingPlaceholderMetadata(t *testing.T) {
+	t.Parallel()
+	storage := newResultStorage(t)
+	if _, err := storage.Ingest("rec_existing", Metadata{
+		Name: "旧占位", CreatedAt: "2026-07-28T09:00:00+08:00",
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_existing",
+		Recording: &Metadata{
+			Name: "真实名称", CreatedAt: "2026-07-29T10:00:00+08:00", DurationSec: 60,
+		},
+		Summary: &ResultSummary{Markdown: "x"},
+	}, storage, testLogger{t}, SyncOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry, _ := storage.FindByID("rec_existing")
+	if entry.Metadata.Name != "真实名称" ||
+		entry.Metadata.CreatedAt != "2026-07-29T10:00:00+08:00" ||
+		entry.Metadata.DurationSec != 60 {
+		t.Fatalf("existing placeholder metadata was not repaired: %+v", entry.Metadata)
+	}
+}
+
+func TestResultWriteAcceptsTopLevelCreatedAtAliases(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"camel", `{"recordingId":"r1","createdAt":"2026-07-29T09:00:00+08:00","summary":{"markdown":"x"}}`, "2026-07-29T09:00:00+08:00"},
+		{"snake", `{"recordingId":"r1","created_at":"2026-07-29T09:01:00+08:00","summary":{"markdown":"x"}}`, "2026-07-29T09:01:00+08:00"},
+		{"nested", `{"recordingId":"r1","recording":{"name":"n","created_at":"2026-07-29T09:02:00+08:00"},"summary":{"markdown":"x"}}`, "2026-07-29T09:02:00+08:00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storage := newResultStorage(t)
+			var params ResultWriteParams
+			if err := json.Unmarshal([]byte(tc.payload), &params); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := HandleRecordingResultWrite(params, storage, testLogger{t}, SyncOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			entry, _ := storage.FindByID("r1")
+			if entry.Metadata.CreatedAt != tc.want {
+				t.Fatalf("created_at = %q, want %q", entry.Metadata.CreatedAt, tc.want)
+			}
+		})
+	}
+}
+
 func TestResultWriteRejectsEmptyPayload(t *testing.T) {
 	t.Parallel()
 	storage := newResultStorage(t)

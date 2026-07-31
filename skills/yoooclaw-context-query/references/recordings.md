@@ -8,18 +8,25 @@ Apply the parent `yoooclaw-context-query` rules.
 yoooclaw recording storage-path --format json
 yoooclaw recording list --format json
 # Optional filters:
-yoooclaw recording list --status transcribed --client <label> --format json
+yoooclaw recording list --status transcribed --client <label> \
+  [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>] --format json
+yoooclaw recording +today --format json
 ```
 
-Use the returned storage `path`. Sort by `created_at` descending. List requests may include every status; content requests use entries with `status = "transcribed"` and `has_transcript = true`.
+Use the returned storage `path`. Recording lists are sorted by effective `created_at` descending. `--from` is inclusive and `--to` is exclusive. List requests may include every status; content requests use entries with `status = "transcribed"` and `has_transcript = true`.
 
 ## 2. Resolve scope
 
 - Explicit ID, name, time, or filename fragment: require a unique match.
+- Today/今天: resolve the current local system date and use `yoooclaw recording +today --format json`. Add `--status transcribed` for transcript/content requests.
+- Yesterday/昨天 or an explicit calendar day: resolve `[local midnight, next local midnight)` and run `recording list --from <ISO_FROM> --to <ISO_TO>`.
+- Rolling periods such as the last 24 hours or last N days: compute exact ISO boundaries ending at the current local system time and use `--from/--to`.
 - Latest/most recent: use `yoooclaw recording +latest --format json`.
 - Most recent N: select the first N sorted entries.
 - All: use all eligible entries.
 - Ambiguous: show `1. [name] ([created_at], [duration])` and ask for an index, ID, name, `1,3`, `1-3`, or `all`.
+
+Never substitute latest/most recent for today, yesterday, or another explicit date range. If the requested range has no recordings, report that it is empty; do not fall back to an older recording.
 
 A metadata-only list does not require transcript reads.
 
