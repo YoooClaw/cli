@@ -131,6 +131,23 @@ func TestListProfileNames(t *testing.T) {
 	}
 }
 
+func TestReadActiveProfileRejectsMissingDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOOOCLAW_HOME", home)
+	if err := os.WriteFile(ActiveProfilePath(), []byte("test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadActiveProfile(); got != "" {
+		t.Fatalf("missing profile directory should be ignored, got %q", got)
+	}
+	if err := os.MkdirAll(ProfileDir("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadActiveProfile(); got != "test" {
+		t.Fatalf("existing active profile = %q, want test", got)
+	}
+}
+
 func TestReadActiveProfile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("YOOOCLAW_HOME", home)
@@ -138,6 +155,9 @@ func TestReadActiveProfile(t *testing.T) {
 		t.Errorf("missing file -> empty, got %q", got)
 	}
 	if err := os.WriteFile(ActiveProfilePath(), []byte("  work\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ProfileDir("work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if got := ReadActiveProfile(); got != "work" {

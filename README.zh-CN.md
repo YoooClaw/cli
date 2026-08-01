@@ -247,6 +247,7 @@ yoooclaw daemon run-foreground --ingress proxied \
 yoooclaw notification +today          # 今日通知摘要
 yoooclaw notification +recent         # 最近 1 小时通知
 yoooclaw recording +latest            # 最新一条录音详情
+yoooclaw recording +today             # 本地自然日内的今日录音
 yoooclaw light +blink                 # 灯效连通性测试（red-strobe-3）
 yoooclaw lightrule +on                # 启用所有灯效规则
 yoooclaw tunnel +test                 # daemon 本地 ingest + 鉴权自检
@@ -263,7 +264,7 @@ yoooclaw log +errors                  # 昨天起的 error 级日志
 yoooclaw notification search --app 微信 --keyword 会议 --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # 大批量通知分片总结：create→next→commit→result
-yoooclaw recording list --status synced
+yoooclaw recording list --status synced [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
@@ -340,6 +341,8 @@ yoooclaw --profile work notification +today
 ### 录音与 Relay
 
 独立 daemon 用 Go 版录音存储、状态机、OSS 下载与 ASR 调度，并通过 `RelayClient + RelayDispatcher` 接收 App/云端的 `recordings.result.write`（写入转录/总结，可选下载音频）。
+新录音请求应携带 `recording.created_at`（也兼容顶层 `createdAt` / `created_at`）；`transcript.generatedAt` 只表示转写产物生成时间，不再充当录音时间。
+顶层 `durationMillis` 向下截断为整数秒，并以数值字段 `duration_sec` 保存；`duration_display` 提供 `16s`、`1m 16s`、`1h 1m 1s` 等带单位展示。音频下载落盘后，CLI 按兼容 Android `Formatter.formatShortFileSize()` 的 SI 短格式保存 `file_size_display`；已删除的 `file_size_bytes` 不再输出。
 
 ```bash
 yoooclaw recording events --since 1h --limit 50

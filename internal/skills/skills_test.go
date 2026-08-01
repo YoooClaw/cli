@@ -118,6 +118,25 @@ func TestContextQueryHidesNestedNotificationStatisticsRoute(t *testing.T) {
 	}
 }
 
+func TestRecordingReferencesDoNotFallbackDateRangesToLatest(t *testing.T) {
+	t.Parallel()
+	for _, file := range []string{
+		"skills/yoooclaw-context-query/references/recordings.md",
+		"skills/yoooclaw-recordings-process/references/recording-source.md",
+	} {
+		raw, err := fs.ReadFile(assets.SkillsFS, file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for _, required := range []string{"recording +today", "--from", "--to", "Never"} {
+			if !strings.Contains(text, required) {
+				t.Errorf("%s missing date-query safeguard %q", file, required)
+			}
+		}
+	}
+}
+
 // isolateHome 把 HOME / CODEX_HOME 指向临时目录，隔离 agent 探测。
 func isolateHome(t *testing.T) string {
 	t.Helper()

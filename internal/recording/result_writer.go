@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,10 +50,14 @@ type ResultSummary struct {
 
 // ResultWriteParams 是 recordings.result.write 的入参。
 type ResultWriteParams struct {
-	RecordingID string            `json:"recordingId"`
-	OssURL      string            `json:"ossUrl,omitempty"`
-	Transcript  *ResultTranscript `json:"transcript,omitempty"`
-	Summary     *ResultSummary    `json:"summary,omitempty"`
+	RecordingID    string            `json:"recordingId"`
+	OssURL         string            `json:"ossUrl,omitempty"`
+	DurationMillis *float64          `json:"durationMillis,omitempty"`
+	Recording      *Metadata         `json:"recording,omitempty"`
+	CreatedAt      string            `json:"createdAt,omitempty"`
+	CreatedAtSnake string            `json:"created_at,omitempty"`
+	Transcript     *ResultTranscript `json:"transcript,omitempty"`
+	Summary        *ResultSummary    `json:"summary,omitempty"`
 }
 
 // ResultWriteStored 记录 result.write 落盘的相对路径。
@@ -67,6 +72,7 @@ type ResultWriteResult struct {
 	OK             bool              `json:"ok"`
 	RecordingID    string            `json:"recordingId"`
 	TransferStatus string            `json:"transfer_status"`
+	AudioStatus    string            `json:"audio_status,omitempty"`
 	Stored         ResultWriteStored `json:"stored"`
 }
 
@@ -89,7 +95,8 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 
 	entry, found := storage.FindByID(recordingID)
 	if !found {
-		if _, err := storage.Ingest(recordingID, buildPlaceholderMetadata(recordingID, params), ""); err != nil {
+		metadata, timeSource := buildPlaceholderMetadata(recordingID, params)
+		if _, err := storage.Ingest(recordingID, metadata, ""); err != nil {
 			return ResultWriteResult{}, err
 		}
 		var ok bool
@@ -98,6 +105,19 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 			return ResultWriteResult{}, fmt.Errorf("Recording not found: %s", recordingID)
 		}
 		logger.Info("[recording-result] 录音不存在，已按结果写入新建: " + recordingID)
+		logger.Info("[recording-result] 录音时间已入库: " + recordingID +
+			", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+	} else if merged, timeSource, changed := mergeResultMetadata(entry.Metadata, params); changed {
+		if err := storage.updateEntry(recordingID, func(current *Entry) {
+			current.Metadata = merged
+		}); err != nil {
+			return ResultWriteResult{}, err
+		}
+		entry, _ = storage.FindByID(recordingID)
+		if timeSource != "" {
+			logger.Info("[recording-result] 录音时间已更新: " + recordingID +
+				", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+		}
 	}
 
 	var transcript []TranscriptItem
@@ -126,12 +146,20 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		return ResultWriteResult{}, err
 	}
 
+	oss := resultOssURL(params)
+	if oss != "" {
+		if err := storage.SetResultAudioPending(recordingID, oss); err != nil {
+			return ResultWriteResult{}, err
+		}
+		updated, _ = storage.FindByID(recordingID)
+	}
+
 	if summaryText == "" {
 		summaryText = readSummaryFile(storage, recordingID)
 	}
 	emitResultStatus(recordingID, storage, logger, opts.NotifyStatus, transcript, summaryText, title)
 
-	if oss := strings.TrimSpace(params.OssURL); oss != "" {
+	if oss != "" {
 		go downloadResultAudio(recordingID, oss, storage, logger, opts)
 	}
 
@@ -139,6 +167,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		OK:             true,
 		RecordingID:    recordingID,
 		TransferStatus: updated.Status,
+		AudioStatus:    updated.AudioStatus,
 		Stored: ResultWriteStored{
 			TranscriptDataFile: updated.TranscriptDataFile,
 			TranscriptFile:     updated.TranscriptFile,
@@ -148,23 +177,116 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 }
 
 // buildPlaceholderMetadata 在找不到录音时，用请求里能拿到的信息拼一份占位元数据。
-func buildPlaceholderMetadata(recordingID string, params ResultWriteParams) Metadata {
+func buildPlaceholderMetadata(recordingID string, params ResultWriteParams) (Metadata, string) {
+	metadata := Metadata{}
+	if params.Recording != nil {
+		metadata = *params.Recording
+	}
 	name := recordingID
-	createdAt := nowISO()
-	if params.Transcript != nil {
+	if t := strings.TrimSpace(metadata.Name); t != "" {
+		name = t
+	}
+	if name == recordingID && params.Transcript != nil {
 		if t := strings.TrimSpace(params.Transcript.Title); t != "" {
 			name = t
 		}
-		if g := strings.TrimSpace(params.Transcript.GeneratedAt); g != "" {
-			createdAt = g
+	}
+
+	createdAt, timeSource := nowISO(), "ingested_at"
+	if value, source, ok := providedResultCreatedAt(params); ok {
+		createdAt, timeSource = value, source
+	}
+	metadata.Name = name
+	if durationSec, ok := providedResultDurationSec(params); ok {
+		metadata.DurationSec = durationSec
+	}
+	metadata.CreatedAt = createdAt
+	metadata.OssAudioURL = resultOssURL(params)
+	metadata.Status = StatusSynced
+	return metadata, timeSource
+}
+
+func providedResultCreatedAt(params ResultWriteParams) (string, string, bool) {
+	var nested string
+	if params.Recording != nil {
+		nested = params.Recording.CreatedAt
+	}
+	for _, candidate := range []struct {
+		value  string
+		source string
+	}{
+		{nested, "recording.created_at"},
+		{params.CreatedAt, "createdAt"},
+		{params.CreatedAtSnake, "created_at"},
+	} {
+		value := strings.TrimSpace(candidate.value)
+		if value == "" {
+			continue
+		}
+		if _, ok := parseRecordingTime(value); ok {
+			return value, candidate.source, true
 		}
 	}
-	return Metadata{
-		Name:        name,
-		CreatedAt:   createdAt,
-		OssAudioURL: strings.TrimSpace(params.OssURL),
-		Status:      StatusSynced,
+	return "", "", false
+}
+
+func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, string, bool) {
+	merged := current
+	changed := false
+	if incoming := params.Recording; incoming != nil {
+		if value := strings.TrimSpace(incoming.Name); value != "" && value != merged.Name {
+			merged.Name, changed = value, true
+		}
+		if value := strings.TrimSpace(incoming.FileSizeDisplay); value != "" && value != merged.FileSizeDisplay {
+			merged.FileSizeDisplay, changed = value, true
+		}
+		if incoming.Location != nil {
+			merged.Location, changed = incoming.Location, true
+		}
+		if incoming.Markers != nil {
+			merged.Markers, changed = incoming.Markers, true
+		}
+		if value := strings.TrimSpace(incoming.OssSrtURL); value != "" && value != merged.OssSrtURL {
+			merged.OssSrtURL, changed = value, true
+		}
 	}
+	if durationSec, ok := providedResultDurationSec(params); ok && durationSec != merged.DurationSec {
+		merged.DurationSec, changed = durationSec, true
+	}
+	durationDisplay := FormatDurationDisplay(merged.DurationSec)
+	if merged.DurationDisplay != durationDisplay {
+		merged.DurationDisplay, changed = durationDisplay, true
+	}
+	timeSource := ""
+	if value, source, ok := providedResultCreatedAt(params); ok && value != merged.CreatedAt {
+		merged.CreatedAt, timeSource, changed = value, source, true
+	}
+	if oss := resultOssURL(params); oss != "" && oss != merged.OssAudioURL {
+		merged.OssAudioURL, changed = oss, true
+	}
+	return merged, timeSource, changed
+}
+
+// providedResultDurationSec 把 App 顶层 durationMillis 向下截断为整数秒。
+// 若没有毫秒字段，则兼容 recording.duration_sec，并统一向下取整。
+func providedResultDurationSec(params ResultWriteParams) (float64, bool) {
+	if params.DurationMillis != nil && *params.DurationMillis >= 0 {
+		return math.Floor(*params.DurationMillis / 1000), true
+	}
+	if params.Recording != nil && params.Recording.DurationSec > 0 {
+		return math.Floor(params.Recording.DurationSec), true
+	}
+	return 0, false
+}
+
+func resultOssURL(params ResultWriteParams) string {
+	if oss := strings.TrimSpace(params.OssURL); oss != "" {
+		return oss
+	}
+	if params.Recording != nil {
+		return strings.TrimSpace(params.Recording.OssAudioURL)
+	}
+	return ""
 }
 
 func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript, storage *Storage, logger Logger) (string, []TranscriptItem, error) {
@@ -230,19 +352,75 @@ func writeResultSummary(recordingID string, sm ResultSummary, storage *Storage, 
 }
 
 func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Logger, opts SyncOptions) {
+	unlock := storage.lockAudioDownload(recordingID)
+	defer unlock()
+
+	current, err := storage.SetResultAudioDownloading(recordingID, ossURL)
+	if err != nil {
+		logger.Error("[recording-result] 音频下载状态写入失败: " + err.Error() + ": " + recordingID)
+		return
+	}
+	if !current {
+		logger.Info("[recording-result] 音频已存在或 OSS URL 已更新，跳过重复任务: " + recordingID)
+		return
+	}
 	dest := storage.AudioFilePath(recordingID, ossURL)
+	staged := dest + ".incoming"
+	defer os.Remove(staged)
 	logger.Info("[recording-result] 开始下载音频: " + recordingID + ", audio=" + ossURL)
-	result := DownloadFile(ossURL, dest, logger, opts.DownloadOptions)
+	result := DownloadFile(ossURL, staged, logger, opts.DownloadOptions)
 	if !result.OK {
 		message := "音频下载失败: " + result.Error
 		logger.Error("[recording-result] " + message + ": " + recordingID)
-		_ = storage.SetLastError(recordingID, message)
+		applied, setErr := storage.SetResultAudioFailed(recordingID, ossURL, message)
+		if setErr != nil {
+			logger.Error("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID)
+			return
+		}
+		if !applied {
+			logger.Info("[recording-result] OSS URL 已更新，忽略旧音频失败结果: " + recordingID)
+			return
+		}
 		emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
 		return
 	}
-	_ = storage.SetAudioFile(recordingID, AudioFilename(recordingID, ossURL))
+	applied, setErr := storage.CommitResultAudioDownloaded(
+		recordingID, ossURL, staged, AudioFilename(recordingID, ossURL),
+	)
+	if setErr != nil {
+		logger.Error("[recording-result] 音频成功状态写入失败: " + setErr.Error() + ": " + recordingID)
+		return
+	}
+	if !applied {
+		logger.Info("[recording-result] OSS URL 已更新，忽略旧音频成功结果: " + recordingID)
+		return
+	}
 	logger.Info("[recording-result] 音频已更新: " + recordingID)
 	emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
+}
+
+// RecoverMissingResultAudio 在 daemon 启动时顺序补偿索引中缺失的音频。任务来源
+// 和最新 OSS URL 都持久化在 index.json，因此进程退出后不会永久丢失。
+func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions) int {
+	entries := storage.ListMissingAudio()
+	if len(entries) == 0 {
+		return 0
+	}
+	go func() {
+		for _, entry := range entries {
+			ossURL := strings.TrimSpace(entry.Metadata.OssAudioURL)
+			if ossURL == "" {
+				continue
+			}
+			if err := storage.SetResultAudioPending(entry.ID, ossURL); err != nil {
+				logger.Error("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error())
+				continue
+			}
+			logger.Info("[recording-recovery] 补偿缺失音频: " + entry.ID)
+			downloadResultAudio(entry.ID, ossURL, storage, logger, opts)
+		}
+	}()
+	return len(entries)
 }
 
 func emitResultDownloadStatus(recordingID string, storage *Storage, logger Logger, notify func(StatusEvent)) {
@@ -268,6 +446,7 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 	event := StatusEvent{
 		RecordingID:        entry.ID,
 		TransferStatus:     entry.Status,
+		AudioStatus:        entry.AudioStatus,
 		AudioFile:          entry.AudioFile,
 		SrtFile:            entry.SrtFile,
 		TranscriptDataFile: entry.TranscriptDataFile,

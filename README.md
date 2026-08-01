@@ -245,6 +245,7 @@ Prefixed with `+`, friendly to both humans and AI, with smart defaults and table
 yoooclaw notification +today          # Today's notification summary
 yoooclaw notification +recent         # Notifications from the last hour
 yoooclaw recording +latest            # Details of the most recent recording
+yoooclaw recording +today             # Recordings from today's local calendar day
 yoooclaw light +blink                 # Light-effect connectivity test (red-strobe-3)
 yoooclaw lightrule +on                # Enable all light-effect rules
 yoooclaw tunnel +test                 # Daemon local ingest + auth self-check
@@ -261,7 +262,7 @@ Run `yoooclaw <service> --help` to see all shortcuts for a given service.
 yoooclaw notification search --app WeChat --keyword meeting --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # Chunked summarization for large notification batches: create→next→commit→result
-yoooclaw recording list --status synced
+yoooclaw recording list --status synced [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
@@ -339,6 +340,8 @@ yoooclaw --profile work notification +today
 ### Recording & Relay
 
 The standalone daemon uses a Go implementation of recording storage, the state machine, OSS download, and ASR scheduling, and receives the app/cloud's `recordings.result.write` (writing transcripts/summaries, optionally downloading audio) via `RelayClient + RelayDispatcher`.
+New-recording payloads should include `recording.created_at` (or top-level `createdAt` / `created_at`); `transcript.generatedAt` is artifact-generation time and is never used as the recording time.
+Top-level `durationMillis` is truncated down to integer seconds and stored as numeric `duration_sec`; `duration_display` adds a human-readable unit form such as `16s`, `1m 16s`, or `1h 1m 1s`. After the audio is downloaded, the CLI stores `file_size_display` using the Android `Formatter.formatShortFileSize()`-compatible SI short format; the removed `file_size_bytes` field is not emitted.
 
 ```bash
 yoooclaw recording events --since 1h --limit 50

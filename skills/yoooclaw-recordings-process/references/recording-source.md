@@ -19,7 +19,9 @@ Meeting-minutes and interview branches accept transcript/text files. Translation
 
 ```bash
 yoooclaw recording storage-path --format json
-yoooclaw recording list --status transcribed --format json
+yoooclaw recording list --status transcribed \
+  [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>] --format json
+yoooclaw recording +today --status transcribed --format json
 ```
 
 Use the returned root as `<storage-path>`. Keep entries with `status = "transcribed"` and `has_transcript = true`, sorted by `created_at` descending.
@@ -29,10 +31,15 @@ If no eligible recording exists, report that transcripts are not currently avail
 ### 2. Select
 
 - Explicit ID, name, time, or filename fragment: require a unique match.
+- Today/今天: resolve the current local system date and use `recording +today --status transcribed`.
+- Yesterday/昨天 or an explicit calendar day: resolve `[local midnight, next local midnight)` and use `recording list --from <ISO_FROM> --to <ISO_TO> --status transcribed`.
+- Rolling periods: compute exact ISO boundaries from the current local system time and use `--from/--to`.
 - Latest/most recent/刚才/最新/最近一次: select the first entry; `recording +latest` may be used.
 - Most recent N/最近 N 条: select the first N entries.
 - All/全部: select every eligible entry.
 - Ambiguous: show `1. [name] ([created_at], [duration])` and ask for an index, ID, `1,3`, `1-3`, or `all`.
+
+Never fall back from an empty date range to latest. Report that no eligible recording exists in the requested range.
 
 ### 3. Resolve transcripts
 

@@ -114,6 +114,13 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 			return err
 		}
 	}
+	if needsRelayConsumerLock(mode, cfg) {
+		releaseRelayConsumer, err := acquireRelayConsumerLock(ctx.Paths)
+		if err != nil {
+			return err
+		}
+		defer releaseRelayConsumer()
+	}
 
 	storage := notif.NewStorage(ctx.Paths.Notifications, notif.PluginConfig{
 		RetentionDays: cfg.Notification.RetentionDays, IgnoredApps: cfg.Notification.IgnoredApps,
@@ -196,6 +203,11 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 				logger.Info(fmt.Sprintf("Relay tunnels applied: started=%v unchanged=%v", result.Started, result.Unchanged))
 			}
 		}
+	}
+	if count := recording.RecoverMissingResultAudio(recordingStorage, logger, recording.SyncOptions{
+		NotifyStatus: srv.notifyRecordingStatus,
+	}); count > 0 {
+		logger.Info(fmt.Sprintf("[recording-recovery] 已恢复 %d 个缺失音频任务", count))
 	}
 
 	stop := make(chan os.Signal, 1)

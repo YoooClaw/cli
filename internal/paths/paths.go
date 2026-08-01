@@ -145,11 +145,23 @@ func ListProfileNames() []string {
 	return names
 }
 
-// ReadActiveProfile 读取 active-profile 文件内容（不存在或空返回 ""）。
+// ReadActiveProfile 读取有效的 active profile。文件不存在、内容为空，或目标
+// profile 目录已被手工删除时返回 ""，让调用方安全回退到 default。
+//
+// 只校验目录，不要求 config.json 已初始化：profile create 的向导可能正在创建目录，
+// profile use 也允许先切换到尚未完成初始化的 profile。
 func ReadActiveProfile() string {
 	raw, err := os.ReadFile(ActiveProfilePath())
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(raw))
+	name := strings.TrimSpace(string(raw))
+	if name == "" {
+		return ""
+	}
+	info, err := os.Stat(ProfileDir(name))
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return name
 }

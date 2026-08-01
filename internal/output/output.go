@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/YoooClaw/cli/internal/errs"
 )
@@ -117,11 +118,19 @@ func toRows(data any) []any {
 	return []any{data}
 }
 
-// renderTable 极简表格渲染：对象数组 → 列对齐文本；其余 fallback 到 pretty JSON。
+// renderTable 极简表格渲染：对象数组 → 列对齐文本。
+//
+// CLI 命令通常返回 {"ok":true,"total":N,"recordings":[...]} 这类标准结果包；
+// 当结果包中只有一个数组字段时，自动把该字段作为表格行。单条详情命令常返回
+// {"ok":true,"recording":{...}}，同样将唯一的嵌套对象渲染为单行表格。
+// 其他结构仍 fallback 到 pretty JSON。
 func renderTable(data any) string {
-	arr, ok := data.([]any)
-	if !ok || len(arr) == 0 {
+	arr, ok := tableRows(data)
+	if !ok {
 		return marshalJSON(data, true)
+	}
+	if len(arr) == 0 {
+		return "(no data)"
 	}
 	rows := make([]map[string]any, 0, len(arr))
 	for _, r := range arr {
@@ -161,16 +170,16 @@ func renderTable(data any) string {
 	}
 	widths := make([]int, len(columns))
 	for i, col := range columns {
-		widths[i] = len(col)
+		widths[i] = displayWidth(col)
 		for _, row := range rows {
-			if l := len(cell(row[col])); l > widths[i] {
+			if l := displayWidth(cell(row[col])); l > widths[i] {
 				widths[i] = l
 			}
 		}
 	}
 	pad := func(s string, w int) string {
-		if len(s) < w {
-			return s + strings.Repeat(" ", w-len(s))
+		if current := displayWidth(s); current < w {
+			return s + strings.Repeat(" ", w-current)
 		}
 		return s
 	}
@@ -198,4 +207,78 @@ func renderTable(data any) string {
 		}
 	}
 	return b.String()
+}
+
+// displayWidth 返回字符串在常见等宽终端中的显示列宽。
+// 中文、日文、韩文和全角字符占两列；组合字符不额外占列。
+func displayWidth(s string) int {
+	width := 0
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Mn, r), unicode.Is(unicode.Me, r):
+			continue
+		case isWideRune(r):
+			width += 2
+		default:
+			width++
+		}
+	}
+	return width
+}
+
+func isWideRune(r rune) bool {
+	return r >= 0x1100 &&
+		(r <= 0x115f ||
+			r == 0x2329 || r == 0x232a ||
+			(r >= 0x2e80 && r <= 0xa4cf && r != 0x303f) ||
+			(r >= 0xac00 && r <= 0xd7a3) ||
+			(r >= 0xf900 && r <= 0xfaff) ||
+			(r >= 0xfe10 && r <= 0xfe19) ||
+			(r >= 0xfe30 && r <= 0xfe6f) ||
+			(r >= 0xff00 && r <= 0xff60) ||
+			(r >= 0xffe0 && r <= 0xffe6) ||
+			(r >= 0x1f300 && r <= 0x1faff) ||
+			(r >= 0x20000 && r <= 0x3fffd))
+}
+
+// tableRows 提取可渲染的表格行。
+//
+// 除顶层数组外，还支持标准结果包中唯一的数组或对象字段。只在候选字段唯一时
+// 自动解包，避免对包含多个结果集合的复杂响应做含糊选择。
+func tableRows(data any) ([]any, bool) {
+	if arr, ok := data.([]any); ok {
+		return arr, true
+	}
+	envelope, ok := data.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+
+	var arrayRows []any
+	arrayCandidates := 0
+	for _, value := range envelope {
+		if arr, ok := value.([]any); ok {
+			arrayRows = arr
+			arrayCandidates++
+		}
+	}
+	if arrayCandidates == 1 {
+		return arrayRows, true
+	}
+	if arrayCandidates > 1 {
+		return nil, false
+	}
+
+	var objectRow map[string]any
+	objectCandidates := 0
+	for _, value := range envelope {
+		if row, ok := value.(map[string]any); ok {
+			objectRow = row
+			objectCandidates++
+		}
+	}
+	if objectCandidates == 1 {
+		return []any{objectRow}, true
+	}
+	return nil, false
 }

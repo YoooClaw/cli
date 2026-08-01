@@ -14,6 +14,15 @@ const (
 	StatusTranscribed      = "transcribed"
 )
 
+// 音频下载状态与转写状态相互独立。result.write 可以先写入转录结果，再异步把
+// OSS 音频落到本地；不能用 transcribed 代替音频已经下载成功。
+const (
+	AudioStatusPending     = "pending"
+	AudioStatusDownloading = "downloading"
+	AudioStatusDownloaded  = "downloaded"
+	AudioStatusFailed      = "failed"
+)
+
 var validTransitions = map[string]map[string]bool{
 	StatusReceivingFailed:  {StatusReceiving: true},
 	StatusReceiving:        {StatusPendingOSSUpload: true},

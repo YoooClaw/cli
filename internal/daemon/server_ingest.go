@@ -10,11 +10,6 @@ import (
 	"github.com/YoooClaw/cli/internal/recording"
 )
 
-var successfulRecordingStatuses = map[string]bool{
-	recording.StatusSynced:      true,
-	recording.StatusTranscribed: true,
-}
-
 type recordingIDBody struct {
 	RecordingID string               `json:"recordingId"`
 	ASR         *recording.AsrConfig `json:"asr,omitempty"`
@@ -261,12 +256,6 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 			s.logger.Warn("[recording-status] 出站事件投递失败: " + err.Error())
 		}
 	}
-	if successfulRecordingStatuses[event.TransferStatus] {
-		if entry, ok := s.recordingStorage.FindByID(event.RecordingID); ok && entry.LastError != "" {
-			_ = s.recordingStorage.SetLastError(event.RecordingID, "")
-			s.logger.Info("[recording-status] 终态 " + event.TransferStatus + " 清理 lastError 残留: " + event.RecordingID)
-		}
-	}
 }
 
 func recordingListItem(entry recording.Entry) map[string]any {
@@ -274,9 +263,11 @@ func recordingListItem(entry recording.Entry) map[string]any {
 		"recordingId":        entry.ID,
 		"name":               entry.Metadata.Name,
 		"duration_sec":       entry.Metadata.DurationSec,
-		"file_size_bytes":    entry.Metadata.FileSizeBytes,
+		"duration_display":   recording.FormatDurationDisplay(entry.Metadata.DurationSec),
+		"file_size_display":  firstNonEmptyStr(entry.Metadata.FileSizeDisplay, "--"),
 		"created_at":         entry.Metadata.CreatedAt,
 		"transfer_status":    entry.Status,
+		"audio_status":       entry.AudioStatus,
 		"marker_count":       len(entry.Metadata.Markers),
 		"has_audio":          entry.AudioFile != "",
 		"has_srt":            entry.SrtFile != "",
@@ -295,7 +286,8 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"recordingId":        entry.ID,
 		"name":               entry.Metadata.Name,
 		"duration_sec":       entry.Metadata.DurationSec,
-		"file_size_bytes":    entry.Metadata.FileSizeBytes,
+		"duration_display":   recording.FormatDurationDisplay(entry.Metadata.DurationSec),
+		"file_size_display":  firstNonEmptyStr(entry.Metadata.FileSizeDisplay, "--"),
 		"created_at":         entry.Metadata.CreatedAt,
 		"location":           entry.Metadata.Location,
 		"oss_audio_url":      entry.Metadata.OssAudioURL,
