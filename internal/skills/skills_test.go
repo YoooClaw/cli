@@ -1,12 +1,17 @@
 package skills
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
+	assets "github.com/YoooClaw/cli"
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
 func TestParseSkillMeta(t *testing.T) {
@@ -54,6 +59,81 @@ func TestList(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(names) {
 		t.Errorf("skills should be sorted: %v", names)
+	}
+	want := []string{
+		"yoooclaw-context-query",
+		"yoooclaw-lightrule-create",
+		"yoooclaw-recordings-process",
+		"yoooclaw-tunnel-debug",
+	}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("bundled skills = %v, want %v", names, want)
+	}
+}
+
+func TestContextQueryDescriptionRoutesLiveNews(t *testing.T) {
+	t.Parallel()
+	bundled, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range bundled {
+		if skill.Name != "yoooclaw-context-query" {
+			continue
+		}
+		for _, phrase := range []string{
+			"personal-history or local-sync signal",
+			"Route generic current-news or Internet-search requests to live web",
+		} {
+			if !strings.Contains(skill.Description, phrase) {
+				t.Errorf("context-query description missing %q", phrase)
+			}
+		}
+		return
+	}
+	t.Fatal("yoooclaw-context-query not found")
+}
+
+func TestContextQueryHidesNestedNotificationStatisticsRoute(t *testing.T) {
+	t.Parallel()
+	skill, err := fs.ReadFile(
+		assets.SkillsFS,
+		"skills/yoooclaw-context-query/SKILL.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifications, err := fs.ReadFile(
+		assets.SkillsFS,
+		"skills/yoooclaw-context-query/references/notifications.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(skill), "references/notification-statistics.md") {
+		t.Error("main context-query skill exposes nested notification statistics route")
+	}
+	if !strings.Contains(string(notifications), "notification-statistics.md") {
+		t.Error("notifications reference must route statistics requests")
+	}
+}
+
+func TestRecordingReferencesDoNotFallbackDateRangesToLatest(t *testing.T) {
+	t.Parallel()
+	for _, file := range []string{
+		"skills/yoooclaw-context-query/references/recordings.md",
+		"skills/yoooclaw-recordings-process/references/recording-source.md",
+	} {
+		raw, err := fs.ReadFile(assets.SkillsFS, file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for _, required := range []string{"recording +today", "--from", "--to", "Never"} {
+			if !strings.Contains(text, required) {
+				t.Errorf("%s missing date-query safeguard %q", file, required)
+			}
+		}
 	}
 }
 
@@ -196,5 +276,48 @@ func TestInstall(t *testing.T) {
 		if r.Status != "installed" {
 			t.Errorf("force should reinstall: %+v", r)
 		}
+	}
+}
+
+func TestInstallRemovesMergedLegacySkills(t *testing.T) {
+	t.Parallel()
+	target := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range deprecatedBundledSkills {
+		dir := filepath.Join(target, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("legacy"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unrelated := filepath.Join(target, "my-personal-skill")
+	if err := os.MkdirAll(unrelated, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	results, _, err := Install(target, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := map[string]bool{}
+	for _, result := range results {
+		if result.Status == "removed" {
+			removed[result.Name] = true
+		}
+	}
+	for _, name := range deprecatedBundledSkills {
+		if fsutil.Exists(filepath.Join(target, name)) {
+			t.Errorf("deprecated skill %q was not removed", name)
+		}
+		if !removed[name] {
+			t.Errorf("deprecated skill %q missing removed result", name)
+		}
+	}
+	if !fsutil.Exists(unrelated) {
+		t.Error("unrelated personal skill should remain")
 	}
 }

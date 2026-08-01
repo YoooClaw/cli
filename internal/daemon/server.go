@@ -114,6 +114,13 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 			return err
 		}
 	}
+	if needsRelayConsumerLock(mode, cfg) {
+		releaseRelayConsumer, err := acquireRelayConsumerLock(ctx.Paths)
+		if err != nil {
+			return err
+		}
+		defer releaseRelayConsumer()
+	}
 
 	storage := notif.NewStorage(ctx.Paths.Notifications, notif.PluginConfig{
 		RetentionDays: cfg.Notification.RetentionDays, IgnoredApps: cfg.Notification.IgnoredApps,
@@ -197,23 +204,30 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 			}
 		}
 	}
+	if count := recording.RecoverMissingResultAudio(recordingStorage, logger, recording.SyncOptions{
+		NotifyStatus: srv.notifyRecordingStatus,
+	}); count > 0 {
+		logger.Info(fmt.Sprintf("[recording-recovery] 已恢复 %d 个缺失音频任务", count))
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	srv.shutdown = func(reason string) {
-		logger.Info("daemon 退出（" + reason + "）")
-		if sup := srv.supervisor(); sup != nil {
-			sup.StopAll(reason)
-		}
-		// 给 in-flight 请求 3 秒收尾（正在落盘的 ingest 批次能写完），
-		// 超时再硬关，保证退出不会被慢客户端拖死。
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			_ = httpSrv.Close()
-		}
-		RemoveLockIfOwnedBy(ctx.Paths, selfPID)
-		os.Exit(0)
+		srv.shutdownOnce.Do(func() {
+			logger.Info("daemon 退出（" + reason + "）")
+			if sup := srv.supervisor(); sup != nil {
+				sup.StopAll(reason)
+			}
+			// 给 in-flight 请求 3 秒收尾（正在落盘的 ingest 批次能写完），
+			// 超时再硬关，保证退出不会被慢客户端拖死。
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+				_ = httpSrv.Close()
+			}
+			RemoveLockIfOwnedBy(ctx.Paths, selfPID)
+			os.Exit(0)
+		})
 	}
 
 	go func() {
@@ -246,6 +260,7 @@ type server struct {
 	generation        string
 	executable        string
 	shutdown          func(string)
+	shutdownOnce      sync.Once
 
 	// shareMu 保护下面三个字段：/daemon/reload 会在请求 goroutine 里整体替换它们，
 	// 而每个并发请求都在读（鉴权、status、egress 推送）。
@@ -344,6 +359,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleImageHTTP(w, r, authCtx)
 	case path == "/gateway/images.sync" && r.Method == http.MethodPost:
 		s.handleImageGateway(w, r, authCtx)
+	case path == "/web-pages" && r.Method == http.MethodPost:
+		s.handleWebPageIngest(w, r, authCtx)
+	case path == "/web-pages/status" && r.Method == http.MethodGet:
+		s.handleWebPageStatus(w, r)
+	case path == "/web-pages/index" && r.Method == http.MethodGet:
+		s.handleWebPageIndex(w, r)
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
 		s.handleMonitors(w, r, path)
 	case path == "/light/send" && r.Method == http.MethodPost:
@@ -585,6 +606,9 @@ func (s *server) relayStatusPayload() map[string]any {
 func isIngestPath(path string) bool {
 	switch path {
 	case "/notifications", "/images",
+		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么
+		// 一起能用 api-key，要么一起不能，分开授权只会让 popup 一半功能可用。
+		"/web-pages", "/web-pages/status", "/web-pages/index",
 		"/gateway/notifications.push", "/gateway/recordings.result.write", "/gateway/images.sync":
 		return true
 	}

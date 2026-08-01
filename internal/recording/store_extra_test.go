@@ -31,6 +31,9 @@ func TestStoreIngestListFindRename(t *testing.T) {
 	if len(all) != 2 || all[0].ID != "r2" {
 		t.Fatalf("ListAll order wrong: %+v", all)
 	}
+	if all[0].Metadata.DurationDisplay != "1s" {
+		t.Fatalf("Ingest duration_display = %q, want %q", all[0].Metadata.DurationDisplay, "1s")
+	}
 	if got, ok := s.FindByID("r1"); !ok || got.ClientLabel != "phone-a" {
 		t.Errorf("FindByID r1: %+v ok=%v", got, ok)
 	}
@@ -58,6 +61,73 @@ func TestStoreListByStatus(t *testing.T) {
 	}
 }
 
+func TestSortByCreatedDescUsesActualInstantAcrossTimezones(t *testing.T) {
+	earlier := "2026-07-29T11:02:00+08:00"
+	later := "2026-07-29T05:47:00Z"
+	if earlier <= later {
+		t.Fatal("test fixture must reproduce the old lexical ordering bug")
+	}
+	entries := []Entry{
+		{ID: "earlier-local", Metadata: Metadata{CreatedAt: earlier}},
+		{ID: "later-utc", Metadata: Metadata{CreatedAt: later}},
+	}
+
+	SortByCreatedDesc(entries)
+
+	if entries[0].ID != "later-utc" {
+		t.Fatalf("expected actual latest recording first, got %+v", entries)
+	}
+}
+
+func TestParseRecordingTimeSupportsLegacyFormats(t *testing.T) {
+	cases := []string{
+		"2026-07-29T14:34:22",
+		"2026-07-29 14:34:22",
+		"2026-07-29 14:34:22.123",
+		"2026-07-29 14:34:22+08:00",
+		"2026-07-29 14:34:22 +0800",
+	}
+	for _, input := range cases {
+		if _, ok := parseRecordingTime(input); !ok {
+			t.Errorf("expected legacy time %q to parse", input)
+		}
+	}
+}
+
+func TestSortByCreatedDescFallsBackToIngestedAt(t *testing.T) {
+	entries := []Entry{
+		{
+			ID:         "valid-created",
+			Metadata:   Metadata{CreatedAt: "2026-07-29T05:47:00Z"},
+			IngestedAt: "2026-07-29T05:48:00Z",
+		},
+		{
+			ID:         "invalid-created",
+			Metadata:   Metadata{CreatedAt: "not-a-time"},
+			IngestedAt: "2026-07-29T06:34:22Z",
+		},
+	}
+
+	SortByCreatedDesc(entries)
+
+	if entries[0].ID != "invalid-created" {
+		t.Fatalf("expected ingestedAt fallback to determine latest, got %+v", entries)
+	}
+}
+
+func TestSortByCreatedDescKeepsInvalidTimestampsStable(t *testing.T) {
+	entries := []Entry{
+		{ID: "first", Metadata: Metadata{CreatedAt: "invalid"}},
+		{ID: "second"},
+	}
+
+	SortByCreatedDesc(entries)
+
+	if entries[0].ID != "first" || entries[1].ID != "second" {
+		t.Fatalf("unparseable entries must keep their index order, got %+v", entries)
+	}
+}
+
 func TestStoreSetFilesAndTitle(t *testing.T) {
 	s := newStore(t)
 	s.Ingest("r1", meta("a", "2026-06-01T00:00:00Z"), "p")
@@ -81,6 +151,36 @@ func TestStoreSetFilesAndTitle(t *testing.T) {
 	// missing id
 	if err := s.SetTitle("ghost", "x"); err != os.ErrNotExist {
 		t.Errorf("set on missing id should be ErrNotExist, got %v", err)
+	}
+}
+
+func TestStoreTracksAudioSourceAcrossFailedReplacement(t *testing.T) {
+	t.Parallel()
+	storage := newStore(t)
+	const firstURL = "https://oss.invalid/first.ogg"
+	const secondURL = "https://oss.invalid/second.ogg"
+	_, _ = storage.Ingest("r1", Metadata{Name: "x", CreatedAt: "t", OssAudioURL: firstURL}, "")
+	audioPath := storage.AudioFilePath("r1", firstURL)
+	if err := os.WriteFile(audioPath, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetAudioFile("r1", AudioFilename("r1", firstURL)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := storage.SetResultAudioPending("r1", secondURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.SetResultAudioFailed("r1", secondURL, "音频下载失败: 404"); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetResultAudioPending("r1", firstURL); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := storage.FindByID("r1")
+	if entry.Metadata.OssAudioURL != firstURL || entry.AudioSourceURL != firstURL ||
+		entry.AudioStatus != AudioStatusDownloaded || entry.LastError != "" {
+		t.Fatalf("known-good source was not restored: %+v", entry)
 	}
 }
 
@@ -164,5 +264,39 @@ func TestLoadIndexRecoversTranscribing(t *testing.T) {
 	got, _ := s.FindByID("r1")
 	if got.Status != StatusTranscribeFailed || got.LastError == "" {
 		t.Errorf("interrupted transcribing should recover to failed: %+v", got)
+	}
+}
+
+func TestLoadIndexMarksMissingAudioForRecovery(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "recordings")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{
+	  "recordings": [{
+	    "id": "r1",
+	    "status": "transcribed",
+	    "audioFile": "audio/r1.ogg",
+	    "metadata": {
+	      "name": "x",
+	      "created_at": "2026-06-01T00:00:00Z",
+	      "oss_audio_url": "https://oss.invalid/r1.ogg"
+	    }
+	  }]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	storage := NewStorage(dir, testLogger{t})
+	if err := storage.Init(); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := storage.FindByID("r1")
+	if entry.AudioFile != "" || entry.AudioStatus != AudioStatusPending || entry.LastError == "" {
+		t.Fatalf("missing audio was not queued for recovery: %+v", entry)
+	}
+	if got := storage.ListMissingAudio(); len(got) != 1 || got[0].ID != "r1" {
+		t.Fatalf("missing audio list: %+v", got)
 	}
 }

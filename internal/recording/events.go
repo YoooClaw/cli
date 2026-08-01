@@ -12,6 +12,7 @@ import (
 type StatusEvent struct {
 	RecordingID        string           `json:"recordingId"`
 	TransferStatus     string           `json:"transfer_status"`
+	AudioStatus        string           `json:"audio_status,omitempty"`
 	AudioFile          string           `json:"audioFile,omitempty"`
 	SrtFile            string           `json:"srtFile,omitempty"`
 	TranscriptDataFile string           `json:"transcriptDataFile,omitempty"`

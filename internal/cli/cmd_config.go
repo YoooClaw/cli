@@ -19,6 +19,9 @@ func startDaemonForInit(ctx *clictx.Context) map[string]any {
 	if st := daemon.State(ctx.Paths); st.Running {
 		return map[string]any{"started": true, "alreadyRunning": true, "pid": st.Lock.PID}
 	}
+	if err := daemon.PrecheckStart(ctx, daemon.StartOpts{}); err != nil {
+		return map[string]any{"started": false, "error": err.Error()}
+	}
 	lock, err := daemon.Spawn(ctx, daemon.StartOpts{})
 	if err != nil {
 		return map[string]any{"started": false, "error": err.Error()}

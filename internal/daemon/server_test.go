@@ -13,6 +13,7 @@ import (
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/paths"
+	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
 )
 
@@ -43,6 +44,32 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 	return srv, ts
+}
+
+func TestRecordingPayloadUsesDisplaySizeOnly(t *testing.T) {
+	t.Parallel()
+	entry := recording.Entry{
+		ID: "r1",
+		Metadata: recording.Metadata{
+			Name:            "录音",
+			DurationSec:     13,
+			FileSizeDisplay: "5.9 MB",
+		},
+	}
+	for name, payload := range map[string]map[string]any{
+		"list":   recordingListItem(entry),
+		"detail": recordingDetail(entry),
+	} {
+		if payload["file_size_display"] != "5.9 MB" {
+			t.Fatalf("%s file_size_display = %v", name, payload["file_size_display"])
+		}
+		if payload["duration_display"] != "13s" {
+			t.Fatalf("%s duration_display = %v", name, payload["duration_display"])
+		}
+		if _, exists := payload["file_size_bytes"]; exists {
+			t.Fatalf("%s must not expose removed file_size_bytes: %+v", name, payload)
+		}
+	}
 }
 
 func TestServerHealth(t *testing.T) {
@@ -129,6 +156,42 @@ func TestServerIngestNotifications(t *testing.T) {
 	}
 	if srv.st.ingestCount != 1 {
 		t.Errorf("runtime ingest count = %d", srv.st.ingestCount)
+	}
+}
+
+func TestNotifyRecordingStatusPreservesAudioFailure(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "recordings")
+	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	storage := recording.NewStorage(dir, logger)
+	if err := storage.Init(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = storage.Ingest("r1", recording.Metadata{
+		Name: "x", CreatedAt: "t", OssAudioURL: "https://oss.invalid/r1.ogg",
+	}, "")
+	_, _ = storage.MarkResultWritten("r1")
+	const message = "音频下载失败: proxy connection refused"
+	if _, err := storage.SetResultAudioFailed("r1", "https://oss.invalid/r1.ogg", message); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{
+		logger:            logger,
+		recordingStorage:  storage,
+		recordingEventLog: recording.NewEventLog(dir),
+		egress:            NoopEgress{},
+	}
+	srv.notifyRecordingStatus(recording.StatusEvent{
+		RecordingID:    "r1",
+		TransferStatus: recording.StatusTranscribed,
+		AudioStatus:    recording.AudioStatusFailed,
+		Error:          message,
+	})
+
+	entry, _ := storage.FindByID("r1")
+	if entry.LastError != message || entry.AudioStatus != recording.AudioStatusFailed {
+		t.Fatalf("terminal transcript status masked audio failure: %+v", entry)
 	}
 }
 

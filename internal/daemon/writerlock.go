@@ -33,10 +33,16 @@ func PrecheckStartFor(p paths.Paths, opts StartOpts) error {
 	if err != nil {
 		return err
 	}
-	if resolveIngressMode(opts, cfg) == config.IngressProxied {
-		return nil
+	mode := resolveIngressMode(opts, cfg)
+	if mode != config.IngressProxied {
+		if err := checkWriterLock(p); err != nil {
+			return err
+		}
 	}
-	return checkWriterLock(p)
+	if needsRelayConsumerLock(mode, cfg) {
+		return checkRelayConsumerLock(p)
+	}
+	return nil
 }
 
 // checkWriterLock 探测写者锁；被其他进程持有时返回结构化错误。

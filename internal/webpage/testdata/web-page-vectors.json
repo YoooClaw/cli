@@ -1,0 +1,82 @@
+{
+  "$source": "yc-web-extension/docs/page-context-design.md §4.4 —— 本文件是 URL 规范化与文件名 slug 的唯一来源。",
+  "$consumers": [
+    "yc-cli/internal/webpage/testdata/web-page-vectors.json",
+    "yc-openclaw-plugin/test/fixtures/web-page-vectors.json",
+    "hermes-plugin/tests/fixtures/web-page-vectors.json"
+  ],
+  "$rule": "规则不一致 = 同一网页在不同端落成两个文件，去重直接失效。改这里必须同步改全部副本（内容需逐字节一致）。",
+
+  "normalizeUrl": [
+    { "name": "drops fragment", "in": "https://example.com/a#section", "out": "https://example.com/a" },
+    { "name": "drops utm and tracking params", "in": "https://example.com/a?utm_source=x&utm_medium=y&fbclid=1&gclid=2&mc_cid=3&mc_eid=4&ref_src=5&keep=1", "out": "https://example.com/a?keep=1" },
+    { "name": "tracking param match is case-insensitive", "in": "https://example.com/a?UTM_Source=x&FBCLID=1&b=2", "out": "https://example.com/a?b=2" },
+    { "name": "sorts query by name and keeps duplicate order", "in": "https://example.com/a?b=2&a=1&b=1", "out": "https://example.com/a?a=1&b=2&b=1" },
+    { "name": "strips trailing slash", "in": "https://example.com/a/b/", "out": "https://example.com/a/b" },
+    { "name": "keeps root slash", "in": "https://example.com/", "out": "https://example.com/" },
+    { "name": "adds root slash when path is empty", "in": "https://example.com", "out": "https://example.com/" },
+    { "name": "lowercases scheme and host but not path", "in": "HTTPS://Example.COM/Path/To", "out": "https://example.com/Path/To" },
+    { "name": "drops default https port", "in": "https://example.com:443/a", "out": "https://example.com/a" },
+    { "name": "drops default http port", "in": "http://example.com:80/a", "out": "http://example.com/a" },
+    { "name": "keeps non-default port", "in": "https://example.com:8443/a", "out": "https://example.com:8443/a" },
+    { "name": "does not upgrade http to https", "in": "http://example.com/a", "out": "http://example.com/a" },
+    { "name": "keeps www prefix", "in": "https://www.example.com/a", "out": "https://www.example.com/a" },
+    { "name": "keeps pagination params", "in": "https://example.com/a?page=1", "out": "https://example.com/a?page=1" },
+    { "name": "valueless param serializes with a trailing equals", "in": "https://example.com/a?flag", "out": "https://example.com/a?flag=" },
+    { "name": "space serializes as plus", "in": "https://example.com/a?q=hello%20world", "out": "https://example.com/a?q=hello+world" },
+    { "name": "asterisk stays literal and tilde is escaped", "in": "https://example.com/a?q=a*b~c", "out": "https://example.com/a?q=a*b%7Ec" },
+    { "name": "non-ascii percent-encodes as utf-8", "in": "https://example.com/a?q=%E4%B8%AD%E6%96%87", "out": "https://example.com/a?q=%E4%B8%AD%E6%96%87" },
+    { "name": "query emptied by filtering drops the question mark", "in": "https://example.com/a?utm_source=x", "out": "https://example.com/a" }
+  ],
+
+  "$rejected": "接收端比扩展的 normalizePageUrl 更严：只接受 http/https，其余一律拒收（§11 的浏览器禁区本来也抓不到）。注意 \"https:///a\" 这类空 host 不在表内——WHATWG 会把它折成 https://a/ 而 Go/Python 判为无 host，但扩展先规范化过，接收端见不到这种形状。",
+  "rejectedUrls": ["", "   ", "not a url", "ftp://example.com/a", "chrome://settings", "file:///etc/hosts"],
+
+  "$document": "同一份 payload 在三端落盘的 .md 必须逐字节一致，index.json 条目也必须同字段同值。这条曾经真的漂过：TS/Python 少了标题与正文之间的空行，靠交叉跑才发现——所以固化成用例。",
+  "document": {
+    "clientLabel": "webext",
+    "payload": {
+      "url": "https://Example.com/Docs/Web/Map/?utm_source=news&b=2&a=1&q=hello world&tag=x#top",
+      "canonicalUrl": "https://Example.com/Docs/Web/Map/?utm_source=news&b=2&a=1&q=hello world&tag=x#top",
+      "title": "Array.prototype.map(): 深入理解 & \"实战\"",
+      "siteName": "MDN Web Docs",
+      "byline": "MDN contributors",
+      "language": "zh",
+      "publishedTime": "2026-03-11",
+      "capturedAt": "2026-07-27T15:04:22+08:00",
+      "markdown": "正文第一段。\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n",
+      "contentHash": "9f86d081884c7d65",
+      "truncated": false,
+      "lowConfidence": false
+    },
+    "expectedMarkdown": "---\nurl: \"https://Example.com/Docs/Web/Map/?utm_source=news&b=2&a=1&q=hello world&tag=x#top\"\ncanonicalUrl: \"https://example.com/Docs/Web/Map?a=1&b=2&q=hello+world&tag=x\"\ntitle: \"Array.prototype.map(): 深入理解 & \\\"实战\\\"\"\nsiteName: \"MDN Web Docs\"\nbyline: \"MDN contributors\"\nlanguage: \"zh\"\npublishedTime: \"2026-03-11\"\ncapturedAt: \"2026-07-27T15:04:22+08:00\"\ncontentHash: \"9f86d081884c7d65\"\nclientLabel: \"webext\"\ntruncated: false\nlowConfidence: false\n---\n\n# Array.prototype.map(): 深入理解 & \"实战\"\n\n正文第一段。\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n",
+    "expectedIndexEntry": {
+      "urlHash": "2f2cc9f11efaebfc94ef9e9333d4ac7d6e9167724a2461cfcf0074a55dd6fecc",
+      "canonicalUrl": "https://example.com/Docs/Web/Map?a=1&b=2&q=hello+world&tag=x",
+      "url": "https://Example.com/Docs/Web/Map/?utm_source=news&b=2&a=1&q=hello world&tag=x#top",
+      "title": "Array.prototype.map(): 深入理解 & \"实战\"",
+      "siteName": "MDN Web Docs",
+      "relativePath": "files/2f2cc9f1-array-prototype-map-深入理解-实战.md",
+      "capturedAt": "2026-07-27T15:04:22+08:00",
+      "firstCapturedAt": "2026-07-27T15:04:22+08:00",
+      "captureCount": 1,
+      "contentHash": "9f86d081884c7d65",
+      "bytes": 564,
+      "clientLabel": "webext"
+    }
+  },
+
+  "$slug": "文件名 = <sha256(canonicalUrl)[0:8]>-<slug>.md。slug 只为可读，唯一性由 hash 前缀保证；标题变了由接收端改名，不产生第二个文件。",
+  "slug": [
+    { "name": "punctuation collapses to single dashes", "in": "Array.prototype.map()", "out": "array-prototype-map" },
+    { "name": "trims and collapses whitespace", "in": "  Hello,   World!  ", "out": "hello-world" },
+    { "name": "plain ascii title", "in": "Kubernetes Deployment Strategies", "out": "kubernetes-deployment-strategies" },
+    { "name": "keeps cjk letters", "in": "深入理解 JavaScript 原型链", "out": "深入理解-javascript-原型链" },
+    { "name": "mixed symbols and cjk", "in": "C++ 与 Rust", "out": "c-与-rust" },
+    { "name": "digits are kept", "in": "Go 1.24 Release Notes", "out": "go-1-24-release-notes" },
+    { "name": "empty title", "in": "", "out": "untitled" },
+    { "name": "title with no alphanumerics", "in": "!!! ---", "out": "untitled" },
+    { "name": "truncates to 60 chars", "in": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "out": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "name": "truncation does not leave a trailing dash", "in": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb", "out": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  ]
+}

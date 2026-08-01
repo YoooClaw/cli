@@ -17,7 +17,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 - **Ships its own daemon** — a local daemon receives notifications, evaluates rules, and connects to Relay, independent of whether the openclaw client is online
 - **Agent-Native** — the bundled [Skill](skills/) works out of the box; agents can call `yoooclaw` commands with zero extra config
 - **Three-tier command system** — Shortcuts (human/AI friendly) → Service Commands (structured) → Raw API (full coverage), pick the granularity you need
-- **Disk-only queries** — notification / recording / image queries read directly from `~/.yoooclaw`, no daemon required
+- **Disk-only queries** — notification / recording / image / captured web-page queries read directly from `~/.yoooclaw`, no daemon required
 - **Unified output contract** — `--format json|pretty|table|ndjson`, success and failure share one channel with predictable structure; local CLI errors return a non-zero exit code, and Raw/daemon HTTP responses should be checked against both `ok` and HTTP status
 - **Credential security** — OS keychain storage by default, multi api-key management, gateway token auth for local ingest
 - **Native Go binary** — a thin npm launcher + platform subpackages, or install the native binary directly; full macOS / Linux / Windows support
@@ -30,6 +30,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 | 🔄 Sync                     | Scan/iterate unprocessed notifications, fetch details by date, commit batches — feeds memory systems       | 🟢     |
 | 🎙️ Recording                | List/query recordings, ASR transcription config (api/model-proxy; local mode deprecated), follow status event stream | 🟢     |
 | 🖼️ Image                    | List/query images, resolve local paths / thumbnails                                                        | 🟢     |
+| 🌐 Web                      | List/search captured web pages, resolve Markdown and storage paths                                         | 🟢     |
 | 💡 Light                    | Send light-effect commands to hardware (segment / preset / rule — pick one), connectivity self-check       | 🟡     |
 | 📐 Lightrule                | CRUD for persistent "notification → light effect" rules, enable / disable                                  | 🟡     |
 | ⏰ Monitor                  | cron-driven scheduled notification monitoring jobs                                                          | 🟡     |
@@ -128,23 +129,24 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 
 ### Built-in Skill (bundled in this repo)
 
-This repo ships a SKILL.md under [skills/](skills/) that teaches agents to call `yoooclaw` commands directly. In the openclaw plugin it is auto-registered via `openclaw.plugin.json`; in the standalone CLI form, use `yoooclaw skills install` to symlink it into the agent's skills discovery directory.
+This repo bundles several Skills under [skills/](skills/) that teach agents to call `yoooclaw` directly. Use `yoooclaw skills install` to copy the embedded Skills into an agent's discovery directory.
 
-| Skill                          | Description                                                                                                                                |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `yoooclaw-notification-query`  | Query/aggregate/summarize phone notifications: "show me recent notifications", "who's contacted me", "summarize the last N notifications". Small batches use `summary`, large batches use `summary-job`; disk-only, no daemon required |
-| `yoooclaw-lightrule-create`    | Create/manage persistent "notification → light effect" rules from natural language; rules are compiled, stored, and evaluated by the cloud Notification Intelligence Service |
-| `yoooclaw-tunnel-debug`        | Debug the phone-side push path: combine auth / daemon / tunnel / gateway status to pinpoint local config, ingest auth, and Relay WebSocket issues (🟡) |
+| Skill                           | Description |
+| ------------------------------- | ----------- |
+| `yoooclaw-context-query`        | The sole query Skill for fresh notifications, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
+| `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
+| `yoooclaw-lightrule-create`     | Creates and manages persistent “notification → light effect” rules through the standalone CLI; retained because this package has no Agent light-rule tools |
+| `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
 
 ```bash
 yoooclaw skills list                 # List Skills bundled with this package
 yoooclaw skills targets              # View supported agent targets and detection results
-yoooclaw skills install              # Auto-detect the sole agent and symlink-install
+yoooclaw skills install              # Auto-detect the sole agent and copy-install
 yoooclaw skills install --agent claude
-yoooclaw skills install --copy       # Copy instead of symlink (use on Windows without admin rights)
+yoooclaw skills install --force      # Refresh bundled Skills and remove merged legacy names
 ```
 
-Symlinking is the default rather than copying: after `yoooclaw update self` upgrades the CLI, the Skill content updates automatically along with it. Restart the agent session after installing so it can be discovered.
+Skills are embedded in the native binary and copied during installation. After upgrading the CLI, rerun `yoooclaw skills install --force`, then restart the agent session.
 
 ## Authentication
 
@@ -243,6 +245,7 @@ Prefixed with `+`, friendly to both humans and AI, with smart defaults and table
 yoooclaw notification +today          # Today's notification summary
 yoooclaw notification +recent         # Notifications from the last hour
 yoooclaw recording +latest            # Details of the most recent recording
+yoooclaw recording +today             # Recordings from today's local calendar day
 yoooclaw light +blink                 # Light-effect connectivity test (red-strobe-3)
 yoooclaw lightrule +on                # Enable all light-effect rules
 yoooclaw tunnel +test                 # Daemon local ingest + auth self-check
@@ -259,13 +262,21 @@ Run `yoooclaw <service> --help` to see all shortcuts for a given service.
 yoooclaw notification search --app WeChat --keyword meeting --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # Chunked summarization for large notification batches: create→next→commit→result
-yoooclaw recording list --status synced
+yoooclaw recording list --status synced [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
+yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
+yoooclaw synced-web-page search "JavaScript" --limit 20
+yoooclaw synced-web-page path <url-hash>
+yoooclaw synced-web-page storage-path
 yoooclaw lightrule create --intent "Flash red when my boss messages me on WeChat"  # Compiled & stored by the cloud service
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
+
+`synced-web-page list` filters the index by `capturedAt`: `--from` is
+inclusive and `--to` is exclusive. Pass ISO 8601 timestamps with an explicit
+timezone.
 
 For ASR language hints, `auto` keeps provider-side detection. Use `zh-TW` for Traditional Chinese in a Taiwan context, or `zh-Hant` when only the Traditional Chinese script preference matters.
 
@@ -329,6 +340,8 @@ yoooclaw --profile work notification +today
 ### Recording & Relay
 
 The standalone daemon uses a Go implementation of recording storage, the state machine, OSS download, and ASR scheduling, and receives the app/cloud's `recordings.result.write` (writing transcripts/summaries, optionally downloading audio) via `RelayClient + RelayDispatcher`.
+New-recording payloads should include `recording.created_at` (or top-level `createdAt` / `created_at`); `transcript.generatedAt` is artifact-generation time and is never used as the recording time.
+Top-level `durationMillis` is truncated down to integer seconds and stored as numeric `duration_sec`; `duration_display` adds a human-readable unit form such as `16s`, `1m 16s`, or `1h 1m 1s`. After the audio is downloaded, the CLI stores `file_size_display` using the Android `Formatter.formatShortFileSize()`-compatible SI short format; the removed `file_size_bytes` field is not emitted.
 
 ```bash
 yoooclaw recording events --since 1h --limit 50

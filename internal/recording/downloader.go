@@ -2,11 +2,15 @@ package recording
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
@@ -32,6 +36,15 @@ type DownloadResult struct {
 	SizeBytes int64         `json:"sizeBytes,omitempty"`
 	Elapsed   time.Duration `json:"-"`
 	Error     string        `json:"error,omitempty"`
+}
+
+type downloadHTTPStatusError struct {
+	Code   int
+	Status string
+}
+
+func (e *downloadHTTPStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d %s", e.Code, e.Status)
 }
 
 // DownloadFile 从 URL 下载文件到 destPath。
@@ -65,11 +78,20 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			return DownloadResult{OK: false, Error: err.Error()}
 		}
 		resp, err := client.Do(req)
+		var fallbackClient *http.Client
+		if err != nil && shouldFallbackDirect(client, req, err) {
+			logger.Warn("[downloader] 本机代理不可用，当前下载降级为直连: " + rawURL)
+			fallbackClient = directHTTPClient(client)
+			resp, err = fallbackClient.Do(req.Clone(ctx))
+		}
 		if err == nil && resp != nil {
 			err = writeDownloadResponse(resp, destPath)
 		}
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
+		}
+		if fallbackClient != nil {
+			fallbackClient.CloseIdleConnections()
 		}
 		cancel()
 
@@ -85,8 +107,10 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 		}
 
 		lastErr = err.Error()
-		_ = os.Remove(destPath)
 		logger.Warn(fmt.Sprintf("[downloader] 下载失败 (attempt %d/%d): %s", attempt, retries, lastErr))
+		if !isRetryableDownloadError(err) {
+			break
+		}
 		if attempt < retries {
 			time.Sleep(backoff * time.Duration(1<<(attempt-1)))
 		}
@@ -96,18 +120,93 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 
 func writeDownloadResponse(resp *http.Response, destPath string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
+		return &downloadHTTPStatusError{Code: resp.StatusCode, Status: resp.Status}
 	}
 	if resp.Body == nil {
 		return fmt.Errorf("响应体为空")
 	}
-	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	dir := filepath.Dir(destPath)
+	if err := fsutil.EnsureDir(dir, fsutil.DirMode); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".audio-*.part")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	tmpPath := f.Name()
+	committed := false
+	defer func() {
 		_ = f.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	_ = f.Chmod(0o600)
+	if _, err := io.Copy(f, resp.Body); err != nil {
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return err
+	}
+	committed = true
+	_ = os.Chmod(destPath, 0o600)
+	return nil
+}
+
+func isRetryableDownloadError(err error) bool {
+	var statusErr *downloadHTTPStatusError
+	if errors.As(err, &statusErr) {
+		// 408/429 可能是临时限流；其余 4xx 重试不会改变结果。
+		return statusErr.Code == http.StatusRequestTimeout ||
+			statusErr.Code == http.StatusTooManyRequests ||
+			statusErr.Code >= 500
+	}
+	return true
+}
+
+func shouldFallbackDirect(client *http.Client, req *http.Request, err error) bool {
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		return false
+	}
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	httpTransport, ok := transport.(*http.Transport)
+	if !ok || httpTransport.Proxy == nil {
+		return false
+	}
+	proxyURL, proxyErr := httpTransport.Proxy(req)
+	if proxyErr != nil || proxyURL == nil {
+		return false
+	}
+	host := strings.TrimSpace(proxyURL.Hostname())
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func directHTTPClient(source *http.Client) *http.Client {
+	transport := source.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	var directTransport http.RoundTripper
+	if base, ok := transport.(*http.Transport); ok {
+		clone := base.Clone()
+		clone.Proxy = nil
+		directTransport = clone
+	} else {
+		directTransport = &http.Transport{Proxy: nil}
+	}
+	return &http.Client{
+		Transport:     directTransport,
+		CheckRedirect: source.CheckRedirect,
+		Jar:           source.Jar,
+	}
 }

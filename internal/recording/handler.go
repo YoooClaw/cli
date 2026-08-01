@@ -77,6 +77,7 @@ func emitRecordingStatus(recordingID string, storage *Storage, logger Logger, no
 	event := StatusEvent{
 		RecordingID:        entry.ID,
 		TransferStatus:     entry.Status,
+		AudioStatus:        entry.AudioStatus,
 		AudioFile:          entry.AudioFile,
 		SrtFile:            entry.SrtFile,
 		TranscriptDataFile: entry.TranscriptDataFile,
