@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -314,8 +315,10 @@ const maxRequestBodyBytes = 64 << 20
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			s.logger.Error(fmt.Sprintf("请求处理异常：%v", rec))
-			writeJSON(w, 500, map[string]any{"ok": false, "error": map[string]any{"code": "INTERNAL_ERROR", "message": fmt.Sprintf("%v", rec)}})
+			// 只把 panic 详情（可能带内部路径 / 数据结构）落日志；daemon 可经 Relay
+			// 或非 loopback 绑定被外部访问到，回给调用方的必须是不泄露信息的通用文案。
+			s.logger.Error(fmt.Sprintf("请求处理异常：%v\n%s", rec, debug.Stack()))
+			writeJSON(w, 500, map[string]any{"ok": false, "error": map[string]any{"code": "INTERNAL_ERROR", "message": "内部错误"}})
 		}
 	}()
 	if r.Body != nil {
