@@ -68,10 +68,17 @@ A single-file Go executable — lighter cold-start and resource footprint than t
 # Auto-detect platform, download, verify sha256, install to ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh | sh
 
+# Opt in if you want the installer to add its bin directory to your shell PATH
+curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh \
+  | sh -s -- --modify-path
+
 # Pin a version / install directory / force overwrite
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh \
   | sh -s -- --version 0.2.0-beta.2 --dir ~/bin --force
 ```
+
+The installer does not modify shell startup files by default. It only updates PATH when
+`--modify-path` is explicitly supplied; `--no-modify-path` remains accepted for compatibility.
 
 Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`. The Windows Go binary currently ships only via the npm platform subpackage. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
 

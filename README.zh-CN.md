@@ -68,10 +68,17 @@ yc --help
 # 自动检测平台、下载、校验 sha256、写到 ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh | sh
 
+# 如需安装器自动把 bin 目录加入 shell PATH，请显式开启
+curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh \
+  | sh -s -- --modify-path
+
 # 指定版本 / 安装目录 / 覆盖
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh \
   | sh -s -- --version 0.2.0-beta.2 --dir ~/bin --force
 ```
+
+安装器默认不会修改 shell 启动文件；只有显式传入 `--modify-path` 才会写入 PATH。
+`--no-modify-path` 仍保留，用于兼容已有调用。
 
 直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。Windows Go binary 目前随 npm 平台子包发布。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 

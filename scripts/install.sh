@@ -11,13 +11,14 @@
 #   --beta          未指定 --version 时安装最新预发布版
 #   --dir <path>    安装目录（默认优先 ~/.local/bin，其次为可写的 /usr/local/bin）
 #   --force         覆盖已存在二进制
-#   --no-modify-path 不自动将安装目录写入 shell 配置
+#   --modify-path   将安装目录写入 shell 配置（默认不修改）
+#   --no-modify-path 不修改 shell 配置（默认行为，兼容旧调用）
 #
 # 行为：
 #   - 检测 OS/Arch，下载 yoooclaw-<os>-<arch>（OSS 渲染版从 OSS 下载，源码版从 GitHub Release）
 #   - 校验 sha256（从同目录 checksums.txt 取）
 #   - 写入 <dir>/yoooclaw，并 symlink yc -> yoooclaw
-#   - 幂等写入当前 shell 配置，使新终端可直接执行 yoooclaw
+#   - 默认不修改 shell 配置；仅传入 --modify-path 时幂等写入 PATH
 
 set -eu
 
@@ -31,7 +32,7 @@ VERSION=""
 INSTALL_DIR=""
 FORCE=0
 BETA=0
-MODIFY_PATH=1
+MODIFY_PATH=0
 
 err() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[34m==>\033[0m %s\n' "$*"; }
@@ -43,9 +44,10 @@ while [ $# -gt 0 ]; do
     --beta)    BETA=1; shift ;;
     --dir)     INSTALL_DIR="${2:?--dir 需要值}"; shift 2 ;;
     --force)   FORCE=1; shift ;;
+    --modify-path) MODIFY_PATH=1; shift ;;
     --no-modify-path) MODIFY_PATH=0; shift ;;
     -h|--help)
-      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) err "未知参数: $1" ;;
@@ -88,23 +90,33 @@ else
   if [ -z "$VERSION" ]; then
     info "查询最新 release tag…"
     # 优先用 GitHub API；不带 token 也能匿名用，但有 60 req/h 限制
-    api_url="https://api.github.com/repos/${REPO}/releases"
+    api_url="https://api.github.com/repos/${REPO}/releases?per_page=100"
+    # 只截取 tag_name 字段，再用 cut 取 JSON 字符串值。这里刻意不用
+    # sed 的 \s：macOS 自带的 BSD sed 不支持它，解析失败时会把整行 JSON
+    # 原样传下去，最终污染下载 URL。
+    release_tags=$(curl -fsSL "$api_url" \
+      | grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"cli-v[^"]+"' \
+      | cut -d '"' -f 4 || true)
     if [ "$BETA" -eq 1 ]; then
-      latest_tag=$(curl -fsSL "$api_url" \
-        | grep -E '"tag_name":\s*"cli-v' \
-        | head -1 \
-        | sed -E 's/.*"tag_name":\s*"(cli-v[^"]+)".*/\1/')
+      latest_tag=$(printf '%s\n' "$release_tags" \
+        | grep -E -- '-(beta|alpha|rc)([.-]|$)' \
+        | head -1 || true)
     else
-      latest_tag=$(curl -fsSL "$api_url" \
-        | grep -E '"tag_name":\s*"cli-v' \
-        | grep -v 'beta\|alpha\|rc' \
-        | head -1 \
-        | sed -E 's/.*"tag_name":\s*"(cli-v[^"]+)".*/\1/')
+      latest_tag=$(printf '%s\n' "$release_tags" \
+        | grep -Ev -- '-(beta|alpha|rc)([.-]|$)' \
+        | head -1 || true)
     fi
     [ -z "$latest_tag" ] && err "无法解析最新 tag（API 限流？请用 --version 显式指定）"
     VERSION="${latest_tag#cli-v}"
   fi
   BASE="https://github.com/${REPO}/releases/download/cli-v${VERSION}"
+fi
+
+# 防止 API 响应或显式参数中的异常文本进入下载 URL。接受正式 semver、
+# 预发布版本和 build metadata（例如 0.7.2-beta.1 / 0.7.2+build.3）。
+if ! printf '%s\n' "$VERSION" \
+  | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.+-]*)?$'; then
+  err "无效版本号: $VERSION"
 fi
 
 info "目标 ${ASSET}  版本 ${VERSION}"
@@ -173,7 +185,7 @@ escape_double_quoted() {
 
 configure_path() {
   if [ "$MODIFY_PATH" -ne 1 ]; then
-    warn "已跳过 PATH 自动配置（--no-modify-path）"
+    warn "未修改 shell PATH 配置（如需自动配置，请传 --modify-path）"
     return
   fi
 
