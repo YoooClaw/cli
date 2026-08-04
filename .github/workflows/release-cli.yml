@@ -371,6 +371,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # npm 已限制自动化 token 做账号/权限类变更（2FA bypass 收紧），
+          # `npm access set status=public` 会返回 403。发布本身用 --access public
+          # 就已经是公开的，这里只作为兜底，失败不阻塞发布。
+          ensure_public() {
+            npm access set status=public "$1" \
+              || echo "::warning::npm access set status=public $1 失败（token 无权限），已忽略"
+          }
+
           publish_pkg() {
             local dir="$1"
             local name
@@ -380,13 +388,13 @@ jobs:
 
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "::notice::$name@$version 已存在，跳过"
-              npm access set status=public "$name"
+              ensure_public "$name"
               return
             fi
 
             echo "::notice::发布 $name@$version --tag $NPM_TAG"
             npm publish "./$dir" --access public --tag "$NPM_TAG"
-            npm access set status=public "$name"
+            ensure_public "$name"
           }
 
           for dir in dist-npm/cli-*; do
