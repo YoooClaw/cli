@@ -17,7 +17,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 - **自带守护进程** —— 本地 daemon 收通知、跑规则、连 Relay，不依赖 openclaw 客户端在线
 - **Agent-Native** —— 随包 [Skill](skills/) 开箱即用，Agent 零额外配置直接调 `yoooclaw` 命令
 - **三层命令体系** —— Shortcuts（人/AI 友好）→ Service Commands（结构化）→ Raw API（全覆盖），按粒度选择
-- **纯读磁盘的查询** —— 通知 / 录音 / 图片 / 已同步网页查询直接读 `~/.yoooclaw`，不需要 daemon 在跑
+- **纯读磁盘的查询** —— 通知 / 语音输入 / 录音 / 图片 / 已同步网页查询直接读 `~/.yoooclaw`，不需要 daemon 在跑
 - **统一输出契约** —— `--format json|pretty|table|ndjson`，成功失败同通道、结构可预测；本地 CLI 错误返回非零退出码，Raw/daemon HTTP 响应请同时检查 `ok` / HTTP status
 - **凭据安全** —— OS keychain 优先存储，多 api-key 管理，gateway token 鉴权本地 ingest
 - **Go 原生二进制** —— npm 薄 launcher + 平台子包，或直接安装原生 binary；macOS / Linux / Windows 全平台
@@ -28,6 +28,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 | --------------------- | ------------------------------------------------------------ | ------ |
 | 📱 通知 Notification  | 按时间/应用/发送人/关键词查询，今日/最近摘要，多维聚合统计，大批量分片总结 | 🟢     |
 | 🔄 同步 Sync          | 扫描/迭代未处理通知、按日期取详情、提交批次，供记忆系统消费   | 🟢     |
+| 🗣️ 语音输入 Voice     | 列举/搜索本地口述历史、解析 App 名称、检查可选音频、查询权威用量统计 | 🟢     |
 | 🎙️ 录音 Recording     | 列举与查询录音、ASR 转写配置（api/model-proxy；local 已停用）、状态事件流跟随 | 🟢     |
 | 🖼️ 图片 Image         | 列举与查询图片、本地路径 / 缩略图解析                        | 🟢     |
 | 🌐 网页 Web            | 列举与搜索已同步网页、解析 Markdown 文件与存储目录路径       | 🟢     |
@@ -140,7 +141,7 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 
 | Skill                           | 说明 |
 | ------------------------------- | ---- |
-| `yoooclaw-context-query`        | 查询最新通知、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
+| `yoooclaw-context-query`        | 查询最新通知、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
 | `yoooclaw-lightrule-create`     | 通过独立 CLI 创建和管理「通知 → 灯效」持久规则；CLI 包没有 Agent 灯效规则工具，因此继续保留 |
 | `yoooclaw-tunnel-debug`         | 排查鉴权、daemon、ingest、Relay WebSocket 与手机同步链路（🟡） |
@@ -255,6 +256,8 @@ yoooclaw notification +today          # 今日通知摘要
 yoooclaw notification +recent         # 最近 1 小时通知
 yoooclaw recording +latest            # 最新一条录音详情
 yoooclaw recording +today             # 本地自然日内的今日录音
+yoooclaw voice +latest                # 最新一条已保存的语音输入
+yoooclaw voice +today                 # 本地自然日内的语音输入历史
 yoooclaw light +blink                 # 灯效连通性测试（red-strobe-3）
 yoooclaw lightrule +on                # 启用所有灯效规则
 yoooclaw tunnel +test                 # daemon 本地 ingest + 鉴权自检
@@ -275,6 +278,10 @@ yoooclaw recording list --status synced [--from <ISO_TIME_OR_DATE>] [--to <ISO_T
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
+yoooclaw voice list [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
+yoooclaw voice search "项目" --app "飞书"
+yoooclaw voice apps
+yoooclaw voice stats [--from <DATE>] [--to <DATE>]
 yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>
@@ -287,6 +294,8 @@ yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"
 `--to` 不包含终点；时间参数使用带明确时区的 ISO 8601 格式。
 
 ASR 语言提示中，`auto` 表示保留 provider 侧自动识别；台湾繁体中文场景可使用 `zh-TW`，仅需指定繁体中文脚本时可使用 `zh-Hant`。
+
+不带任何筛选条件的 `voice list` 默认返回滚动最近 72 小时，并在 JSON 中明确提示；查询全部已保存历史请使用 `voice list --all`。命令没有默认条数上限。
 
 ### 3. Raw API
 
@@ -393,6 +402,7 @@ dist-native/yoooclaw-darwin-arm64 --help
 | [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
 | [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | Relay 入站帧到 daemon HTTP/gateway 的进程内分发 |
 | [internal/recording](internal/recording)            | 录音 OSS 下载、状态机、ASR、转写稿存储 |
+| [internal/voice](internal/voice)                    | 本地语音输入历史与用量的 SQLite/WAL 只读查询 |
 | [internal/image](internal/image)                    | 图片 OSS 下载与索引 |
 | [internal/light](internal/light)                    | 灯效线协议、预设、发送器 |
 | [internal/skills](internal/skills)                  | 内置 Skill 列举 / 安装到 Agent skills 目录 |

@@ -17,7 +17,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 - **Ships its own daemon** — a local daemon receives notifications, evaluates rules, and connects to Relay, independent of whether the openclaw client is online
 - **Agent-Native** — the bundled [Skill](skills/) works out of the box; agents can call `yoooclaw` commands with zero extra config
 - **Three-tier command system** — Shortcuts (human/AI friendly) → Service Commands (structured) → Raw API (full coverage), pick the granularity you need
-- **Disk-only queries** — notification / recording / image / captured web-page queries read directly from `~/.yoooclaw`, no daemon required
+- **Disk-only queries** — notification / voice-input / recording / image / captured web-page queries read directly from `~/.yoooclaw`, no daemon required
 - **Unified output contract** — `--format json|pretty|table|ndjson`, success and failure share one channel with predictable structure; local CLI errors return a non-zero exit code, and Raw/daemon HTTP responses should be checked against both `ok` and HTTP status
 - **Credential security** — OS keychain storage by default, multi api-key management, gateway token auth for local ingest
 - **Native Go binary** — a thin npm launcher + platform subpackages, or install the native binary directly; full macOS / Linux / Windows support
@@ -28,6 +28,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 | -------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ |
 | 📱 Notification            | Query by time/app/sender/keyword, today/recent summaries, multi-dimension aggregate stats, chunked summarization for large batches | 🟢     |
 | 🔄 Sync                     | Scan/iterate unprocessed notifications, fetch details by date, commit batches — feeds memory systems       | 🟢     |
+| 🗣️ Voice input              | List/search local dictation history, resolve App names, inspect optional audio, query authoritative usage stats | 🟢     |
 | 🎙️ Recording                | List/query recordings, ASR transcription config (api/model-proxy; local mode deprecated), follow status event stream | 🟢     |
 | 🖼️ Image                    | List/query images, resolve local paths / thumbnails                                                        | 🟢     |
 | 🌐 Web                      | List/search captured web pages, resolve Markdown and storage paths                                         | 🟢     |
@@ -140,7 +141,7 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 
 | Skill                           | Description |
 | ------------------------------- | ----------- |
-| `yoooclaw-context-query`        | The sole query Skill for fresh notifications, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
+| `yoooclaw-context-query`        | The sole query Skill for fresh notifications, voice input, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
 | `yoooclaw-lightrule-create`     | Creates and manages persistent “notification → light effect” rules through the standalone CLI; retained because this package has no Agent light-rule tools |
 | `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
@@ -253,6 +254,8 @@ yoooclaw notification +today          # Today's notification summary
 yoooclaw notification +recent         # Notifications from the last hour
 yoooclaw recording +latest            # Details of the most recent recording
 yoooclaw recording +today             # Recordings from today's local calendar day
+yoooclaw voice +latest                # Most recent saved voice-input item
+yoooclaw voice +today                 # Today's saved voice-input history
 yoooclaw light +blink                 # Light-effect connectivity test (red-strobe-3)
 yoooclaw lightrule +on                # Enable all light-effect rules
 yoooclaw tunnel +test                 # Daemon local ingest + auth self-check
@@ -273,6 +276,10 @@ yoooclaw recording list --status synced [--from <ISO_TIME_OR_DATE>] [--to <ISO_T
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
+yoooclaw voice list [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
+yoooclaw voice search "project" --app "ChatGPT"
+yoooclaw voice apps
+yoooclaw voice stats [--from <DATE>] [--to <DATE>]
 yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>
@@ -286,6 +293,8 @@ inclusive and `--to` is exclusive. Pass ISO 8601 timestamps with an explicit
 timezone.
 
 For ASR language hints, `auto` keeps provider-side detection. Use `zh-TW` for Traditional Chinese in a Taiwan context, or `zh-Hant` when only the Traditional Chinese script preference matters.
+
+An unfiltered `voice list` returns the rolling last 72 hours and includes an explicit notice in JSON. Use `voice list --all` for all saved history. There is no default row-count limit.
 
 ### 3. Raw API
 
@@ -392,6 +401,7 @@ Full documentation lives at [yc-docs/src/cli](https://github.com/YoooClaw/yc-doc
 | [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
 | [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | in-process dispatch from inbound Relay frames to daemon HTTP/gateway |
 | [internal/recording](internal/recording)                | recording OSS download, state machine, ASR, transcript storage |
+| [internal/voice](internal/voice)                        | read-only SQLite/WAL queries for local voice-input history and usage |
 | [internal/image](internal/image)                        | image OSS download and indexing |
 | [internal/light](internal/light)                        | light-effect wire protocol, presets, sender |
 | [internal/skills](internal/skills)                      | built-in Skill listing / installation into agent skills directories |
