@@ -137,6 +137,42 @@ func TestRecordingReferencesDoNotFallbackDateRangesToLatest(t *testing.T) {
 	}
 }
 
+func TestVoiceInputReferenceRoutesJustNowWithoutLatestFallback(t *testing.T) {
+	t.Parallel()
+	skill, err := fs.ReadFile(
+		assets.SkillsFS,
+		"skills/yoooclaw-context-query/SKILL.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "references/voice-input.md") {
+		t.Fatal("context-query skill does not route voice input to its reference")
+	}
+	reference, err := fs.ReadFile(
+		assets.SkillsFS,
+		"skills/yoooclaw-context-query/references/voice-input.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(reference)
+	for _, required := range []string{
+		"我刚才说了什么",
+		"one hour",
+		"voice list --from <FROM> --to <TO>",
+		"Do not use `voice +latest`",
+		"voice apps --format json",
+		"never `app_id`",
+		"default_range_applied: true",
+		"voice list --all",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("voice input reference missing %q", required)
+		}
+	}
+}
+
 // isolateHome 把 HOME / CODEX_HOME 指向临时目录，隔离 agent 探测。
 func isolateHome(t *testing.T) string {
 	t.Helper()
