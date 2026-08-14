@@ -229,7 +229,7 @@ func RunTranscriptionWorkflow(storage *Storage, entry Entry, cfg AsrConfig, logg
 	logger.Info("[asr] 转写 JSON 已写入: " + filepath.Join(storage.TranscriptDataDir(), transcriptDataFilename))
 
 	markdown := BuildTranscriptMarkdown(result, entry.Metadata.Markers, entry.Metadata.Name, entry.Metadata.DurationSec, entry.Metadata.CreatedAt)
-	transcriptFilename := TranscriptFilename(entry.ID, title)
+	transcriptFilename := TranscriptFilename(entry.ID, title, entry.Metadata.CreatedAt)
 	if err := fsutil.WriteAtomic(filepath.Join(storage.TranscriptsDir(), transcriptFilename), []byte(markdown), fsutil.ConfigFileMode); err != nil {
 		return WorkflowResult{OK: false, Error: err.Error()}
 	}
@@ -237,7 +237,7 @@ func RunTranscriptionWorkflow(storage *Storage, entry Entry, cfg AsrConfig, logg
 
 	summaryFilename := ""
 	if strings.TrimSpace(summary) != "" {
-		summaryFilename = SummaryFilename(entry.ID)
+		summaryFilename = SummaryFilename(entry.ID, title, entry.Metadata.CreatedAt)
 		if err := fsutil.WriteAtomic(filepath.Join(storage.SummariesDir(), summaryFilename), []byte(strings.TrimSpace(summary)), fsutil.ConfigFileMode); err != nil {
 			return WorkflowResult{OK: false, Error: err.Error()}
 		}

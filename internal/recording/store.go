@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
@@ -658,16 +659,32 @@ func AudioFilename(recordingID, ossURL string) string {
 func TranscriptDataFilename(recordingID string) string { return recordingID + ".json" }
 
 // TranscriptFilename 生成转写 Markdown 文件名。
-func TranscriptFilename(recordingID, title string) string {
-	safe := sanitizeFilename(title)
-	if safe != "" {
-		return recordingID + "_" + safe + ".md"
-	}
-	return recordingID + ".md"
+func TranscriptFilename(recordingID, title, createdAt string) string {
+	return artifactFilename(recordingID, title, createdAt)
 }
 
 // SummaryFilename 生成摘要文件名。
-func SummaryFilename(recordingID string) string { return recordingID + ".md" }
+func SummaryFilename(recordingID, title, createdAt string) string {
+	return artifactFilename(recordingID, title, createdAt)
+}
+
+// artifactFilename 按 <YYYYMMDDHH>_<标题>_<ID>.md 组装文件名：时间和标题在前，
+// 按文件名排序即按时间排序，搜索时打头的也是有区分度的字段；ID 收尾，仍能把文件
+// 对回 index.json 里的条目。时间戳取宿主本地时区，小时粒度用于区分同一天的多场会议。
+//
+// 注意这只是写入时的命名，读取一律以 entry.TranscriptFile / entry.SummaryFile 为准，
+// 没有任何地方反解析文件名。时间无法解析或标题为空时各自省略该段，最差退回 <ID>.md。
+func artifactFilename(recordingID, title, createdAt string) string {
+	parts := make([]string, 0, 3)
+	if parsed, ok := parseRecordingTime(createdAt); ok {
+		parts = append(parts, parsed.In(time.Local).Format("2006010215"))
+	}
+	if safe := sanitizeFilename(title); safe != "" {
+		parts = append(parts, safe)
+	}
+	parts = append(parts, recordingID)
+	return strings.Join(parts, "_") + ".md"
+}
 
 // AudioFilePath 返回音频文件绝对路径。
 func (s *Storage) AudioFilePath(recordingID, ossURL string) string {
@@ -699,11 +716,20 @@ func validExt(ext string) bool {
 
 var badFilenameChars = strings.NewReplacer("/", "", "\\", "", ":", "", "*", "", "?", "", `"`, "", "<", "", ">", "", "|", "")
 
+// sanitizeFilename 剥掉文件名非法字符和控制字符，并按码点（而非字节）截断，
+// 避免把多字节字符切成半个。60 码点即使全是 CJK 也约 180 字节，加上时间戳、ID
+// 和分隔符仍在 255 字节的文件名上限内。
 func sanitizeFilename(s string) string {
 	out := strings.TrimSpace(badFilenameChars.Replace(s))
-	runes := []rune(out)
-	if len(runes) > 20 {
-		runes = runes[:20]
+	runes := make([]rune, 0, len(out))
+	for _, r := range out {
+		if unicode.IsControl(r) {
+			continue
+		}
+		runes = append(runes, r)
+		if len(runes) == 60 {
+			break
+		}
 	}
 	return strings.TrimSpace(string(runes))
 }

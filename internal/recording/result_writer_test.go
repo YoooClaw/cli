@@ -63,6 +63,18 @@ func TestResultWriteTranscriptAndSummary(t *testing.T) {
 		t.Fatalf("missing stored files: %+v", result.Stored)
 	}
 
+	// 转写和摘要落在各自目录，但用同一个 <时间>_<标题>_<ID>.md 文件名：
+	// 摘要写入时从索引读回 transcript 刚落下的标题。
+	stamp := time.Date(2026, 6, 9, 20, 30, 0, 0, time.FixedZone("CST", 8*3600)).
+		In(time.Local).Format("2006010215")
+	wantName := stamp + "_产品方案讨论_rec_1.md"
+	if got := filepath.Base(result.Stored.TranscriptFile); got != wantName {
+		t.Fatalf("transcript filename = %q, want %q", got, wantName)
+	}
+	if got := filepath.Base(result.Stored.SummaryFile); got != wantName {
+		t.Fatalf("summary filename = %q, want %q", got, wantName)
+	}
+
 	// transcript-data 落盘并标记 delivery=result-write
 	raw, err := os.ReadFile(filepath.Join(storage.dir, result.Stored.TranscriptDataFile))
 	if err != nil {
@@ -96,6 +108,54 @@ func TestResultWriteTranscriptAndSummary(t *testing.T) {
 	}
 	if len(events) == 0 || events[len(events)-1].TransferStatus != StatusTranscribed {
 		t.Fatalf("missing transcribed status event: %+v", events)
+	}
+}
+
+func TestResultWriteReadsRenamedSummaryFile(t *testing.T) {
+	t.Parallel()
+	storage := newResultStorage(t)
+	if _, err := storage.Ingest("rec_2", Metadata{Name: "会议", CreatedAt: "2026-06-09T20:30:00+08:00"}, "phone-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_2",
+		Summary:     &ResultSummary{Markdown: "# 总结\n\n- 摘要正文。"},
+	}, storage, testLogger{t}, SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 摘要文件改名（磁盘 + 索引），文件名不再是 ID 的纯函数。
+	renamed := "rec_2_产品方案讨论.md"
+	entry, _ := storage.FindByID("rec_2")
+	if err := os.Rename(filepath.Join(storage.dir, entry.SummaryFile), filepath.Join(storage.SummariesDir(), renamed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetSummaryFile("rec_2", renamed); err != nil {
+		t.Fatal(err)
+	}
+
+	// 第二次只写 transcript，摘要正文要从索引记录的路径读回，而不是按 ID 重算。
+	var events []StatusEvent
+	if _, err := HandleRecordingResultWrite(ResultWriteParams{
+		RecordingID: "rec_2",
+		Transcript: &ResultTranscript{
+			Title:    "产品方案讨论",
+			Segments: []ResultTranscriptSegment{{Text: "第一段。", StartMS: ptrF(0), EndMS: ptrF(1000)}},
+		},
+	}, storage, testLogger{t}, SyncOptions{
+		NotifyStatus: func(e StatusEvent) { events = append(events, e) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Fatal("missing status event")
+	}
+	last := events[len(events)-1]
+	if !strings.Contains(last.Summary, "摘要正文") {
+		t.Fatalf("summary not read from renamed file: %q", last.Summary)
+	}
+	if last.SummaryFile != summariesDirName+"/"+renamed {
+		t.Fatalf("unexpected summaryFile: %q", last.SummaryFile)
 	}
 }
 
