@@ -34,6 +34,7 @@ func newRootCmd() *cobra.Command {
 		newNotificationCmd(),
 		newSyncCmd(),
 		newRecordingCmd(),
+		newVoiceCmd(),
 		newImageCmd(),
 		newSyncedWebPageCmd(),
 		newMonitorCmd(),
