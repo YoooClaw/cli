@@ -3,7 +3,10 @@ package recording
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 func newStore(t *testing.T) *Storage {
@@ -298,5 +301,68 @@ func TestLoadIndexMarksMissingAudioForRecovery(t *testing.T) {
 	}
 	if got := storage.ListMissingAudio(); len(got) != 1 || got[0].ID != "r1" {
 		t.Fatalf("missing audio list: %+v", got)
+	}
+}
+
+func TestArtifactFilenameIsTimeFirst(t *testing.T) {
+	t.Parallel()
+	// 用 time.Date 独立算出期望值，不复用 artifactFilename 自己的解析逻辑，
+	// 同时不依赖跑测试的机器处在哪个时区。
+	stamp := time.Date(2026, 6, 9, 20, 30, 0, 0, time.FixedZone("CST", 8*3600)).
+		In(time.Local).Format("2006010215")
+
+	cases := []struct {
+		name      string
+		id        string
+		title     string
+		createdAt string
+		want      string
+	}{
+		{"完整字段", "rec_1", "产品方案讨论", "2026-06-09T20:30:00+08:00", stamp + "_产品方案讨论_rec_1.md"},
+		{"无标题退化", "rec_1", "  ", "2026-06-09T20:30:00+08:00", stamp + "_rec_1.md"},
+		{"时间不可解析退化", "rec_1", "产品方案讨论", "not-a-time", "产品方案讨论_rec_1.md"},
+		{"两者都缺退回裸 ID", "rec_1", "", "", "rec_1.md"},
+		{"非法字符被剥掉", "rec_1", `a/b\c:d*e?f"g<h>i|j`, "2026-06-09T20:30:00+08:00", stamp + "_abcdefghij_rec_1.md"},
+		{"控制字符被剥掉", "rec_1", "上半\n下半\t尾", "2026-06-09T20:30:00+08:00", stamp + "_上半下半尾_rec_1.md"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := TranscriptFilename(c.id, c.title, c.createdAt); got != c.want {
+				t.Fatalf("TranscriptFilename = %q, want %q", got, c.want)
+			}
+			if got := SummaryFilename(c.id, c.title, c.createdAt); got != c.want {
+				t.Fatalf("SummaryFilename = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestArtifactFilenameStaysWithinNameLimit(t *testing.T) {
+	t.Parallel()
+	// 全 CJK 标题按码点截断到 60，且整体不越过 255 字节的文件名上限。
+	name := TranscriptFilename(
+		"1f2e3d4c-1234-5678-9abc-def012345678",
+		strings.Repeat("会", 200),
+		"2026-06-09T20:30:00+08:00",
+	)
+	title := strings.TrimSuffix(name, ".md")
+	title = title[strings.Index(title, "_")+1 : strings.LastIndex(title, "_")]
+	if got := len([]rune(title)); got != 60 {
+		t.Fatalf("title truncated to %d code points, want 60", got)
+	}
+	if len(name) > 255 {
+		t.Fatalf("filename is %d bytes, over the 255-byte limit: %s", len(name), name)
+	}
+}
+
+func TestSanitizeFilenameDoesNotSplitMultibyte(t *testing.T) {
+	t.Parallel()
+	// 按字节截断会把 4 字节字符切成半个，产生非法 UTF-8；按码点截断不会。
+	got := sanitizeFilename(strings.Repeat("🎧", 80))
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitized title is not valid UTF-8: %q", got)
+	}
+	if n := len([]rune(got)); n != 60 {
+		t.Fatalf("got %d code points, want 60", n)
 	}
 }

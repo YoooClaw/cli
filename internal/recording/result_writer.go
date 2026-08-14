@@ -323,7 +323,7 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 	if strings.TrimSpace(markdown) == "" {
 		markdown = buildResultTranscriptMarkdown(meta, title, text, segments)
 	}
-	mdName := TranscriptFilename(recordingID, title)
+	mdName := TranscriptFilename(recordingID, title, meta.CreatedAt)
 	if err := fsutil.WriteAtomic(filepath.Join(storage.TranscriptsDir(), mdName), []byte(ensureTrailingNewline(markdown)), fsutil.ConfigFileMode); err != nil {
 		return "", nil, err
 	}
@@ -342,7 +342,10 @@ func writeResultSummary(recordingID string, sm ResultSummary, storage *Storage, 
 	if strings.TrimSpace(markdown) == "" {
 		return "", nil
 	}
-	name := SummaryFilename(recordingID)
+	// 摘要文件名要带标题和时间，而这两者都在索引条目上：transcript 先写，SetTitle
+	// 已经落过标题；只写摘要时回退到录音名。查不到条目就退化成裸 ID 命名。
+	entry, _ := storage.FindByID(recordingID)
+	name := SummaryFilename(recordingID, firstNonEmpty(entry.Title, entry.Metadata.Name), entry.Metadata.CreatedAt)
 	if err := fsutil.WriteAtomic(filepath.Join(storage.SummariesDir(), name), []byte(ensureTrailingNewline(markdown)), fsutil.ConfigFileMode); err != nil {
 		return "", err
 	}
@@ -563,8 +566,14 @@ func appendSummarySection(lines *[]string, title string, value any) {
 	*lines = append(*lines, "")
 }
 
+// readSummaryFile 以索引里记录的 entry.SummaryFile 为准，而不是按 ID 重算文件名，
+// 这样摘要文件改名后仍能读到内容。
 func readSummaryFile(storage *Storage, recordingID string) string {
-	data, err := os.ReadFile(filepath.Join(storage.SummariesDir(), SummaryFilename(recordingID)))
+	entry, ok := storage.FindByID(recordingID)
+	if !ok || entry.SummaryFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(storage.dir, entry.SummaryFile))
 	if err != nil {
 		return ""
 	}
