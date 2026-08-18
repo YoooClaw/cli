@@ -49,8 +49,7 @@ func PrecheckStartFor(p paths.Paths, opts StartOpts) error {
 // 探测失败时必须 fail closed：无法证明插件未持锁就启动 standalone daemon，
 // 会重新引入双写与双 Relay consumer。
 func checkWriterLock(p paths.Paths) error {
-	path := filepath.Join(p.Dir, writerLockFileName)
-	held, err := probeWriterFileLock(path)
+	held, owner, err := WriterLockStatus(p)
 	if err != nil {
 		return errs.New(errs.CodeStorageUnavailable, "无法检查 hermes 插件写者锁："+err.Error()).
 			WithHint("检查 writer.lock 的权限后重试；在锁状态未知时不会启动 standalone daemon")
@@ -59,8 +58,21 @@ func checkWriterLock(p paths.Paths) error {
 		return nil
 	}
 	return errs.New(errs.CodeDaemonDisabledByPlugin,
-		"通知存储由 "+writerLockOwnerHint(path)+" 独占，standalone daemon 已禁用").
+		"通知存储由 "+owner+" 独占，standalone daemon 已禁用").
 		WithHint("停用 hermes 插件后重试；插件运行期间的通知采集由插件直写完成")
+}
+
+// WriterLockStatus reports whether the profile writer lock is currently held
+// and returns the diagnostic owner stored beside the OS lock. Installers use
+// this to perform an explicit Hermes -> standalone ownership handoff without
+// guessing from a stale JSON file.
+func WriterLockStatus(p paths.Paths) (held bool, owner string, err error) {
+	path := filepath.Join(p.Dir, writerLockFileName)
+	held, err = probeWriterFileLock(path)
+	if err != nil {
+		return false, "", err
+	}
+	return held, writerLockOwnerHint(path), nil
 }
 
 // writerLockOwnerHint 读取锁文件元数据拼诊断信息；内容仅供展示，

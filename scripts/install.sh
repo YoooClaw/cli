@@ -11,6 +11,8 @@
 #   --beta          未指定 --version 时安装最新预发布版
 #   --dir <path>    安装目录（默认优先 ~/.local/bin，其次为可写的 /usr/local/bin）
 #   --force         覆盖已存在二进制
+#   --activate      安装后明确将 Relay owner 切换到 CLI（默认保留当前 owner）
+#   --hermes-profile <name>  指定需要停用 YoooClaw 插件的 Hermes profile
 #   --modify-path   将安装目录写入 shell 配置（默认不修改）
 #   --no-modify-path 不修改 shell 配置（默认行为，兼容旧调用）
 #
@@ -18,6 +20,8 @@
 #   - 检测 OS/Arch，下载 yoooclaw-<os>-<arch>（OSS 渲染版从 OSS 下载，源码版从 GitHub Release）
 #   - 校验 sha256（从同目录 checksums.txt 取）
 #   - 写入 <dir>/yoooclaw，并 symlink yc -> yoooclaw
+#   - 默认保留当前 Relay owner；CLI daemon 原本在运行时，更新后恢复原 profile
+#   - 仅 --activate 会停用 Hermes 的 YoooClaw 插件并切换到 CLI owner
 #   - 默认不修改 shell 配置；仅传入 --modify-path 时幂等写入 PATH
 
 set -eu
@@ -33,6 +37,15 @@ INSTALL_DIR=""
 FORCE=0
 BETA=0
 MODIFY_PATH=0
+ACTIVATE_OWNER=0
+HERMES_PROFILE=""
+STOPPED_PROFILES=""
+OLD_CLI=""
+HANDOFF_PENDING=0
+
+if [ "${YOOOCLAW_ACTIVATE_OWNER:-}" = "cli" ]; then
+  ACTIVATE_OWNER=1
+fi
 
 err() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[34m==>\033[0m %s\n' "$*"; }
@@ -44,10 +57,12 @@ while [ $# -gt 0 ]; do
     --beta)    BETA=1; shift ;;
     --dir)     INSTALL_DIR="${2:?--dir 需要值}"; shift 2 ;;
     --force)   FORCE=1; shift ;;
+    --activate) ACTIVATE_OWNER=1; shift ;;
+    --hermes-profile) HERMES_PROFILE="${2:?--hermes-profile 需要值}"; shift 2 ;;
     --modify-path) MODIFY_PATH=1; shift ;;
     --no-modify-path) MODIFY_PATH=0; shift ;;
     -h|--help)
-      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) err "未知参数: $1" ;;
@@ -138,9 +153,60 @@ if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ]; then
   err "$TARGET 已存在；用 --force 覆盖，或先卸载旧版本"
 fi
 
+# ---------- stop existing standalone daemons ----------
+# Stop only daemons that are actually running before replacing the executable.
+# Their profile list is restored after a normal update. A Hermes-owned runtime
+# has no running standalone daemon, so it is left completely untouched.
+stop_existing_daemons() {
+  if [ -x "$TARGET" ]; then
+    OLD_CLI="$TARGET"
+  else
+    OLD_CLI=$(command -v yoooclaw 2>/dev/null || true)
+  fi
+  [ -n "$OLD_CLI" ] || return 0
+
+  runtime_root=${YOOOCLAW_HOME:-$HOME/.yoooclaw}
+  found_profile=0
+  for profile_dir in "$runtime_root"/profiles/*; do
+    [ -d "$profile_dir" ] || continue
+    found_profile=1
+    profile_name=${profile_dir##*/}
+    if "$OLD_CLI" --profile "$profile_name" daemon status >/dev/null 2>&1; then
+      "$OLD_CLI" --profile "$profile_name" daemon stop >/dev/null 2>&1 \
+        || err "无法停止旧 CLI daemon: $profile_name"
+      STOPPED_PROFILES="$STOPPED_PROFILES $profile_name"
+      info "已停止旧 CLI daemon: $profile_name"
+    fi
+  done
+  if [ "$found_profile" -eq 0 ]; then
+    if "$OLD_CLI" --profile default daemon status >/dev/null 2>&1; then
+      "$OLD_CLI" --profile default daemon stop >/dev/null 2>&1 \
+        || err "无法停止旧 CLI daemon: default"
+      STOPPED_PROFILES="$STOPPED_PROFILES default"
+      info "已停止旧 CLI daemon: default"
+    fi
+  fi
+}
+
 # ---------- download + verify ----------
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+
+cleanup() {
+  cleanup_status=$?
+  trap - EXIT
+  rm -rf "$TMP"
+  if [ "$cleanup_status" -ne 0 ] && [ "$HANDOFF_PENDING" -eq 1 ] && [ -n "$STOPPED_PROFILES" ]; then
+    recovery_cli="$OLD_CLI"
+    [ -x "$TARGET" ] && recovery_cli="$TARGET"
+    warn "安装未完成，正在恢复更新前运行的 CLI daemon…"
+    for recovery_profile in $STOPPED_PROFILES; do
+      "$recovery_cli" --profile "$recovery_profile" daemon start >/dev/null 2>&1 \
+        || warn "无法自动恢复 profile $recovery_profile；请运行 yoooclaw --profile $recovery_profile daemon start"
+    done
+  fi
+  exit "$cleanup_status"
+}
+trap cleanup EXIT
 
 info "下载 ${BASE}/${ASSET}"
 curl -fL --progress-bar -o "$TMP/$ASSET" "${BASE}/${ASSET}"
@@ -162,6 +228,10 @@ if curl -fsSL -o "$TMP/checksums.txt" "${BASE}/checksums.txt"; then
 else
   warn "未找到 checksums.txt，跳过校验"
 fi
+
+# 制品已经下载并校验完成，此时才短暂停掉旧 CLI daemon，避免下载失败影响现有 owner。
+stop_existing_daemons
+[ -n "$STOPPED_PROFILES" ] && HANDOFF_PENDING=1
 
 # ---------- install ----------
 chmod +x "$TMP/$ASSET"
@@ -294,3 +364,23 @@ resolved_yoooclaw=$(command -v yoooclaw 2>/dev/null || true)
 installed_version=$(yoooclaw --version 2>/dev/null) || err "已写入文件但 --version 执行失败"
 info "yoooclaw $installed_version ready"
 info "命令验证通过: $resolved_yoooclaw"
+
+# ---------- restore or explicitly activate owner ----------
+if [ "$ACTIVATE_OWNER" -eq 1 ]; then
+  info "切换 Relay owner 到 standalone CLI…"
+  if [ -n "$HERMES_PROFILE" ]; then
+    yoooclaw owner activate cli --hermes-profile "$HERMES_PROFILE" \
+      || err "CLI 已安装，但 Relay owner 交接失败；请根据上方诊断修复后运行: yoooclaw owner activate cli --hermes-profile $HERMES_PROFILE"
+  else
+    yoooclaw owner activate cli \
+      || err "CLI 已安装，但 Relay owner 交接失败；请根据上方诊断修复后运行: yoooclaw owner activate cli"
+  fi
+else
+  for profile_name in $STOPPED_PROFILES; do
+    yoooclaw --profile "$profile_name" daemon start >/dev/null \
+      || err "CLI 已更新，但无法恢复 profile $profile_name 的 daemon；请运行: yoooclaw --profile $profile_name daemon start"
+    info "已恢复 CLI daemon: $profile_name"
+  done
+  info "已保留当前 Relay owner（如需切换到 CLI，请重新运行并加 --activate）"
+fi
+HANDOFF_PENDING=0

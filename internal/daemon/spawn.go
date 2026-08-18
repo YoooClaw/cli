@@ -230,6 +230,19 @@ func StopWithOptions(p paths.Paths, opts StopOpts) (map[string]any, error) {
 	if current := State(p); current.Running && current.Lock != nil && current.Lock.PID == lock.PID {
 		_ = forceKill(lock.PID)
 	}
+	// A successful forceKill call is not proof that the process has exited
+	// (notably with Windows endpoint/security races). Do not let installers
+	// continue with a false "stopped" result while the old owner still holds
+	// writer/Relay locks.
+	for i := 0; i < 20 && isProcessAlive(lock.PID); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if isProcessAlive(lock.PID) {
+		return nil, errs.New(errs.CodeDaemonUnresponsive,
+			fmt.Sprintf("daemon 强制停止后仍在运行（pid %d）", lock.PID),
+			map[string]any{"pid": lock.PID, "profile": p.Profile}).
+			WithHint("查看进程权限和安全软件拦截记录；旧进程退出前不会切换 Relay owner")
+	}
 	if current := ReadLock(p); current != nil && current.PID == lock.PID {
 		RemoveLock(p)
 	}
