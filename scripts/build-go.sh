@@ -71,6 +71,8 @@ done
 maindir="dist-npm/cli"
 mkdir -p "$maindir/bin"
 cp npm/cli/bin/yc.js "$maindir/bin/yc.js"
+cp npm/cli/bin/prepare-owner.js "$maindir/bin/prepare-owner.js"
+cp npm/cli/bin/activate-owner.js "$maindir/bin/activate-owner.js"
 cp npm/cli/README.md "$maindir/README.md"
 node scripts/gen-pkg.mjs main "$maindir" "$VERSION" "$PLATFORM_PKGS"
 

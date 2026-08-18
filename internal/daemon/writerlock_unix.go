@@ -29,3 +29,8 @@ func probeFileLock(path string) (bool, error) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return false, nil
 }
+
+// Unix flock 锁整个文件，不区分字节偏移；writer 与其他进程锁复用同一探测。
+func probeWriterFileLock(path string) (bool, error) {
+	return probeFileLock(path)
+}

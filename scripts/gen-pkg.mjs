@@ -44,7 +44,11 @@ if (mode === "platform") {
     description: "yoooclaw 独立 CLI（Go 实现，按平台分发原生二进制）",
     ...COMMON,
     bin: { yoooclaw: "bin/yc.js", yc: "bin/yc.js" },
-    files: ["bin/yc.js", "README.md"],
+    files: ["bin/yc.js", "bin/prepare-owner.js", "bin/activate-owner.js", "README.md"],
+    scripts: {
+      preinstall: "node bin/prepare-owner.js",
+      postinstall: "node bin/activate-owner.js",
+    },
     optionalDependencies,
     engines: { node: ">=18" },
     keywords: ["yoooclaw", "cli", "daemon", "notifications", "agent"],
