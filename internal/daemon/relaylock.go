@@ -34,7 +34,7 @@ func relayConsumerConflict(p paths.Paths) error {
 // checkRelayConsumerLock 在父进程 spawn 前快速探测，避免子进程因全局锁冲突后让
 // 调用方等待 daemon ready 超时。真正的竞态互斥仍由 RunForeground 获取锁保证。
 func checkRelayConsumerLock(p paths.Paths) error {
-	held, err := probeFileLock(relayConsumerLockPath(p))
+	held, err := RelayConsumerLockHeld(p)
 	if err != nil {
 		return errs.New(errs.CodeStorageUnavailable, "无法检查账号级 Relay 消费者锁："+err.Error())
 	}
@@ -42,6 +42,13 @@ func checkRelayConsumerLock(p paths.Paths) error {
 		return relayConsumerConflict(p)
 	}
 	return nil
+}
+
+// RelayConsumerLockHeld reports whether another process currently owns the
+// account-level Relay consumer lock. It is exported for installer handoff and
+// post-install acceptance checks.
+func RelayConsumerLockHeld(p paths.Paths) (bool, error) {
+	return probeFileLock(relayConsumerLockPath(p))
 }
 
 // acquireRelayConsumerLock 获取并持有账号级 Relay 消费者锁直到 daemon 退出。
