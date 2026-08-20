@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"os"
 
+	"github.com/YoooClaw/cli/internal/autostart"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/daemon"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/paths"
 	"github.com/YoooClaw/cli/internal/prompt"
 	"github.com/spf13/cobra"
 )
@@ -47,14 +49,15 @@ func newConfigCmd() *cobra.Command {
 
 	initCmd := &cobra.Command{
 		Use:   "init",
-		Short: "交互式首次向导，生成 config + gateway token 并启动 daemon",
+		Short: "交互式首次向导，生成配置并默认启用 daemon 自启",
 		Args:  cobra.NoArgs,
 		RunE:  run(configInit),
 	}
 	initCmd.Flags().Bool("non-interactive", false, "跳过向导（配合 --from-file）")
 	initCmd.Flags().String("from-file", "", "从 JSON 文件导入配置（- 为 stdin）")
 	initCmd.Flags().Bool("force", false, "已存在 config 时覆盖")
-	initCmd.Flags().Bool("no-start", false, "只生成配置，不自动启动 daemon")
+	initCmd.Flags().Bool("no-start", false, "当前不启动 daemon（仍配置登录自启）")
+	initCmd.Flags().Bool("no-autostart", false, "不配置用户登录自启")
 
 	showCmd := &cobra.Command{Use: "show", Short: "显示当前 profile 配置（敏感字段遮罩）", Args: cobra.NoArgs, RunE: run(configShow)}
 	showCmd.Flags().Bool("show-secrets", false, "输出敏感字段明文（需 TTY）")
@@ -71,6 +74,7 @@ type initOpts struct {
 	nonInteractive bool
 	fromFile       string
 	noStart        bool
+	noAutostart    bool
 }
 
 func configInit(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
@@ -79,6 +83,7 @@ func configInit(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error
 		nonInteractive: flagBool(cmd, "non-interactive"),
 		fromFile:       flagStr(cmd, "from-file"),
 		noStart:        flagBool(cmd, "no-start"),
+		noAutostart:    flagBool(cmd, "no-autostart"),
 	})
 }
 
@@ -146,12 +151,10 @@ func initCore(ctx *clictx.Context, o initOpts) (any, error) {
 		return nil, err
 	}
 
-	// init 即用：默认把 daemon 拉起来；--no-start 跳过。失败不阻断 init（配置已落盘）。
+	// active profile 默认注册用户级自启并立即启动。自启配置失败不回滚已经
+	// 落盘的 config/凭据；当前启动会降级到原有 detach 模式并明确返回 warning。
 	apiKey := creds.ResolveAPIKey()
-	daemonInfo := map[string]any{"started": false}
-	if !o.noStart {
-		daemonInfo = startDaemonForInit(ctx)
-	}
+	daemonInfo := setupDaemonForInit(ctx, o)
 	started, _ := daemonInfo["started"].(bool)
 	hint := initHint(started, apiKey.Value != "")
 	return map[string]any{
@@ -167,6 +170,70 @@ func initCore(ctx *clictx.Context, o initOpts) (any, error) {
 		"configPath":   ctx.Paths.Config,
 		"hint":         hint,
 	}, nil
+}
+
+func setupDaemonForInit(ctx *clictx.Context, o initOpts) map[string]any {
+	if ctx.Profile != persistentActiveProfile() {
+		return map[string]any{
+			"started": false, "autostart": false,
+			"reason": "非 active profile 不改变账号级 daemon 自启状态",
+			"hint":   "运行 `yoooclaw profile use " + ctx.Profile + "` 激活该 profile",
+		}
+	}
+	if o.noAutostart {
+		manager := autostartManager()
+		if status, _ := manager.Status(); status.Installed {
+			if _, err := autostart.Disable(manager, paths.RootDir()); err != nil {
+				return map[string]any{"started": false, "autostart": true, "autostartError": err.Error()}
+			}
+		} else {
+			_ = autostart.RecordDisabled(paths.RootDir())
+		}
+		if o.noStart {
+			return map[string]any{"started": false, "autostart": false}
+		}
+		info := startDaemonForInit(ctx)
+		info["autostart"] = false
+		return info
+	}
+
+	manager := autostartManager()
+	if status, _ := manager.Status(); status.Running {
+		_ = manager.Stop()
+	}
+	if state := daemon.State(ctx.Paths); state.Running {
+		_, _ = daemon.Stop(ctx.Paths)
+	}
+	err := daemon.PrecheckStart(ctx, daemon.StartOpts{})
+	var spec autostart.Spec
+	if err == nil {
+		spec, err = autostartSpec()
+	}
+	if err == nil {
+		var status autostart.Status
+		status, err = autostart.Enable(manager, spec, !o.noStart)
+		if err == nil && !o.noStart && status.Manager != "test" {
+			if readyErr := waitForManagedDaemon(ctx); readyErr != nil {
+				_ = manager.Stop()
+				err = readyErr
+			}
+		}
+		if err == nil {
+			return map[string]any{
+				"started": !o.noStart, "autostart": true,
+				"manager": status.Manager, "unit": status.Unit,
+			}
+		}
+	}
+	result := map[string]any{"started": false, "autostart": false, "autostartError": err.Error()}
+	if !o.noStart {
+		fallback := startDaemonForInit(ctx)
+		for key, value := range fallback {
+			result[key] = value
+		}
+		result["fallback"] = "detached"
+	}
+	return result
 }
 
 func readConfigImport(fromFile string) ([]byte, error) {

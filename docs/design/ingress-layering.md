@@ -128,7 +128,7 @@ L1/L2 几乎不动，主要是把传输从 server 里抽出去：
 
 待办（hermes-plugin 侧，见第 6 节第 5 项）：`DaemonSupervisor` spawn 传 `--ingress=proxied` + egress 回调；provision `hermes` api-key；app_transport 入站改为 POST cli ingest API、订阅 egress 回调转发。
 
-> 注意：`config init` 收尾会自动 `Spawn` 一个 **standalone** daemon（`startDaemonForInit`）。嵌入流程里插件应在 init 后先 `daemon stop`，再以 `--ingress=proxied` 拉起，避免起到 standalone 实例。
+> 注意：`config init` 默认会注册用户级自启服务并启动一个 **standalone** daemon。嵌入流程应使用 `--no-autostart` 初始化，或在 init 后执行 `daemon autostart disable`，再以 `--ingress=proxied` 拉起，避免 standalone 服务与宿主实例竞争。
 
 ## 7. 兼容与迁移
 

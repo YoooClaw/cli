@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -9,13 +10,14 @@ import (
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/daemon"
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/paths"
 	"github.com/spf13/cobra"
 )
 
 func newDaemonCmd() *cobra.Command {
 	c := &cobra.Command{Use: "daemon", Short: "守护进程管理 🔵"}
 
-	start := &cobra.Command{Use: "start", Short: "启动 daemon（默认后台 detach）", Args: cobra.NoArgs, RunE: run(daemonStart)}
+	start := &cobra.Command{Use: "start", Short: "启动 daemon（自启已启用时由系统用户服务托管）", Args: cobra.NoArgs, RunE: run(daemonStart)}
 	start.Flags().String("bind", "", "监听地址（默认 config.daemon.bind）")
 	start.Flags().String("port", "", "监听端口（默认 config.daemon.port）")
 	start.Flags().Bool("no-detach", false, "前台运行（systemd/launchd 用）")
@@ -41,6 +43,7 @@ func newDaemonCmd() *cobra.Command {
 	logs.Flags().BoolP("follow", "f", false, "持续 tail")
 	logs.Flags().String("lines", "100", "初始展示行数")
 	logs.Flags().String("level", "", "过滤日志级别")
+	logs.Flags().Bool("supervisor", false, "查看系统用户服务启动日志")
 
 	runFg := &cobra.Command{Use: "run-foreground", Short: "（内部）前台运行 daemon 主循环", Args: cobra.NoArgs, RunE: run(daemonRunForeground)}
 	runFg.Flags().String("bind", "", "监听地址")
@@ -48,8 +51,10 @@ func newDaemonCmd() *cobra.Command {
 	runFg.Flags().String("log-level", "", "日志级别")
 	addDaemonLifecycleFlags(runFg)
 	addIngressFlags(runFg)
+	runService := &cobra.Command{Use: "run-service", Short: "由系统用户服务运行 daemon", Hidden: true, Args: cobra.NoArgs, RunE: run(daemonRunService)}
+	runService.Flags().String("root", "", "（内部）服务数据根目录")
 
-	c.AddCommand(start, stop, restart, reload, status, logs, runFg)
+	c.AddCommand(start, stop, restart, reload, status, logs, runFg, runService, newDaemonAutostartCmd())
 	return c
 }
 
@@ -101,6 +106,9 @@ func daemonStart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 	if state.Stale {
 		daemon.RemoveLock(ctx.Paths)
 	}
+	if err := rejectManagedOverrides(cmd); err != nil {
+		return nil, err
+	}
 	opts := startOptsFromCmd(cmd)
 	// detach 模式下子进程失败只会表现为"等 lock 超时"；先在父进程做
 	// 写者锁预检，把 YOOOCLAW_DAEMON_DISABLED_BY_PLUGIN 直接抛给调用方。
@@ -113,6 +121,17 @@ func daemonStart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 		}
 		return map[string]any{"ok": true}, nil
 	}
+	if managed, _ := serviceManaged(); managed {
+		lock, err := startStandalone(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]any{"ok": true, "supervised": true, "autostart": true}
+		if lock != nil && lock.PID > 0 {
+			result["pid"], result["bind"], result["port"] = lock.PID, lock.Bind, lock.Port
+		}
+		return result, nil
+	}
 	lock, err := daemon.Spawn(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -121,10 +140,24 @@ func daemonStart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 }
 
 func daemonStop(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	return daemon.StopWithOptions(ctx.Paths, stopOptsFromCmd(cmd))
+	return stopManagedDaemon(ctx, stopOptsFromCmd(cmd))
 }
 
 func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	if err := rejectManagedOverrides(cmd); err != nil {
+		return nil, err
+	}
+	if _, err := config.Require(ctx.Paths); err != nil {
+		return nil, err
+	}
+	if managed, serviceStatus := serviceManaged(); managed {
+		if !serviceStatus.Running {
+			if err := daemon.PrecheckStart(ctx, daemon.StartOpts{}); err != nil {
+				return nil, err
+			}
+		}
+		return restartManagedDaemon(ctx)
+	}
 	state := daemon.State(ctx.Paths)
 	lock := state.Lock
 	opts := startOptsFromCmd(cmd)
@@ -143,9 +176,6 @@ func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 				return nil, err
 			}
 		}
-	}
-	if _, err := config.Require(ctx.Paths); err != nil {
-		return nil, err
 	}
 	if flagBool(cmd, "no-detach") {
 		if err := daemon.RunForeground(ctx, opts); err != nil {
@@ -182,12 +212,21 @@ func daemonStatus(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error
 	if err != nil {
 		return nil, err
 	}
+	if m, ok := body.(map[string]any); ok {
+		if supervision, snapshotErr := autostartSnapshot(); snapshotErr == nil {
+			m["supervision"] = supervision
+		}
+	}
 	return body, nil
 }
 
 func daemonLogs(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	n := atoiDefault(flagStr(cmd, "lines"), 100)
-	lines := tailLines(ctx.Paths.DaemonLog, n)
+	file := ctx.Paths.DaemonLog
+	if flagBool(cmd, "supervisor") {
+		file = filepath.Join(paths.RootDir(), "logs", "daemon-supervisor.log")
+	}
+	lines := tailLines(file, n)
 	if level := flagStr(cmd, "level"); level != "" {
 		want := "[" + strings.ToUpper(level) + "]"
 		filtered := lines[:0]
@@ -199,7 +238,7 @@ func daemonLogs(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error
 		lines = filtered
 	}
 	// --follow 的实时 tail 暂不实现（Phase 2 标准输出即可）；返回当前快照。
-	return map[string]any{"ok": true, "file": ctx.Paths.DaemonLog, "total": len(lines), "lines": lines}, nil
+	return map[string]any{"ok": true, "file": file, "total": len(lines), "lines": lines}, nil
 }
 
 func tailLines(file string, n int) []string {

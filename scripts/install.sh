@@ -377,9 +377,13 @@ if [ "$ACTIVATE_OWNER" -eq 1 ]; then
   fi
 else
   for profile_name in $STOPPED_PROFILES; do
-    yoooclaw --profile "$profile_name" daemon start >/dev/null \
-      || err "CLI 已更新，但无法恢复 profile $profile_name 的 daemon；请运行: yoooclaw --profile $profile_name daemon start"
-    info "已恢复 CLI daemon: $profile_name"
+    if yoooclaw --profile "$profile_name" daemon autostart enable >/dev/null; then
+      info "已恢复 CLI daemon 并启用登录自启: $profile_name"
+    else
+      warn "当前环境无法配置用户级自启，降级恢复 detached daemon: $profile_name"
+      yoooclaw --profile "$profile_name" daemon start >/dev/null \
+        || err "CLI 已更新，但无法恢复 profile $profile_name 的 daemon；请运行: yoooclaw --profile $profile_name daemon start"
+    fi
   done
   info "已保留当前 Relay owner（如需切换到 CLI，请重新运行并加 --activate）"
 fi

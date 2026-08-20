@@ -208,7 +208,7 @@ esac
 	for _, want := range []string{
 		"old:--profile default daemon status",
 		"old:--profile default daemon stop",
-		"new:--profile default daemon start",
+		"new:--profile default daemon autostart enable",
 	} {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("update did not preserve CLI owner (%q missing):\n%s", want, logText)
@@ -309,7 +309,7 @@ exit 0
 	for _, want := range []string{
 		"old:--profile default daemon status",
 		"old:--profile default daemon stop",
-		"new:--profile default daemon start",
+		"new:--profile default daemon autostart enable",
 	} {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("npm lifecycle did not restore CLI owner (%q missing):\n%s", want, logText)

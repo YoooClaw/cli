@@ -24,7 +24,8 @@ func newProfileCmd() *cobra.Command {
 	createCmd.Flags().Bool("non-interactive", false, "跳过向导（配合 --from-file）")
 	createCmd.Flags().String("from-file", "", "从 JSON 文件导入配置（- 为 stdin）")
 	createCmd.Flags().Bool("force", false, "已存在 config 时覆盖")
-	createCmd.Flags().Bool("no-start", false, "只生成配置，不自动启动 daemon")
+	createCmd.Flags().Bool("no-start", false, "当前不启动 daemon")
+	createCmd.Flags().Bool("no-autostart", false, "不配置用户登录自启")
 	deleteCmd := &cobra.Command{Use: "delete <name>", Short: "删除 profile（非 active，需 --yes）", Args: cobra.ExactArgs(1), RunE: run(profileDelete)}
 	deleteCmd.Flags().Bool("yes", false, "跳过确认")
 
@@ -78,6 +79,18 @@ func profileUse(ctx *clictx.Context, _ *cobra.Command, args []string) (any, erro
 
 	// active profile 与 daemon 的存储根目录必须一起切换。旧行为只改文本文件，
 	// 旧 daemon 会继续用 test profile 消费生产 Relay，造成“消息仍落测试区”。
+	managed, serviceStatus := serviceManaged()
+	serviceWasRunning := managed && serviceStatus.Running
+	oldPID := 0
+	if oldState := daemon.State(paths.For(previous)); oldState.Running {
+		oldPID = oldState.Lock.PID
+	}
+	if serviceWasRunning {
+		if err := autostartManager().Stop(); err != nil {
+			return nil, autostartError(err)
+		}
+		waitForProfileDaemonExit(oldPID)
+	}
 	stoppedPID, err := stopProfileDaemon(paths.For(previous))
 	if err != nil {
 		return nil, err
@@ -89,17 +102,22 @@ func profileUse(ctx *clictx.Context, _ *cobra.Command, args []string) (any, erro
 	result := map[string]any{
 		"ok": true, "active": name, "previous": previous, "changed": true,
 	}
-	if stoppedPID == 0 {
+	if stoppedPID == 0 && !serviceWasRunning {
 		return result, nil
 	}
 	// daemon 会在退出末尾先删 profile lock、随后由进程退出释放 account Relay
 	// flock；两者之间存在极短窗口。等旧 PID 真正消失，避免目标启动误报全局锁冲突。
-	waitForProfileDaemonExit(stoppedPID)
+	if stoppedPID != 0 {
+		waitForProfileDaemonExit(stoppedPID)
+	}
 
 	// 旧 profile 原本有 daemon 在提供服务时，切换后尽力恢复同等运行态。目标
 	// profile 未初始化或启动失败不回滚到旧 profile：宁可明确停住，也不能让旧
 	// profile 再次静默消费新环境消息。
-	daemonInfo := map[string]any{"stopped": stoppedPID, "started": false}
+	if stoppedPID == 0 {
+		stoppedPID = oldPID
+	}
+	daemonInfo := map[string]any{"stopped": stoppedPID, "started": false, "supervised": serviceWasRunning}
 	result["daemon"] = daemonInfo
 	if targetState := daemon.State(p); targetState.Running {
 		daemonInfo["started"] = true
@@ -121,15 +139,17 @@ func profileUse(ctx *clictx.Context, _ *cobra.Command, args []string) (any, erro
 		daemonInfo["hint"] = "修复启动条件后运行 `yoooclaw daemon start`"
 		return result, nil
 	}
-	lock, err := daemon.Spawn(targetCtx, daemon.StartOpts{})
+	lock, err := startStandalone(targetCtx)
 	if err != nil {
 		daemonInfo["error"] = err.Error()
 		daemonInfo["hint"] = "查看 `yoooclaw daemon logs` 后重新启动"
 		return result, nil
 	}
 	daemonInfo["started"] = true
-	daemonInfo["pid"] = lock.PID
-	daemonInfo["port"] = lock.Port
+	if lock != nil && lock.PID > 0 {
+		daemonInfo["pid"] = lock.PID
+		daemonInfo["port"] = lock.Port
+	}
 	return result, nil
 }
 
@@ -145,6 +165,7 @@ func profileCreate(ctx *clictx.Context, cmd *cobra.Command, args []string) (any,
 		nonInteractive: flagBool(cmd, "non-interactive"),
 		fromFile:       flagStr(cmd, "from-file"),
 		noStart:        flagBool(cmd, "no-start"),
+		noAutostart:    flagBool(cmd, "no-autostart"),
 	})
 }
 
@@ -207,6 +228,9 @@ func stopProfileDaemon(p paths.Paths) (int, error) {
 }
 
 func waitForProfileDaemonExit(pid int) {
+	if pid <= 0 {
+		return
+	}
 	deadline := time.Now().Add(time.Second)
 	for daemon.IsProcessAlive(pid) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
