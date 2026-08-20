@@ -30,6 +30,8 @@ func newLightCmd() *cobra.Command {
 	send.Flags().String("segments", "", "灯效参数 JSON（原始段）")
 	send.Flags().String("preset", "", "内置预设 id（如 red-steady / red-strobe-3）")
 	send.Flags().String("rule", "", "已保存的 lightrule 名")
+	send.Flags().String("title", "", "推送标题（可选；未传时根据 reason 或灯效生成）")
+	send.Flags().String("reason", "", "亮灯原因/通知正文（可选）")
 	send.Flags().Bool("repeat", false, "无限循环播放（覆盖来源默认值）")
 	send.Flags().String("repeat-times", "", "整条组合重复次数（0=无限，覆盖来源默认值）")
 
@@ -69,6 +71,12 @@ func lightSend(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error)
 		if !flagBool(cmd, "repeat") && flagStr(cmd, "repeat-times") == "" {
 			body["repeat_times"] = resolved["repeat_times"]
 		}
+	}
+	if title := flagStr(cmd, "title"); title != "" {
+		body["title"] = title
+	}
+	if reason := flagStr(cmd, "reason"); reason != "" {
+		body["reason"] = reason
 	}
 	if flagBool(cmd, "repeat") {
 		body["repeat"] = true

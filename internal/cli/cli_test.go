@@ -3,11 +3,18 @@ package cli
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // execCLI 在隔离沙箱里执行一次 CLI（捕获 os.Stdout 与退出码）。
 // 因为 run() 直接写 os.Stdout 且 exitCode 是包级变量，这些测试不可并行。
@@ -161,6 +168,45 @@ func TestLightSendValidation(t *testing.T) {
 	}
 	if decode(t, out)["error"].(map[string]any)["code"] != "YOOOCLAW_INVALID_ARGUMENT" {
 		t.Errorf("expected INVALID_ARGUMENT: %s", out)
+	}
+}
+
+func TestLightSendForwardsTitleAndReason(t *testing.T) {
+	sandbox(t)
+	var requestBody map[string]any
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode light request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"code":"000000","msg":"成功","data":{"success":true}}`,
+			)),
+			Request: req,
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	out, code := execCLI(t,
+		"light", "send",
+		"--preset", "red-strobe-3",
+		"--title", "测试灯效",
+		"--reason", "插件一次性亮灯",
+	)
+	if code != 0 {
+		t.Fatalf("light send failed (code %d): %s", code, out)
+	}
+	if got := requestBody["title"]; got != "测试灯效" {
+		t.Errorf("title = %v, want 测试灯效", got)
+	}
+	if got := requestBody["reason"]; got != "插件一次性亮灯" {
+		t.Errorf("reason = %v, want 插件一次性亮灯", got)
+	}
+	if _, ok := requestBody["idempotencyKey"]; ok {
+		t.Errorf("light send must not send the undeployed idempotencyKey contract: %+v", requestBody)
 	}
 }
 
