@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/relay"
@@ -15,6 +16,10 @@ import (
 // 见 docs/design/ingress-layering.md。
 type Egress interface {
 	PushEvent(event string, payload any) error
+	// PushEventTo 只投给指定 client label 的客户端。label 为空退化成广播；
+	// 传了 label 但对应通道不在时事件直接丢弃，不回退广播——那条数据属于
+	// 那个客户端，广播就是把它漏给别人。
+	PushEventTo(label string, event string, payload any) error
 }
 
 // RelayEgress 把事件经 Relay 隧道广播给手机端（standalone 模式）。
@@ -33,6 +38,21 @@ func (e *RelayEgress) PushEvent(event string, payload any) error {
 		return nil
 	}
 	e.sup.PushEvent(event, payload)
+	return nil
+}
+
+// PushEventTo 只经 label 对应的那条隧道投递。
+func (e *RelayEgress) PushEventTo(label string, event string, payload any) error {
+	if e.sup == nil {
+		return nil
+	}
+	if strings.TrimSpace(label) == "" {
+		e.sup.PushEvent(event, payload)
+		return nil
+	}
+	if !e.sup.PushEventTo(label, event, payload) {
+		return fmt.Errorf("client %q 没有在线隧道，事件已丢弃", label)
+	}
 	return nil
 }
 
@@ -61,7 +81,17 @@ var proxyEgressRetryDelays = []time.Duration{time.Second, 3 * time.Second, 9 * t
 // PushEvent 异步把 {event, payload} POST 给宿主回调。请求会保留自身的 10s
 // 超时，但调用方只负责排队，不会被宿主回调的延迟阻塞 ingest 响应。
 func (e *ProxyEgress) PushEvent(event string, payload any) error {
-	body, err := json.Marshal(map[string]any{"event": event, "payload": payload})
+	return e.PushEventTo("", event, payload)
+}
+
+// PushEventTo 带上 clientLabel 回投，定向投递由宿主按 label 转发；
+// label 为空时字段省略，回调体与旧版一致。
+func (e *ProxyEgress) PushEventTo(label string, event string, payload any) error {
+	frame := map[string]any{"event": event, "payload": payload}
+	if strings.TrimSpace(label) != "" {
+		frame["clientLabel"] = label
+	}
+	body, err := json.Marshal(frame)
 	if err != nil {
 		return err
 	}
@@ -116,3 +146,6 @@ type NoopEgress struct{}
 
 // PushEvent 丢弃事件。
 func (NoopEgress) PushEvent(string, any) error { return nil }
+
+// PushEventTo 丢弃事件。
+func (NoopEgress) PushEventTo(string, string, any) error { return nil }

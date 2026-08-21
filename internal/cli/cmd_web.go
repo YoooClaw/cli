@@ -35,6 +35,7 @@ func newSyncedWebPageCmd() *cobra.Command {
 	}
 	list.Flags().String("from", "", "包含在该 ISO 8601 时间及之后抓取的网页")
 	list.Flags().String("to", "", "包含在该 ISO 8601 时间之前抓取的网页")
+	list.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	pathCmd := &cobra.Command{
 		Use:   "path <urlHash>",
 		Short: "根据 URL 哈希打印网页 Markdown 文件绝对路径 🟢",
@@ -48,6 +49,7 @@ func newSyncedWebPageCmd() *cobra.Command {
 		RunE:  run(webSearch),
 	}
 	search.Flags().String("limit", strconv.Itoa(defaultWebSearchLimit), "最多返回的网页数量（默认 20）")
+	search.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	storagePath := &cobra.Command{
 		Use:   "storage-path",
 		Short: "查询网页存储路径 🟢",
@@ -90,8 +92,12 @@ func webList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 		return nil, errs.New(errs.CodeInvalidArgument, "--from 不能晚于 --to")
 	}
 
+	client := flagStr(cmd, "client")
 	pages := make([]any, 0, len(entries))
 	for _, entry := range entries {
+		if client != "" && client != "all" && labelOrLegacy2(entry.ClientLabel) != client {
+			continue
+		}
 		if from != nil || to != nil {
 			capturedAt, ok := notif.ParseTime(entry.CapturedAt)
 			if !ok {
@@ -329,13 +335,28 @@ func webSearch(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, err
 	}
 	pages := searchWebPages(
 		ctx.Paths.WebPages,
-		webpage.ReadIndex(ctx.Paths.WebPages),
+		filterWebPagesByClient(webpage.ReadIndex(ctx.Paths.WebPages), flagStr(cmd, "client")),
 		keyword,
 		limit,
 	)
 	return map[string]any{
 		"ok": true, "keyword": keyword, "total": len(pages), "pages": pages,
 	}, nil
+}
+
+// filterWebPagesByClient 按 clientLabel 过滤，语义与 recording/image 的 --client 一致：
+// 空或 all 表示不过滤，老数据在 CLI 侧显示为 legacy。
+func filterWebPagesByClient(entries []webpage.Entry, client string) []webpage.Entry {
+	if client == "" || client == "all" {
+		return entries
+	}
+	kept := make([]webpage.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if labelOrLegacy2(entry.ClientLabel) == client {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
 }
 
 func webStoragePath(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
