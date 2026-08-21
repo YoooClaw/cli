@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"context"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
@@ -19,11 +22,13 @@ func newRecordingCmd() *cobra.Command {
 	c := &cobra.Command{Use: "recording", Short: "录音查询与 ASR 配置 🟢"}
 
 	list := &cobra.Command{Use: "list", Short: "列出所有录音 🟢", Args: cobra.NoArgs, RunE: run(recordingList)}
-	list.Flags().String("status", "", "按传输状态过滤")
+	list.Flags().String("status", "", "按录音来源状态过滤")
 	list.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	list.Flags().String("from", "", "录音时间起点（含，ISO 8601 或 YYYY-MM-DD）")
 	list.Flags().String("to", "", "录音时间终点（不含，ISO 8601 或 YYYY-MM-DD）")
+	list.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
 	status := &cobra.Command{Use: "status <id>", Short: "查看单条录音详情 🟢", Args: cobra.ExactArgs(1), RunE: run(recordingStatusCmd)}
+	status.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
 	storagePath := &cobra.Command{Use: "storage-path", Short: "打印录音存储目录绝对路径 🟢", Args: cobra.NoArgs, RunE: run(recordingStoragePath)}
 
 	setupAsr := &cobra.Command{Use: "setup-asr", Short: "交互式配置 ASR 转写参数 🟢", Args: cobra.NoArgs, RunE: run(recordingSetupAsr)}
@@ -41,9 +46,11 @@ func newRecordingCmd() *cobra.Command {
 	events.Flags().String("limit", "200", "返回条数上限")
 
 	latest := &cobra.Command{Use: "+latest", Short: "展示最新一条录音详情", Args: cobra.NoArgs, RunE: run(recordingLatest)}
+	latest.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
 	today := &cobra.Command{Use: "+today", Short: "列出本地自然日内的今日录音", Args: cobra.NoArgs, RunE: run(recordingToday)}
-	today.Flags().String("status", "", "按传输状态过滤")
+	today.Flags().String("status", "", "按录音来源状态过滤")
 	today.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
+	today.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
 
 	c.AddCommand(list, status, storagePath, setupAsr, events, latest, today)
 	return c
@@ -51,14 +58,73 @@ func newRecordingCmd() *cobra.Command {
 
 func recToListItem(r recording.Entry) map[string]any {
 	return map[string]any{
-		"id": r.ID, "clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
+		"id": r.ID, "source_type": recordingSourceSmartHardware,
+		"source_name": recordingSourceSmartHardwareName,
+		"clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
+		"title":        nilIfEmpty(r.Title),
+		"duration_ms":  int64(r.Metadata.DurationSec * 1000),
 		"duration_sec": r.Metadata.DurationSec, "duration_display": recording.FormatDurationDisplay(r.Metadata.DurationSec),
 		"status":            r.Status,
 		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
 		"audio_status":      r.AudioStatus,
-		"has_audio":         r.AudioFile != "", "has_transcript": r.TranscriptFile != "",
-		"created_at": r.Metadata.CreatedAt, "updated_at": r.UpdatedAt, "error": nilIfEmpty(r.LastError),
+		"has_audio":         r.AudioFile != "", "has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
+		"missing_artifacts": []string{},
+		"created_at":        r.Metadata.CreatedAt, "updated_at": r.UpdatedAt, "error": nilIfEmpty(r.LastError),
 	}
+}
+
+const (
+	recordingSourceAll               = "all"
+	recordingSourceSmartHardware     = "smart_hardware"
+	recordingSourceSmartHardwareName = "YoooClaw 智能硬件"
+)
+
+type recordingQueryItem struct {
+	id         string
+	sourceType string
+	occurredAt time.Time
+	hasTime    bool
+	list       map[string]any
+	detail     map[string]any
+}
+
+func parseRecordingSource(raw string) (string, error) {
+	source := strings.ToLower(strings.TrimSpace(raw))
+	if source == "" {
+		source = recordingSourceAll
+	}
+	switch source {
+	case recordingSourceAll, capturerecording.SourceType, recordingSourceSmartHardware:
+		return source, nil
+	default:
+		return "", errs.Newf(errs.CodeInvalidArgument,
+			"--source 必须是 all、capture_app 或 smart_hardware（收到 %q）", raw)
+	}
+}
+
+func captureToListItem(item capturerecording.Item) map[string]any {
+	return map[string]any{
+		"id": item.ID, "source_type": capturerecording.SourceType,
+		"source_name": capturerecording.SourceName,
+		"clientLabel": nil, "name": item.Title, "title": item.Title,
+		"duration_ms": item.DurationMS, "duration_sec": float64(item.DurationMS) / 1000,
+		"duration_display": recording.FormatDurationDisplay(float64(item.DurationMS) / 1000),
+		"status":           item.Status, "file_size_display": "--", "audio_status": nil,
+		"has_audio": item.HasAudio, "has_transcript": item.HasTranscript, "has_summary": item.HasSummary,
+		"recorded_at": item.RecordedAt, "created_at": item.RecordedAt, "updated_at": nil, "error": nil,
+		"missing_artifacts": item.MissingArtifacts, "diagnostics": item.Diagnostics,
+	}
+}
+
+func captureDetail(item capturerecording.Item) map[string]any {
+	detail := captureToListItem(item)
+	detail["audioFile"] = stringPointerValue(item.AudioRelPath)
+	detail["transcriptFile"] = stringPointerValue(item.TranscriptRelPath)
+	detail["summaryFile"] = stringPointerValue(item.SummaryRelPath)
+	detail["audio_path"] = stringPointerValue(item.AudioPath)
+	detail["transcript_path"] = stringPointerValue(item.TranscriptPath)
+	detail["summary_path"] = stringPointerValue(item.SummaryPath)
+	return detail
 }
 
 func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
@@ -73,35 +139,82 @@ func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 	if from != nil && to != nil && !from.Before(*to) {
 		return nil, errs.New(errs.CodeInvalidArgument, "--from 必须早于 --to")
 	}
-	return recordingListRange(ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), from, to)
+	return recordingListRange(cmd.Context(), ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), flagStr(cmd, "source"), from, to)
 }
 
-func recordingListRange(ctx *clictx.Context, status, client string, from, to *time.Time) (map[string]any, error) {
-	recs := recording.ReadIndex(ctx.Paths.Recordings)
-	recording.SortByCreatedDesc(recs)
-	out := make([]any, 0, len(recs))
-	for _, r := range recs {
-		if status != "" && r.Status != status {
-			continue
-		}
-		if client != "" && client != "all" && labelOrLegacy2(r.ClientLabel) != client {
-			continue
-		}
-		if from != nil || to != nil {
-			occurredAt, ok := recording.EffectiveTime(r)
-			if !ok {
-				continue
-			}
-			if from != nil && occurredAt.Before(*from) {
-				continue
-			}
-			if to != nil && !occurredAt.Before(*to) {
-				continue
-			}
-		}
-		out = append(out, recToListItem(r))
+func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, client, source string, from, to *time.Time) ([]recordingQueryItem, error) {
+	source, err := parseRecordingSource(source)
+	if err != nil {
+		return nil, err
 	}
-	return map[string]any{"ok": true, "total": len(out), "recordings": out}, nil
+	items := make([]recordingQueryItem, 0)
+	if source == recordingSourceAll || source == recordingSourceSmartHardware {
+		for _, r := range recording.ReadIndex(ctx.Paths.Recordings) {
+			if status != "" && r.Status != status {
+				continue
+			}
+			if client != "" && client != "all" && labelOrLegacy2(r.ClientLabel) != client {
+				continue
+			}
+			occurredAt, hasTime := recording.EffectiveTime(r)
+			if (from != nil || to != nil) && !hasTime {
+				continue
+			}
+			if from != nil && occurredAt.Before(*from) || to != nil && !occurredAt.Before(*to) {
+				continue
+			}
+			items = append(items, recordingQueryItem{
+				id: r.ID, sourceType: recordingSourceSmartHardware,
+				occurredAt: occurredAt, hasTime: hasTime,
+				list: recToListItem(r), detail: recordingDetail(r),
+			})
+		}
+	}
+	if (source == recordingSourceAll || source == capturerecording.SourceType) &&
+		(client == "" || client == "all") {
+		captureItems, err := capturerecording.List(queryCtx, ctx.Paths.Voice, capturerecording.Query{
+			From: from, To: to, Status: status,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range captureItems {
+			items = append(items, recordingQueryItem{
+				id: item.ID, sourceType: capturerecording.SourceType,
+				occurredAt: item.RecordedTime, hasTime: true,
+				list: captureToListItem(item), detail: captureDetail(item),
+			})
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].hasTime != items[j].hasTime {
+			return items[i].hasTime
+		}
+		if !items[i].occurredAt.Equal(items[j].occurredAt) {
+			return items[i].occurredAt.After(items[j].occurredAt)
+		}
+		if items[i].id != items[j].id {
+			return items[i].id > items[j].id
+		}
+		return items[i].sourceType < items[j].sourceType
+	})
+	return items, nil
+}
+
+func recordingListRange(queryCtx context.Context, ctx *clictx.Context, status, client, source string, from, to *time.Time) (map[string]any, error) {
+	source, err := parseRecordingSource(source)
+	if err != nil {
+		return nil, err
+	}
+	items, err := queryRecordings(queryCtx, ctx, status, client, source, from, to)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]any, len(items))
+	for i := range items {
+		out[i] = items[i].list
+	}
+	return map[string]any{"ok": true, "source": source, "total": len(out), "recordings": out}, nil
 }
 
 func parseRecordingBoundary(raw, flagName string) (*time.Time, error) {
@@ -116,53 +229,88 @@ func parseRecordingBoundary(raw, flagName string) (*time.Time, error) {
 	return &parsed, nil
 }
 
-func findRecording(ctx *clictx.Context, id string) (recording.Entry, bool) {
-	for _, r := range recording.ReadIndex(ctx.Paths.Recordings) {
-		if r.ID == id {
-			return r, true
-		}
-	}
-	return recording.Entry{}, false
-}
-
 func recordingDetail(r recording.Entry) map[string]any {
 	var markers any = r.Metadata.Markers
 	if markers == nil {
 		markers = []any{}
 	}
 	return map[string]any{
-		"id": r.ID, "clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
+		"id": r.ID, "source_type": recordingSourceSmartHardware,
+		"source_name": recordingSourceSmartHardwareName,
+		"clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
+		"recorded_at":       r.Metadata.CreatedAt,
+		"duration_ms":       int64(r.Metadata.DurationSec * 1000),
 		"duration_sec":      r.Metadata.DurationSec,
 		"duration_display":  recording.FormatDurationDisplay(r.Metadata.DurationSec),
 		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
 		"status":            r.Status, "created_at": r.Metadata.CreatedAt, "location": r.Metadata.Location,
 		"audio_status": r.AudioStatus,
-		"markers":      markers, "audioFile": nilIfEmpty(r.AudioFile), "srtFile": nilIfEmpty(r.SrtFile),
+		"has_audio":    r.AudioFile != "", "has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
+		"missing_artifacts": []string{},
+		"markers":           markers, "audioFile": nilIfEmpty(r.AudioFile), "srtFile": nilIfEmpty(r.SrtFile),
 		"transcriptDataFile": nilIfEmpty(r.TranscriptDataFile), "transcriptFile": nilIfEmpty(r.TranscriptFile),
 		"summaryFile": nilIfEmpty(r.SummaryFile), "title": nilIfEmpty(r.Title), "error": nilIfEmpty(r.LastError),
 		"ingestedAt": r.IngestedAt, "updatedAt": r.UpdatedAt,
 	}
 }
 
-func recordingStatusCmd(ctx *clictx.Context, _ *cobra.Command, args []string) (any, error) {
-	r, ok := findRecording(ctx, args[0])
-	if !ok {
+func recordingStatusCmd(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
+	source, err := parseRecordingSource(flagStr(cmd, "source"))
+	if err != nil {
+		return nil, err
+	}
+	items, err := queryRecordings(cmd.Context(), ctx, "", "", source, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]recordingQueryItem, 0, 2)
+	for _, item := range items {
+		if item.id == args[0] {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) == 0 {
 		return nil, errs.New(errs.CodeNotFound, "录音不存在："+args[0])
 	}
-	return map[string]any{"ok": true, "recording": recordingDetail(r)}, nil
+	if len(matches) > 1 && source == recordingSourceAll {
+		sources := make([]string, len(matches))
+		for i := range matches {
+			sources[i] = matches[i].sourceType
+		}
+		return nil, errs.New(errs.CodeInvalidArgument, "录音 ID 在多个来源中重复，请使用 --source 指定来源",
+			map[string]any{"id": args[0], "sources": sources})
+	}
+	return map[string]any{"ok": true, "recording": matches[0].detail}, nil
 }
 
 func recordingStoragePath(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	return map[string]any{"ok": true, "path": ctx.Paths.Recordings}, nil
+	return map[string]any{
+		"ok": true, "path": ctx.Paths.Recordings,
+		"sources": map[string]any{
+			recordingSourceSmartHardware: map[string]any{
+				"path": ctx.Paths.Recordings, "index": filepath.Join(ctx.Paths.Recordings, "index.json"),
+			},
+			capturerecording.SourceType: map[string]any{
+				"path":    capturerecording.RecordingsPath(ctx.Paths.Voice),
+				"history": capturerecording.HistoryPath(ctx.Paths.Voice),
+			},
+		},
+	}, nil
 }
 
-func recordingLatest(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	recs := recording.ReadIndex(ctx.Paths.Recordings)
-	if len(recs) == 0 {
+func recordingLatest(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	source, err := parseRecordingSource(flagStr(cmd, "source"))
+	if err != nil {
+		return nil, err
+	}
+	items, err := queryRecordings(cmd.Context(), ctx, "", "", source, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
 		return map[string]any{"ok": true, "recording": nil}, nil
 	}
-	recording.SortByCreatedDesc(recs)
-	return map[string]any{"ok": true, "recording": recordingDetail(recs[0])}, nil
+	return map[string]any{"ok": true, "recording": items[0].detail}, nil
 }
 
 var recordingQueryNow = time.Now
@@ -171,7 +319,7 @@ func recordingToday(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, e
 	now := recordingQueryNow().In(time.Local)
 	from := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	to := from.AddDate(0, 0, 1)
-	result, err := recordingListRange(ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), &from, &to)
+	result, err := recordingListRange(cmd.Context(), ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), flagStr(cmd, "source"), &from, &to)
 	if err != nil {
 		return nil, err
 	}

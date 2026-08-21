@@ -34,7 +34,6 @@ const (
 	CodeDaemonUnresponsive      = "YOOOCLAW_DAEMON_UNRESPONSIVE"
 	CodeAutostartUnavailable    = "YOOOCLAW_AUTOSTART_UNAVAILABLE"
 	CodeVoiceStorageNotFound    = "YOOOCLAW_VOICE_STORAGE_NOT_FOUND"
-	CodeVoiceSchemaUnsupported  = "YOOOCLAW_VOICE_SCHEMA_UNSUPPORTED"
 )
 
 // Error 携带结构化错误码、提示与进程退出码。

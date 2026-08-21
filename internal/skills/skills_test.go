@@ -162,10 +162,14 @@ func TestVoiceInputReferenceRoutesJustNowWithoutLatestFallback(t *testing.T) {
 		"one hour",
 		"voice list --from <FROM> --to <TO>",
 		"Do not use `voice +latest`",
-		"voice apps --format json",
-		"never `app_id`",
+		"first run `yoooclaw voice apps --format json`",
+		"rolling last\nseven days",
+		`{"app_id":"com.microsoft.VSCode","app_name":"Code"}`,
+		"passing `--app com.microsoft.VSCode`",
+		"no built-in\nalias or category expansion",
 		"default_range_applied: true",
 		"voice list --all",
+		"There is no\n  `voice stats` command",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("voice input reference missing %q", required)
