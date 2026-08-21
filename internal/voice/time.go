@@ -26,15 +26,3 @@ func ParseBoundary(raw, flagName string) (*time.Time, error) {
 		raw,
 	)
 }
-
-// ParseLocalDate 解析 usage_daily 使用的 YYYY-MM-DD 日期边界。
-func ParseLocalDate(raw, flagName string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", nil
-	}
-	if _, err := time.Parse("2006-01-02", value); err != nil {
-		return "", errs.Newf(errs.CodeInvalidArgument, "%s 必须是 YYYY-MM-DD（收到 %q）", flagName, raw)
-	}
-	return value, nil
-}
