@@ -1,92 +1,50 @@
 package voice
 
 import (
+	"bytes"
 	"context"
-	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"io"
 	"os"
 	"path/filepath"
-	"runtime"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/errs"
-	_ "modernc.org/sqlite"
 )
 
-var requiredHistoryColumns = []string{
-	"id", "started_at_ms", "ended_at_ms", "timezone_offset_min", "duration_ms",
-	"platform", "app_id", "app_name", "window_title", "text", "language",
-	"char_count", "result_status", "audio_rel_path",
-}
+var dailyHistoryName = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})\.jsonl$`)
 
-var requiredUsageColumns = []string{
-	"local_date", "successful_count", "duration_ms", "char_count", "updated_at_ms",
-}
-
-// Repository 持有对一个 profile 的 voice.sqlite3 的单连接只读访问。
+// Repository 持有一个 profile 的 Voice JSONL 根目录。读取始终以文件快照进行，
+// 不持有数据库连接，也不会回退读取旧的 voice.sqlite3。
 type Repository struct {
-	dir  string
-	path string
-	db   *sql.DB
+	dir         string
+	historyPath string
 }
 
-// Open 以只读 URI 打开数据库，并验证稳定历史视图。不能创建缺失的数据库。
+// Open 验证每日历史目录存在。缺少 audio-jsonl 时明确返回 storage not found，
+// 即使同目录中仍有旧 SQLite 文件也不回退。
 func Open(ctx context.Context, dir string) (*Repository, error) {
-	databasePath := filepath.Join(dir, databaseFileName)
-	info, err := os.Stat(databasePath)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	historyPath := filepath.Join(dir, historyDirName)
+	info, err := os.Stat(historyPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, errs.New(
 			errs.CodeVoiceStorageNotFound,
-			"未找到语音输入历史数据库",
-			map[string]any{"path": databasePath},
+			"未找到语音输入 JSONL 历史目录",
+			map[string]any{"path": historyPath},
 		)
 	}
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, errs.New(
-			errs.CodeStorageUnavailable,
-			"语音输入历史数据库不可用",
-			map[string]any{"path": databasePath},
-		)
+	if err != nil || !info.IsDir() {
+		return nil, storageError(historyPath, "语音输入 JSONL 历史目录不可用", err)
 	}
-
-	u := readOnlyDatabaseURI(databasePath, runtime.GOOS)
-	db, err := sql.Open("sqlite", u)
-	if err != nil {
-		return nil, storageError(databasePath, "无法打开语音输入历史数据库", err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-
-	repository := &Repository{dir: dir, path: databasePath, db: db}
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, storageError(databasePath, "无法读取语音输入历史数据库", err)
-	}
-	if err := repository.ensureColumns(ctx, historyView, requiredHistoryColumns); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return repository, nil
-}
-
-func readOnlyDatabaseURI(databasePath, goos string) string {
-	uriPath := filepath.ToSlash(databasePath)
-	if goos == "windows" {
-		uriPath = strings.ReplaceAll(uriPath, `\`, "/")
-		if len(uriPath) >= 3 && uriPath[1] == ':' && uriPath[2] == '/' {
-			uriPath = "/" + uriPath
-		}
-	}
-	u := &url.URL{Scheme: "file", Path: uriPath}
-	query := u.Query()
-	query.Set("mode", "ro")
-	query.Add("_pragma", "query_only(1)")
-	query.Add("_pragma", "busy_timeout(2000)")
-	u.RawQuery = query.Encode()
-	return u.String()
+	return &Repository{dir: dir, historyPath: historyPath}, nil
 }
 
 func storageError(path, message string, cause error) error {
@@ -97,270 +55,310 @@ func storageError(path, message string, cause error) error {
 	return errs.New(errs.CodeStorageUnavailable, message, details)
 }
 
-// Close 关闭数据库句柄。
-func (r *Repository) Close() error { return r.db.Close() }
+// Close 为兼容现有调用保留；JSONL Repository 不持有资源。
+func (r *Repository) Close() error { return nil }
 
-func (r *Repository) ensureColumns(ctx context.Context, object string, required []string) error {
-	rows, err := r.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%q)", object))
-	if err != nil {
-		return storageError(r.path, "无法检查语音输入数据库结构", err)
-	}
-	defer rows.Close()
-	found := map[string]bool{}
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var name, dataType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return storageError(r.path, "无法检查语音输入数据库结构", err)
-		}
-		found[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return storageError(r.path, "无法检查语音输入数据库结构", err)
-	}
-	var missing []string
-	for _, column := range required {
-		if !found[column] {
-			missing = append(missing, column)
-		}
-	}
-	if len(missing) > 0 {
-		return errs.New(
-			errs.CodeVoiceSchemaUnsupported,
-			"语音输入数据库版本不受支持",
-			map[string]any{"object": object, "missing_columns": missing, "path": r.path},
-		)
-	}
-	return nil
+type sourceHistoryItem struct {
+	VoiceID           string  `json:"voice_id"`
+	StartedAt         string  `json:"started_at"`
+	EndedAt           string  `json:"ended_at"`
+	TimezoneOffsetMin int     `json:"timezone_offset_min"`
+	DurationMS        int64   `json:"duration_ms"`
+	Platform          string  `json:"platform"`
+	AppID             string  `json:"app_id"`
+	AppName           string  `json:"app_name"`
+	WindowTitle       *string `json:"window_title"`
+	Text              string  `json:"text"`
+	Language          *string `json:"language"`
+	CharCount         int64   `json:"char_count"`
+	ResultStatus      string  `json:"result_status"`
+	AudioRelPath      *string `json:"audio_rel_path"`
+
+	startedTime time.Time
 }
 
-func appendHistoryFilters(query *strings.Builder, args *[]any, opts Query, includeKeyword bool) {
+type historyFile struct {
+	date string
+	path string
+}
+
+func (r *Repository) historyFiles(ctx context.Context, opts Query) ([]historyFile, error) {
+	entries, err := os.ReadDir(r.historyPath)
+	if err != nil {
+		return nil, storageError(r.historyPath, "无法列出语音输入 JSONL 历史", err)
+	}
+
+	// 文件日期使用采集设备当时的本地日。边界前后各保留一天，再逐条按
+	// RFC3339 时间精确判断，避免调用方时区与采集时区不同造成漏查。
+	var minDate, maxDate string
 	if opts.From != nil {
-		query.WriteString(" AND started_at_ms >= ?")
-		*args = append(*args, opts.From.UnixMilli())
+		minDate = opts.From.In(time.Local).AddDate(0, 0, -1).Format("2006-01-02")
 	}
 	if opts.To != nil {
-		query.WriteString(" AND started_at_ms < ?")
-		*args = append(*args, opts.To.UnixMilli())
+		maxDate = opts.To.In(time.Local).AddDate(0, 0, 1).Format("2006-01-02")
 	}
-	if app := strings.TrimSpace(opts.App); app != "" {
-		query.WriteString(" AND lower(trim(coalesce(app_name, ''))) = lower(?)")
-		*args = append(*args, app)
+
+	files := make([]historyFile, 0, len(entries))
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		match := dailyHistoryName.FindStringSubmatch(entry.Name())
+		if entry.IsDir() || len(match) != 2 {
+			continue
+		}
+		date := match[1]
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			continue
+		}
+		if minDate != "" && date < minDate {
+			continue
+		}
+		if maxDate != "" && date > maxDate {
+			continue
+		}
+		files = append(files, historyFile{date: date, path: filepath.Join(r.historyPath, entry.Name())})
 	}
-	if status := strings.TrimSpace(opts.Status); status != "" {
-		query.WriteString(" AND lower(trim(coalesce(result_status, ''))) = lower(?)")
-		*args = append(*args, status)
-	}
-	if language := strings.TrimSpace(opts.Language); language != "" {
-		query.WriteString(" AND lower(trim(coalesce(language, ''))) = lower(?)")
-		*args = append(*args, language)
-	}
-	if includeKeyword {
-		query.WriteString(" AND instr(lower(coalesce(text, '')), lower(?)) > 0")
-		*args = append(*args, strings.TrimSpace(opts.Keyword))
-	}
+	sort.Slice(files, func(i, j int) bool { return files[i].date > files[j].date })
+	return files, nil
 }
 
-// List 返回按开始时间倒序排列的历史。Keyword 非空时仅搜索最终上屏文本。
-func (r *Repository) List(ctx context.Context, opts Query) ([]HistoryItem, error) {
-	var statement strings.Builder
-	statement.WriteString(`SELECT id, started_at_ms, ended_at_ms, timezone_offset_min,
-duration_ms, platform, app_name, window_title, text, language, char_count,
-result_status, audio_rel_path FROM agent_voice_history_v1 WHERE 1 = 1`)
-	args := make([]any, 0, 6)
-	appendHistoryFilters(&statement, &args, opts, strings.TrimSpace(opts.Keyword) != "")
-	statement.WriteString(" ORDER BY started_at_ms DESC, id DESC")
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, storageError(r.path, "无法开始语音输入历史只读查询", err)
+func (r *Repository) readHistoryFile(ctx context.Context, path string) ([]sourceHistoryItem, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // writer 清理/切换文件与目录枚举并发发生
 	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, statement.String(), args...)
 	if err != nil {
-		return nil, storageError(r.path, "无法查询语音输入历史", err)
+		return nil, storageError(path, "无法打开语音输入 JSONL 历史", err)
 	}
-	defer rows.Close()
+	defer file.Close()
 
-	items := make([]HistoryItem, 0)
-	for rows.Next() {
-		item, audioRelative, err := scanHistory(rows)
-		if err != nil {
-			return nil, storageError(r.path, "无法读取语音输入历史", err)
+	info, err := file.Stat()
+	if err != nil {
+		return nil, storageError(path, "无法读取语音输入 JSONL 文件信息", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, info.Size()))
+	if err != nil {
+		return nil, storageError(path, "无法读取语音输入 JSONL 历史", err)
+	}
+	if len(raw) == 0 {
+		return []sourceHistoryItem{}, nil
+	}
+
+	// 活跃 writer 的最后一段只有在换行完整提交后才可见。
+	lines := bytes.Split(raw, []byte{'\n'})
+	if raw[len(raw)-1] != '\n' {
+		lines = lines[:len(lines)-1]
+	}
+	items := make([]sourceHistoryItem, 0, len(lines))
+	for _, line := range lines {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		if path, ok := resolveAudioPath(r.dir, audioRelative); ok {
-			item.HasAudio = true
-			item.AudioPath = &path
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
 		}
-		if opts.HasAudio && !item.HasAudio {
+		var item sourceHistoryItem
+		if err := json.Unmarshal(line, &item); err != nil || !validSourceHistory(&item) {
 			continue
 		}
 		items = append(items, item)
-		if opts.Limit > 0 && len(items) >= opts.Limit {
-			break
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].startedTime.Equal(items[j].startedTime) {
+			return items[i].VoiceID > items[j].VoiceID
+		}
+		return items[i].startedTime.After(items[j].startedTime)
+	})
+	return items, nil
+}
+
+func validSourceHistory(item *sourceHistoryItem) bool {
+	item.VoiceID = strings.TrimSpace(item.VoiceID)
+	if item.VoiceID == "" || item.DurationMS < 0 || item.CharCount < 0 {
+		return false
+	}
+	started, err := time.Parse(time.RFC3339Nano, item.StartedAt)
+	if err != nil {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339Nano, item.EndedAt); err != nil {
+		return false
+	}
+	item.startedTime = started
+	return true
+}
+
+func matchesQuery(item sourceHistoryItem, opts Query) bool {
+	if opts.From != nil && item.startedTime.Before(*opts.From) {
+		return false
+	}
+	if opts.To != nil && !item.startedTime.Before(*opts.To) {
+		return false
+	}
+	if app := strings.TrimSpace(opts.App); app != "" &&
+		!strings.EqualFold(strings.TrimSpace(item.AppName), app) &&
+		!strings.EqualFold(strings.TrimSpace(item.AppID), app) {
+		return false
+	}
+	if status := strings.TrimSpace(opts.Status); status != "" && !strings.EqualFold(strings.TrimSpace(item.ResultStatus), status) {
+		return false
+	}
+	if language := strings.TrimSpace(opts.Language); language != "" {
+		if item.Language == nil || !strings.EqualFold(strings.TrimSpace(*item.Language), language) {
+			return false
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, storageError(r.path, "无法读取语音输入历史", err)
+	if keyword := strings.TrimSpace(opts.Keyword); keyword != "" &&
+		!strings.Contains(strings.ToLower(item.Text), strings.ToLower(keyword)) {
+		return false
 	}
-	if err := rows.Close(); err != nil {
-		return nil, storageError(r.path, "无法结束语音输入历史查询", err)
+	return true
+}
+
+func (r *Repository) publicItem(item sourceHistoryItem) HistoryItem {
+	result := HistoryItem{
+		ID: item.VoiceID, StartedAt: item.StartedAt, EndedAt: item.EndedAt,
+		TimezoneOffsetMin: item.TimezoneOffsetMin, DurationMS: item.DurationMS,
+		Platform: item.Platform, AppName: item.AppName, WindowTitle: item.WindowTitle,
+		Text: item.Text, Language: item.Language, CharCount: item.CharCount,
+		ResultStatus: item.ResultStatus,
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, storageError(r.path, "无法完成语音输入历史查询", err)
+	if item.AudioRelPath != nil {
+		if path, ok := resolveAudioPath(r.dir, *item.AudioRelPath); ok {
+			result.HasAudio = true
+			result.AudioPath = &path
+		}
+	}
+	return result
+}
+
+// List 返回按文件日期、文件内开始时间倒序排列的历史。Keyword 非空时只
+// 搜索最终上屏文本。达到 Limit 后不再扫描更老的日期文件。
+func (r *Repository) List(ctx context.Context, opts Query) ([]HistoryItem, error) {
+	files, err := r.historyFiles(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]HistoryItem, 0)
+	for _, historyFile := range files {
+		sourceItems, err := r.readHistoryFile(ctx, historyFile.path)
+		if err != nil {
+			return nil, err
+		}
+		for _, sourceItem := range sourceItems {
+			if !matchesQuery(sourceItem, opts) {
+				continue
+			}
+			item := r.publicItem(sourceItem)
+			if opts.HasAudio && !item.HasAudio {
+				continue
+			}
+			items = append(items, item)
+			if opts.Limit > 0 && len(items) >= opts.Limit {
+				return items, nil
+			}
+		}
 	}
 	return items, nil
 }
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanHistory(row rowScanner) (HistoryItem, string, error) {
-	var item HistoryItem
-	var startedMS, endedMS int64
-	var offsetMinutes int
-	var platform, appName, windowTitle, textValue, language, status, audio sql.NullString
-	if err := row.Scan(
-		&item.ID, &startedMS, &endedMS, &offsetMinutes, &item.DurationMS,
-		&platform, &appName, &windowTitle, &textValue, &language, &item.CharCount,
-		&status, &audio,
-	); err != nil {
-		return HistoryItem{}, "", err
+// Show 从新到旧查找 voice_id。数据库数字主键不参与查询。
+func (r *Repository) Show(ctx context.Context, voiceID string) (*HistoryItem, error) {
+	voiceID = strings.TrimSpace(voiceID)
+	if voiceID == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "voice_id 不能为空")
 	}
-	item.StartedAt = timeWithRecordedOffset(startedMS, offsetMinutes)
-	item.EndedAt = timeWithRecordedOffset(endedMS, offsetMinutes)
-	item.TimezoneOffsetMin = offsetMinutes
-	item.Platform = platform.String
-	item.AppName = appName.String
-	item.WindowTitle = nullableString(windowTitle.String)
-	item.Text = textValue.String
-	item.Language = nullableString(language.String)
-	item.ResultStatus = status.String
-	return item, audio.String, nil
-}
-
-// Show 返回指定 ID 的单条历史。
-func (r *Repository) Show(ctx context.Context, id int64) (*HistoryItem, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT id, started_at_ms, ended_at_ms, timezone_offset_min,
-duration_ms, platform, app_name, window_title, text, language, char_count,
-result_status, audio_rel_path FROM agent_voice_history_v1 WHERE id = ?`, id)
-	item, audioRelative, err := scanHistory(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errs.New(errs.CodeNotFound, fmt.Sprintf("语音输入历史不存在：%d", id))
-	}
+	files, err := r.historyFiles(ctx, Query{})
 	if err != nil {
-		return nil, storageError(r.path, "无法读取语音输入历史", err)
+		return nil, err
 	}
-	if path, ok := resolveAudioPath(r.dir, audioRelative); ok {
-		item.HasAudio = true
-		item.AudioPath = &path
-	}
-	return &item, nil
-}
-
-// Apps 返回查询范围内按 app_name 去重后的候选，绝不暴露 app_id。
-func (r *Repository) Apps(ctx context.Context, opts Query) ([]AppSummary, error) {
-	var statement strings.Builder
-	statement.WriteString(`WITH ranked AS (
-SELECT trim(app_name) AS app_name, started_at_ms, timezone_offset_min,
-COUNT(*) OVER (PARTITION BY lower(trim(app_name))) AS history_count,
-ROW_NUMBER() OVER (
-  PARTITION BY lower(trim(app_name)) ORDER BY started_at_ms DESC, id DESC
-) AS row_rank
-FROM agent_voice_history_v1 WHERE trim(coalesce(app_name, '')) <> ''`)
-	args := make([]any, 0, 2)
-	appendHistoryFilters(&statement, &args, Query{From: opts.From, To: opts.To}, false)
-	statement.WriteString(`)
-SELECT app_name, history_count, started_at_ms, timezone_offset_min
-FROM ranked WHERE row_rank = 1 ORDER BY started_at_ms DESC, app_name COLLATE NOCASE`)
-
-	rows, err := r.db.QueryContext(ctx, statement.String(), args...)
-	if err != nil {
-		return nil, storageError(r.path, "无法查询语音输入 App 列表", err)
-	}
-	defer rows.Close()
-	apps := make([]AppSummary, 0)
-	for rows.Next() {
-		var app AppSummary
-		var latestMS int64
-		var offsetMin int
-		if err := rows.Scan(&app.AppName, &app.HistoryCount, &latestMS, &offsetMin); err != nil {
-			return nil, storageError(r.path, "无法读取语音输入 App 列表", err)
+	for _, historyFile := range files {
+		items, err := r.readHistoryFile(ctx, historyFile.path)
+		if err != nil {
+			return nil, err
 		}
-		app.LatestAt = timeWithRecordedOffset(latestMS, offsetMin)
-		apps = append(apps, app)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, storageError(r.path, "无法读取语音输入 App 列表", err)
-	}
-	return apps, nil
-}
-
-func (r *Repository) usageSource(ctx context.Context) (string, error) {
-	for _, source := range []string{stableUsageView, legacyUsageTable} {
-		var name string
-		err := r.db.QueryRowContext(ctx,
-			"SELECT name FROM sqlite_master WHERE (type = 'table' OR type = 'view') AND name = ?",
-			source,
-		).Scan(&name)
-		if err == nil {
-			if err := r.ensureColumns(ctx, source, requiredUsageColumns); err != nil {
-				return "", err
+		for _, item := range items {
+			if item.VoiceID == voiceID {
+				result := r.publicItem(item)
+				return &result, nil
 			}
-			return source, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return "", storageError(r.path, "无法检查语音输入用量表", err)
 		}
 	}
-	return "", errs.New(
-		errs.CodeVoiceSchemaUnsupported,
-		"语音输入数据库缺少用量统计表",
-		map[string]any{"object": stableUsageView + " or " + legacyUsageTable, "path": r.path},
-	)
+	return nil, errs.New(errs.CodeNotFound, fmt.Sprintf("语音输入历史不存在：%s", voiceID))
 }
 
-// Stats 从权威每日用量表读取数据；from 包含，to 不包含。
-func (r *Repository) Stats(ctx context.Context, from, to string) ([]UsageDay, UsageTotal, error) {
-	source, err := r.usageSource(ctx)
+// Apps 返回查询范围内按真实 app_id 去重后的候选。app_id 为空时退化为按
+// app_name 去重；同一个 app_id 使用最近一次非空 app_name 作为展示名称。
+func (r *Repository) Apps(ctx context.Context, opts Query) ([]AppSummary, error) {
+	files, err := r.historyFiles(ctx, opts)
 	if err != nil {
-		return nil, UsageTotal{}, err
+		return nil, err
 	}
-	statement := fmt.Sprintf(`SELECT local_date, successful_count, duration_ms, char_count, updated_at_ms
-FROM %s WHERE 1 = 1`, source)
-	args := make([]any, 0, 2)
-	if from != "" {
-		statement += " AND local_date >= ?"
-		args = append(args, from)
+	type aggregate struct {
+		id     string
+		name   string
+		count  int64
+		latest time.Time
+		at     string
 	}
-	if to != "" {
-		statement += " AND local_date < ?"
-		args = append(args, to)
-	}
-	statement += " ORDER BY local_date DESC"
-	rows, err := r.db.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return nil, UsageTotal{}, storageError(r.path, "无法查询语音输入用量", err)
-	}
-	defer rows.Close()
-	days := make([]UsageDay, 0)
-	var total UsageTotal
-	for rows.Next() {
-		var day UsageDay
-		var updatedMS int64
-		if err := rows.Scan(&day.LocalDate, &day.SuccessfulCount, &day.DurationMS, &day.CharCount, &updatedMS); err != nil {
-			return nil, UsageTotal{}, storageError(r.path, "无法读取语音输入用量", err)
+	aggregates := map[string]*aggregate{}
+	for _, historyFile := range files {
+		items, err := r.readHistoryFile(ctx, historyFile.path)
+		if err != nil {
+			return nil, err
 		}
-		day.UpdatedAt = time.UnixMilli(updatedMS).In(time.Local).Format(time.RFC3339Nano)
-		days = append(days, day)
-		total.SuccessfulCount += day.SuccessfulCount
-		total.DurationMS += day.DurationMS
-		total.CharCount += day.CharCount
+		for _, item := range items {
+			if !matchesQuery(item, Query{From: opts.From, To: opts.To}) {
+				continue
+			}
+			appID := strings.TrimSpace(item.AppID)
+			appName := strings.TrimSpace(item.AppName)
+			if appID == "" && appName == "" {
+				continue
+			}
+			key := "id:" + strings.ToLower(appID)
+			if appID == "" {
+				key = "name:" + strings.ToLower(appName)
+			}
+			entry := aggregates[key]
+			if entry == nil {
+				entry = &aggregate{id: appID, name: appName}
+				aggregates[key] = entry
+			}
+			entry.count++
+			if entry.at == "" || item.startedTime.After(entry.latest) {
+				entry.latest = item.startedTime
+				entry.at = item.StartedAt
+				entry.id = appID
+				if appName != "" {
+					entry.name = appName
+				}
+			} else if entry.name == "" && appName != "" {
+				entry.name = appName
+			}
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, UsageTotal{}, storageError(r.path, "无法读取语音输入用量", err)
+	apps := make([]AppSummary, 0, len(aggregates))
+	for _, entry := range aggregates {
+		apps = append(apps, AppSummary{AppID: entry.id, AppName: entry.name, HistoryCount: entry.count, LatestAt: entry.at})
 	}
-	return days, total, nil
+	sort.Slice(apps, func(i, j int) bool {
+		left, _ := time.Parse(time.RFC3339Nano, apps[i].LatestAt)
+		right, _ := time.Parse(time.RFC3339Nano, apps[j].LatestAt)
+		if left.Equal(right) {
+			leftName := strings.ToLower(apps[i].AppName)
+			rightName := strings.ToLower(apps[j].AppName)
+			if leftName == rightName {
+				return strings.ToLower(apps[i].AppID) < strings.ToLower(apps[j].AppID)
+			}
+			return leftName < rightName
+		}
+		return left.After(right)
+	})
+	return apps, nil
 }
