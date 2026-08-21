@@ -131,6 +131,43 @@ func TestRepositoryReadsDailyJSONLAndFiltersHistory(t *testing.T) {
 	}
 }
 
+func TestRepositoryUsesAudioFilenameForLegacyID(t *testing.T) {
+	root := createVoiceJSONLRoot(t)
+	row := voiceSource("unused", "2026-08-13T15:51:22+08:00", "com.microsoft.VSCode", "Code", "legacy")
+	delete(row, "voice_id")
+	row["audio_rel_path"] = "audio/2026/08/9b021800c5cace45-1786607482470.wav"
+	writeVoiceDay(t, root, "2026-08-13", []map[string]any{row})
+
+	repository, err := Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.List(context.Background(), Query{})
+	if err != nil || len(items) != 1 || items[0].ID != "9b021800c5cace45-1786607482470" {
+		t.Fatalf("legacy audio filename ID = %+v, err=%v", items, err)
+	}
+	shown, err := repository.Show(context.Background(), "9b021800c5cace45-1786607482470")
+	if err != nil || shown.ID != items[0].ID {
+		t.Fatalf("show by legacy audio filename ID = %+v, err=%v", shown, err)
+	}
+}
+
+func TestRepositorySkipsLegacyRowWithoutAudioPath(t *testing.T) {
+	root := createVoiceJSONLRoot(t)
+	row := voiceSource("unused", "2026-08-13T15:51:22+08:00", "com.microsoft.VSCode", "Code", "legacy")
+	delete(row, "voice_id")
+	writeVoiceDay(t, root, "2026-08-13", []map[string]any{row})
+
+	repository, err := Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.List(context.Background(), Query{})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("legacy row without stable ID must be skipped: %+v, err=%v", items, err)
+	}
+}
+
 func TestAppsDeduplicatesByAppIDAndKeepsRawName(t *testing.T) {
 	root := createVoiceJSONLRoot(t)
 	base := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)

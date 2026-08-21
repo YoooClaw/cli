@@ -178,8 +178,7 @@ func (r *Repository) readHistoryFile(ctx context.Context, path string) ([]source
 }
 
 func validSourceHistory(item *sourceHistoryItem) bool {
-	item.VoiceID = strings.TrimSpace(item.VoiceID)
-	if item.VoiceID == "" || item.DurationMS < 0 || item.CharCount < 0 {
+	if item.DurationMS < 0 || item.CharCount < 0 {
 		return false
 	}
 	started, err := time.Parse(time.RFC3339Nano, item.StartedAt)
@@ -188,6 +187,23 @@ func validSourceHistory(item *sourceHistoryItem) bool {
 	}
 	if _, err := time.Parse(time.RFC3339Nano, item.EndedAt); err != nil {
 		return false
+	}
+
+	item.VoiceID = strings.TrimSpace(item.VoiceID)
+	if item.VoiceID == "" {
+		audioRelPath := ""
+		if item.AudioRelPath != nil {
+			audioRelPath = strings.TrimSpace(*item.AudioRelPath)
+		}
+		if audioRelPath == "" {
+			return false
+		}
+		filename := filepath.Base(filepath.Clean(audioRelPath))
+		stem := strings.TrimSpace(strings.TrimSuffix(filename, filepath.Ext(filename)))
+		if stem == "" || stem == "." || stem == ".." {
+			return false
+		}
+		item.VoiceID = stem
 	}
 	item.startedTime = started
 	return true
