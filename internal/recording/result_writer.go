@@ -94,9 +94,10 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	}
 
 	entry, found := storage.FindByID(recordingID)
+	clientLabel := strings.TrimSpace(opts.ClientLabel)
 	if !found {
 		metadata, timeSource := buildPlaceholderMetadata(recordingID, params)
-		if _, err := storage.Ingest(recordingID, metadata, ""); err != nil {
+		if _, err := storage.Ingest(recordingID, metadata, clientLabel); err != nil {
 			return ResultWriteResult{}, err
 		}
 		var ok bool
@@ -104,19 +105,32 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		if !ok {
 			return ResultWriteResult{}, fmt.Errorf("Recording not found: %s", recordingID)
 		}
-		logger.Info("[recording-result] 录音不存在，已按结果写入新建: " + recordingID)
+		logger.Info("[recording-result] 录音不存在，已按结果写入新建: " + recordingID +
+			", client=" + entry.ClientLabel)
 		logger.Info("[recording-result] 录音时间已入库: " + recordingID +
 			", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
-	} else if merged, timeSource, changed := mergeResultMetadata(entry.Metadata, params); changed {
-		if err := storage.updateEntry(recordingID, func(current *Entry) {
-			current.Metadata = merged
-		}); err != nil {
-			return ResultWriteResult{}, err
+	} else {
+		// 已有录音：来源 label 以本次推送为准，顺带把早期写成 default 的老数据纠回来。
+		if clientLabel != "" && entry.ClientLabel != clientLabel {
+			if err := storage.updateEntry(recordingID, func(current *Entry) {
+				current.ClientLabel = clientLabel
+			}); err != nil {
+				return ResultWriteResult{}, err
+			}
+			entry, _ = storage.FindByID(recordingID)
+			logger.Info("[recording-result] 录音来源已更新: " + recordingID + ", client=" + clientLabel)
 		}
-		entry, _ = storage.FindByID(recordingID)
-		if timeSource != "" {
-			logger.Info("[recording-result] 录音时间已更新: " + recordingID +
-				", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+		if merged, timeSource, changed := mergeResultMetadata(entry.Metadata, params); changed {
+			if err := storage.updateEntry(recordingID, func(current *Entry) {
+				current.Metadata = merged
+			}); err != nil {
+				return ResultWriteResult{}, err
+			}
+			entry, _ = storage.FindByID(recordingID)
+			if timeSource != "" {
+				logger.Info("[recording-result] 录音时间已更新: " + recordingID +
+					", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+			}
 		}
 	}
 

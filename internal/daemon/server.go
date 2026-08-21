@@ -357,7 +357,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
 	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
-		s.handleRecordingGateway(w, r, path)
+		s.handleRecordingGateway(w, r, authCtx, path)
 	case path == "/images" && r.Method == http.MethodPost:
 		s.handleImageHTTP(w, r, authCtx)
 	case path == "/gateway/images.sync" && r.Method == http.MethodPost:

@@ -15,7 +15,7 @@ type recordingIDBody struct {
 	ASR         *recording.AsrConfig `json:"asr,omitempty"`
 }
 
-func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, path string) {
+func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, auth authResult, path string) {
 	method := strings.TrimPrefix(path, "/gateway/")
 	switch method {
 	case "recordings.result.write":
@@ -41,6 +41,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		body.RecordingID = recordingID
 		result, err := recording.HandleRecordingResultWrite(body, s.recordingStorage, s.logger, recording.SyncOptions{
 			NotifyStatus: s.notifyRecordingStatus,
+			ClientLabel:  auth.clientLabel,
 		})
 		if err != nil {
 			code := "RESULT_WRITE_FAILED"
