@@ -31,9 +31,15 @@ func TestClientDispatcherReqAndRequest(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/gateway/notifications.push":
+			if r.Header.Get(InternalRequestIDHeader) != "req_1" {
+				t.Fatalf("missing relay request id on %s: %q", r.URL.Path, r.Header.Get(InternalRequestIDHeader))
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok":true,"data":{"ok":true,"echo":"notifications.push"}}`))
 		case "/notifications":
+			if r.Header.Get(InternalRequestIDHeader) != "http_1" {
+				t.Fatalf("missing relay request id on %s: %q", r.URL.Path, r.Header.Get(InternalRequestIDHeader))
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok":true,"ingested":1}`))
 		default:
