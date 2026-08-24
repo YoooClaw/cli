@@ -62,20 +62,26 @@ type ProxyEgress struct {
 	token  string
 	client *http.Client
 	logger *Logger
+	// retryDelays 是本实例的重试间隔，构造时从 proxyEgressRetryDelays 取默认值。
+	// 做成实例字段而不是直接读全局：deliver 在后台 goroutine 里读它，若测试去改
+	// 全局，就会和上一个用例遗留的 deliver goroutine 撞成 data race。
+	retryDelays []time.Duration
 }
 
 // NewProxyEgress 构造回投宿主回调的出站端口。
 func NewProxyEgress(url, token string, logger *Logger) *ProxyEgress {
 	return &ProxyEgress{
-		url:    url,
-		token:  token,
-		client: &http.Client{Timeout: 10 * time.Second},
-		logger: logger,
+		url:         url,
+		token:       token,
+		client:      &http.Client{Timeout: 10 * time.Second},
+		logger:      logger,
+		retryDelays: proxyEgressRetryDelays,
 	}
 }
 
-// proxyEgressRetryDelays 是回投失败后的重试间隔。宿主插件可能正在整组重启
+// proxyEgressRetryDelays 是回投失败后的重试间隔默认值。宿主插件可能正在整组重启
 // （回调服务短暂不可达），带退避多试几次能把重启窗口内的事件送达而不是丢掉。
+// 这里只作默认值使用，构造后不再改动——要换间隔请改 ProxyEgress.retryDelays。
 var proxyEgressRetryDelays = []time.Duration{time.Second, 3 * time.Second, 9 * time.Second}
 
 // PushEvent 异步把 {event, payload} POST 给宿主回调。请求会保留自身的 10s
@@ -99,7 +105,7 @@ func (e *ProxyEgress) PushEventTo(label string, event string, payload any) error
 	return nil
 }
 
-// deliver 投递事件，网络错误与 5xx 按 proxyEgressRetryDelays 重试；4xx 属
+// deliver 投递事件，网络错误与 5xx 按 e.retryDelays 重试；4xx 属
 // 配置性失败（token 不符、路径不对），重试无意义，立即放弃。
 func (e *ProxyEgress) deliver(event string, body []byte) {
 	for attempt := 0; ; attempt++ {
@@ -107,13 +113,13 @@ func (e *ProxyEgress) deliver(event string, body []byte) {
 		if err == nil {
 			return
 		}
-		if !retryable || attempt >= len(proxyEgressRetryDelays) {
+		if !retryable || attempt >= len(e.retryDelays) {
 			if e.logger != nil {
 				e.logger.Warn(fmt.Sprintf("egress 回投失败（放弃）event=%s attempts=%d: %v", event, attempt+1, err))
 			}
 			return
 		}
-		delay := proxyEgressRetryDelays[attempt]
+		delay := e.retryDelays[attempt]
 		if e.logger != nil {
 			e.logger.Warn(fmt.Sprintf("egress 回投失败 event=%s attempt=%d，%s 后重试: %v", event, attempt+1, delay, err))
 		}

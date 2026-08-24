@@ -135,10 +135,6 @@ func TestProxyEgressDoesNotWaitForSlowCallback(t *testing.T) {
 }
 
 func TestProxyEgressRetriesOnServerError(t *testing.T) {
-	oldDelays := proxyEgressRetryDelays
-	proxyEgressRetryDelays = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond}
-	defer func() { proxyEgressRetryDelays = oldDelays }()
-
 	var mu sync.Mutex
 	calls := 0
 	success := make(chan struct{}, 1)
@@ -157,6 +153,9 @@ func TestProxyEgressRetriesOnServerError(t *testing.T) {
 	defer srv.Close()
 
 	eg := NewProxyEgress(srv.URL, "", nil)
+	// 按实例调间隔，不碰包级默认值——deliver 在后台 goroutine 里读它，
+	// 改全局会和别的用例遗留的 deliver goroutine 撞成 data race。
+	eg.retryDelays = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond}
 	if err := eg.PushEvent("recording.status", map[string]any{"id": "r1"}); err != nil {
 		t.Fatalf("PushEvent error: %v", err)
 	}
@@ -173,10 +172,6 @@ func TestProxyEgressRetriesOnServerError(t *testing.T) {
 }
 
 func TestProxyEgressDoesNotRetryClientError(t *testing.T) {
-	oldDelays := proxyEgressRetryDelays
-	proxyEgressRetryDelays = []time.Duration{time.Millisecond}
-	defer func() { proxyEgressRetryDelays = oldDelays }()
-
 	var mu sync.Mutex
 	calls := 0
 	first := make(chan struct{}, 1)
@@ -193,6 +188,7 @@ func TestProxyEgressDoesNotRetryClientError(t *testing.T) {
 	defer srv.Close()
 
 	eg := NewProxyEgress(srv.URL, "", nil)
+	eg.retryDelays = []time.Duration{time.Millisecond}
 	if err := eg.PushEvent("recording.status", nil); err != nil {
 		t.Fatalf("PushEvent error: %v", err)
 	}
