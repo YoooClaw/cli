@@ -7,6 +7,8 @@ const (
 	InternalHTTPHeader = "x-openclaw-relay-internal"
 	// InternalClientLabelHeader 是当前隧道对应的 api-key label。
 	InternalClientLabelHeader = "x-yoooclaw-internal-client-label"
+	// InternalRequestIDHeader 把 Relay frame id 透传给 daemon，仅用于故障日志关联。
+	InternalRequestIDHeader = "x-yoooclaw-internal-request-id"
 )
 
 const (

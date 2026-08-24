@@ -28,8 +28,8 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 | --------------------- | ------------------------------------------------------------ | ------ |
 | 📱 通知 Notification  | 按时间/应用/发送人/关键词查询，今日/最近摘要，多维聚合统计，大批量分片总结 | 🟢     |
 | 🔄 同步 Sync          | 扫描/迭代未处理通知、按日期取详情、提交批次，供记忆系统消费   | 🟢     |
-| 🗣️ 语音输入 Voice     | 列举/搜索本地口述历史、解析 App 名称、检查可选音频、查询权威用量统计 | 🟢     |
-| 🎙️ 录音 Recording     | 列举与查询录音、ASR 转写配置（api/model-proxy；local 已停用）、状态事件流跟随 | 🟢     |
+| 🗣️ 语音输入 Voice     | 列举/搜索每日 JSONL 口述历史、发现近期桌面 App ID/名称、检查可选音频 | 🟢     |
+| 🎙️ 录音 Recording     | 统一查询 YoooClaw Capture 与智能硬件录音，并提供硬件 ASR 配置和事件流 | 🟢     |
 | 🖼️ 图片 Image         | 列举与查询图片、本地路径 / 缩略图解析                        | 🟢     |
 | 🌐 网页 Web            | 列举与搜索已同步网页、解析 Markdown 文件与存储目录路径       | 🟢     |
 | 💡 灯效 Light         | 下发灯效指令到硬件（段 / 预设 / 规则三选一），连通性自检     | 🟡     |
@@ -296,14 +296,13 @@ yoooclaw log +errors                  # 昨天起的 error 级日志
 yoooclaw notification search --app 微信 --keyword 会议 --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # 大批量通知分片总结：create→next→commit→result
-yoooclaw recording list --status synced [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
+yoooclaw recording list [--source all|capture_app|smart_hardware] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
 yoooclaw voice list [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
-yoooclaw voice search "项目" --app "飞书"
-yoooclaw voice apps
-yoooclaw voice stats [--from <DATE>] [--to <DATE>]
+yoooclaw voice apps                                # 最近 7 天去重后的 App ID/名称
+yoooclaw voice search "项目" --app com.microsoft.VSCode
 yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>
@@ -318,6 +317,11 @@ yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"
 ASR 语言提示中，`auto` 表示保留 provider 侧自动识别；台湾繁体中文场景可使用 `zh-TW`，仅需指定繁体中文脚本时可使用 `zh-Hant`。
 
 不带任何筛选条件的 `voice list` 默认返回滚动最近 72 小时，并在 JSON 中明确提示；查询全部已保存历史请使用 `voice list --all`。命令没有默认条数上限。
+`voice apps` 默认查询滚动最近 7 天，按 `app_id` 去重并同时返回实际的 `app_id` 与
+`app_name`；显式查询全历史 App 清单请使用 `voice apps --all`。
+Voice 历史从每日 `audio-jsonl/YYYY-MM-DD.jsonl` 读取，对外 ID 是稳定的字符串
+`voice_id`，不会回退读取旧 SQLite。录音查询默认同时覆盖 `YoooClaw Capture`
+（`capture_app`）和 YoooClaw 智能硬件（`smart_hardware`），每条结果都会标明来源。
 
 ### 3. Raw API
 
@@ -424,7 +428,8 @@ dist-native/yoooclaw-darwin-arm64 --help
 | [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
 | [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | Relay 入站帧到 daemon HTTP/gateway 的进程内分发 |
 | [internal/recording](internal/recording)            | 录音 OSS 下载、状态机、ASR、转写稿存储 |
-| [internal/voice](internal/voice)                    | 本地语音输入历史与用量的 SQLite/WAL 只读查询 |
+| [internal/capturerecording](internal/capturerecording) | YoooClaw Capture 录音每日索引与产物事实检查 |
+| [internal/voice](internal/voice)                    | 本地语音输入每日 JSONL 历史只读查询 |
 | [internal/image](internal/image)                    | 图片 OSS 下载与索引 |
 | [internal/light](internal/light)                    | 灯效线协议、预设、发送器 |
 | [internal/skills](internal/skills)                  | 内置 Skill 列举 / 安装到 Agent skills 目录 |

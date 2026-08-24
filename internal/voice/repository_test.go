@@ -2,117 +2,84 @@ package voice
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/errs"
 )
 
-func createVoiceTestDatabase(t *testing.T) (string, *sql.DB) {
+func voiceSource(id, startedAt, appID, appName, text string) map[string]any {
+	started, _ := time.Parse(time.RFC3339Nano, startedAt)
+	return map[string]any{
+		"id": 42, "voice_id": id,
+		"started_at": startedAt, "ended_at": started.Add(time.Second).Format(time.RFC3339Nano),
+		"timezone_offset_min": 480, "duration_ms": 111, "platform": "macos",
+		"app_id": appID, "app_name": appName, "window_title": nil,
+		"text": text, "language": "zh-CN", "char_count": 7,
+		"result_status": "success", "audio_rel_path": nil,
+	}
+}
+
+func createVoiceJSONLRoot(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "voice")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, historyDirName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, databaseFileName)
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	statements := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA wal_autocheckpoint=0",
-		`CREATE TABLE voice_history (
-id INTEGER PRIMARY KEY, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER NOT NULL,
-timezone_offset_min INTEGER NOT NULL, duration_ms INTEGER NOT NULL, platform TEXT,
-app_id TEXT, app_name TEXT, window_title TEXT, text TEXT, language TEXT,
-char_count INTEGER NOT NULL, result_status TEXT, audio_rel_path TEXT
-)`,
-		`CREATE VIEW agent_voice_history_v1 AS SELECT
-id, started_at_ms, ended_at_ms, timezone_offset_min, duration_ms, platform,
-app_id, app_name, window_title, text, language, char_count, result_status,
-audio_rel_path FROM voice_history`,
-		`CREATE TABLE usage_daily (
-local_date TEXT PRIMARY KEY, successful_count INTEGER NOT NULL,
-duration_ms INTEGER NOT NULL, char_count INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
-)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("execute %q: %v", statement, err)
-		}
-	}
-	// 把 schema checkpoint 到主库；后续测试数据只留在活动 WAL 中。
-	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		t.Fatal(err)
-	}
-	return dir, db
+	return dir
 }
 
-func insertVoiceHistory(t *testing.T, db *sql.DB, values ...any) {
+func writeVoiceDay(t *testing.T, root, date string, rows []map[string]any) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO voice_history (
-id, started_at_ms, ended_at_ms, timezone_offset_min, duration_ms, platform,
-app_id, app_name, window_title, text, language, char_count, result_status, audio_rel_path
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, values...)
-	if err != nil {
+	data := make([]byte, 0)
+	for _, row := range rows {
+		line, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	if err := os.WriteFile(filepath.Join(root, historyDirName, date+".jsonl"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestRepositoryReadsActiveWALAndFiltersHistory(t *testing.T) {
-	dir, writer := createVoiceTestDatabase(t)
+func TestRepositoryReadsDailyJSONLAndFiltersHistory(t *testing.T) {
+	root := createVoiceJSONLRoot(t)
 	base := time.Date(2026, 8, 4, 10, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
-	insertVoiceHistory(t, writer,
-		1, base.UnixMilli(), base.Add(20*time.Second).UnixMilli(), 480, 111,
-		"macos", "com.example.chat", "ChatGPT", "Question", "Hello Project", nil,
-		99, "success", "audio/inside.wav",
-	)
-	insertVoiceHistory(t, writer,
-		2, base.Add(time.Minute).UnixMilli(), base.Add(time.Minute+10*time.Second).UnixMilli(), 480, 222,
-		"macos", "com.example.lark", "飞书", nil, "讨论上线计划", "zh-CN",
-		7, "success", nil,
-	)
-	insertVoiceHistory(t, writer,
-		3, base.Add(2*time.Minute).UnixMilli(), base.Add(2*time.Minute+10*time.Second).UnixMilli(), 480, 333,
-		"macos", "com.example.chat.beta", "chatgpt", nil, "HELLO again", "en",
-		5, "failed", "../outside.wav",
-	)
-	if err := os.MkdirAll(filepath.Join(dir, "audio"), 0o700); err != nil {
+	one := voiceSource("voice-one", base.Format(time.RFC3339), "com.openai.codex", "ChatGPT", "Hello Project")
+	one["audio_rel_path"] = "audio/2026/08/voice-one.wav"
+	two := voiceSource("voice-two", base.Add(time.Minute).Format(time.RFC3339), "com.google.Chrome", "Google Chrome", "浏览器里的项目")
+	three := voiceSource("voice-three", base.Add(2*time.Minute).Format(time.RFC3339), "com.microsoft.edgemac", "Microsoft Edge", "HELLO again")
+	three["result_status"] = "failed"
+	three["audio_rel_path"] = "../outside.wav"
+	// 故意乱序，reader 必须在单个日期内自行排序。
+	writeVoiceDay(t, root, "2026-08-04", []map[string]any{two, one, three})
+	if err := os.MkdirAll(filepath.Join(root, "audio", "2026", "08"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "audio", "inside.wav"), []byte("audio"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "audio", "2026", "08", "voice-one.wav"), []byte("audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(dir), "outside.wav"), []byte("outside"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(root), "outside.wav"), []byte("outside"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	repository, err := Open(context.Background(), dir)
+	repository, err := Open(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer repository.Close()
-
 	items, err := repository.List(context.Background(), Query{})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(items) != 3 || items[0].ID != "voice-three" || items[2].ID != "voice-one" {
+		t.Fatalf("history/order = %+v, err=%v", items, err)
 	}
-	if len(items) != 3 || items[0].ID != 3 || items[2].ID != 1 {
-		t.Fatalf("WAL rows or ordering incorrect: %+v", items)
-	}
-	if items[2].DurationMS != 111 || items[2].CharCount != 99 {
-		t.Fatalf("stored metrics must remain authoritative: %+v", items[2])
-	}
-	if !items[2].HasAudio || items[2].AudioPath == nil {
-		t.Fatalf("existing in-root audio was not resolved: %+v", items[2])
+	if items[2].DurationMS != 111 || items[2].CharCount != 7 || !items[2].HasAudio || items[2].AudioPath == nil {
+		t.Fatalf("stored metrics/audio facts changed: %+v", items[2])
 	}
 	if items[0].HasAudio || items[0].AudioPath != nil {
 		t.Fatalf("traversal audio path must be rejected: %+v", items[0])
@@ -120,114 +87,169 @@ func TestRepositoryReadsActiveWALAndFiltersHistory(t *testing.T) {
 
 	search, err := repository.List(context.Background(), Query{Keyword: "hello"})
 	if err != nil || len(search) != 2 {
-		t.Fatalf("case-insensitive text search = %+v, err=%v", search, err)
+		t.Fatalf("Unicode case-insensitive text search = %+v, err=%v", search, err)
 	}
-	byApp, err := repository.List(context.Background(), Query{App: " CHATGPT "})
-	if err != nil || len(byApp) != 2 {
-		t.Fatalf("normalized app matching = %+v, err=%v", byApp, err)
+	byAppID, err := repository.List(context.Background(), Query{App: " com.openai.codex "})
+	if err != nil || len(byAppID) != 1 || byAppID[0].ID != "voice-one" {
+		t.Fatalf("exact app_id filter = %+v, err=%v", byAppID, err)
 	}
-	withAudio, err := repository.List(context.Background(), Query{HasAudio: true})
-	if err != nil || len(withAudio) != 1 || withAudio[0].ID != 1 {
-		t.Fatalf("real audio filter = %+v, err=%v", withAudio, err)
+	byAppName, err := repository.List(context.Background(), Query{App: " chatgpt "})
+	if err != nil || len(byAppName) != 1 || byAppName[0].ID != "voice-one" {
+		t.Fatalf("exact app_name filter = %+v, err=%v", byAppName, err)
 	}
-	limited, err := repository.List(context.Background(), Query{Limit: 1})
-	if err != nil || len(limited) != 1 || limited[0].ID != 3 {
-		t.Fatalf("explicit limit = %+v, err=%v", limited, err)
+	aliases, err := repository.List(context.Background(), Query{App: "GPT"})
+	if err != nil || len(aliases) != 0 {
+		t.Fatalf("aliases must not be expanded = %+v, err=%v", aliases, err)
+	}
+	withAudio, err := repository.List(context.Background(), Query{HasAudio: true, Limit: 1})
+	if err != nil || len(withAudio) != 1 || withAudio[0].ID != "voice-one" {
+		t.Fatalf("real audio filter/limit = %+v, err=%v", withAudio, err)
 	}
 
-	shown, err := repository.Show(context.Background(), 2)
-	if err != nil || shown.ID != 2 || shown.Language == nil || *shown.Language != "zh-CN" {
-		t.Fatalf("show = %+v, err=%v", shown, err)
+	shown, err := repository.Show(context.Background(), "voice-two")
+	if err != nil || shown.ID != "voice-two" || shown.Language == nil || *shown.Language != "zh-CN" {
+		t.Fatalf("show by voice_id = %+v, err=%v", shown, err)
 	}
-	_, err = repository.Show(context.Background(), 999)
+	_, err = repository.Show(context.Background(), "999")
 	var typed *errs.Error
 	if !errors.As(err, &typed) || typed.Code != errs.CodeNotFound {
 		t.Fatalf("missing show error = %v", err)
 	}
 
 	apps, err := repository.Apps(context.Background(), Query{})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(apps) != 3 {
+		t.Fatalf("apps = %+v, err=%v", apps, err)
 	}
-	if len(apps) != 2 || apps[0].AppName != "chatgpt" || apps[0].HistoryCount != 2 {
-		t.Fatalf("app dedupe/count/order = %+v", apps)
+	counts := map[string]int64{}
+	for _, app := range apps {
+		counts[app.AppID+"|"+app.AppName] = app.HistoryCount
 	}
-	if _, err := repository.db.ExecContext(context.Background(), "DELETE FROM voice_history"); err == nil {
-		t.Fatal("repository connection must reject writes")
+	if counts["com.openai.codex|ChatGPT"] != 1 ||
+		counts["com.google.Chrome|Google Chrome"] != 1 ||
+		counts["com.microsoft.edgemac|Microsoft Edge"] != 1 {
+		t.Fatalf("apps must return raw ID/name identities: %+v", apps)
 	}
 }
 
-func TestRepositoryRangeAndUsageUseStoredFacts(t *testing.T) {
-	dir, writer := createVoiceTestDatabase(t)
+func TestRepositoryUsesAudioFilenameForLegacyID(t *testing.T) {
+	root := createVoiceJSONLRoot(t)
+	row := voiceSource("unused", "2026-08-13T15:51:22+08:00", "com.microsoft.VSCode", "Code", "legacy")
+	delete(row, "voice_id")
+	row["audio_rel_path"] = "audio/2026/08/9b021800c5cace45-1786607482470.wav"
+	writeVoiceDay(t, root, "2026-08-13", []map[string]any{row})
+
+	repository, err := Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.List(context.Background(), Query{})
+	if err != nil || len(items) != 1 || items[0].ID != "9b021800c5cace45-1786607482470" {
+		t.Fatalf("legacy audio filename ID = %+v, err=%v", items, err)
+	}
+	shown, err := repository.Show(context.Background(), "9b021800c5cace45-1786607482470")
+	if err != nil || shown.ID != items[0].ID {
+		t.Fatalf("show by legacy audio filename ID = %+v, err=%v", shown, err)
+	}
+}
+
+func TestRepositorySkipsLegacyRowWithoutAudioPath(t *testing.T) {
+	root := createVoiceJSONLRoot(t)
+	row := voiceSource("unused", "2026-08-13T15:51:22+08:00", "com.microsoft.VSCode", "Code", "legacy")
+	delete(row, "voice_id")
+	writeVoiceDay(t, root, "2026-08-13", []map[string]any{row})
+
+	repository, err := Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.List(context.Background(), Query{})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("legacy row without stable ID must be skipped: %+v, err=%v", items, err)
+	}
+}
+
+func TestAppsDeduplicatesByAppIDAndKeepsRawName(t *testing.T) {
+	root := createVoiceJSONLRoot(t)
+	base := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	writeVoiceDay(t, root, "2026-08-04", []map[string]any{
+		voiceSource("vscode-1", base.Format(time.RFC3339), "com.microsoft.VSCode", "Code", "one"),
+		voiceSource("vscode-2", base.Add(time.Minute).Format(time.RFC3339), "com.microsoft.VSCode", "Code", "two"),
+		voiceSource("other-code", base.Add(2*time.Minute).Format(time.RFC3339), "org.example.code", "Code", "three"),
+	})
+	repository, err := Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apps, err := repository.Apps(context.Background(), Query{})
+	if err != nil || len(apps) != 2 {
+		t.Fatalf("apps = %+v, err=%v", apps, err)
+	}
+	byID := map[string]AppSummary{}
+	for _, app := range apps {
+		byID[app.AppID] = app
+	}
+	if got := byID["com.microsoft.VSCode"]; got.AppName != "Code" || got.HistoryCount != 2 {
+		t.Fatalf("VS Code mapping/count = %+v", got)
+	}
+	items, err := repository.List(context.Background(), Query{App: "com.microsoft.VSCode"})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("stable app_id filter = %+v, err=%v", items, err)
+	}
+	items, err = repository.List(context.Background(), Query{App: "VS Code"})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("unobserved display name must not be treated as an alias: %+v, err=%v", items, err)
+	}
+}
+
+func TestRepositoryRangeMalformedRowsAndIncompleteTail(t *testing.T) {
+	root := createVoiceJSONLRoot(t)
 	base := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
-	insertVoiceHistory(t, writer,
-		1, base.UnixMilli(), base.Add(time.Second).UnixMilli(), 0, 500,
-		"windows", "app", "Example", nil, "one", nil, 3, "success", nil,
-	)
-	insertVoiceHistory(t, writer,
-		2, base.Add(24*time.Hour).UnixMilli(), base.Add(24*time.Hour+time.Second).UnixMilli(), 0, 600,
-		"windows", "app", "Example", nil, "two", nil, 3, "success", nil,
-	)
-	_, err := writer.Exec(`INSERT INTO usage_daily
-(local_date, successful_count, duration_ms, char_count, updated_at_ms) VALUES
-('2026-08-03', 36, 305336, 853, ?), ('2026-08-04', 1, 5320, 2, ?)`,
-		base.UnixMilli(), base.Add(24*time.Hour).UnixMilli())
+	writeVoiceDay(t, root, "2026-08-03", []map[string]any{
+		voiceSource("old", base.Format(time.RFC3339), "unknown.id", "Unknown", "old"),
+	})
+	valid := voiceSource("new", base.Add(24*time.Hour).Format(time.RFC3339), "com.electron.lark", "飞书", "new")
+	validLine, _ := json.Marshal(valid)
+	partial := voiceSource("partial", base.Add(25*time.Hour).Format(time.RFC3339), "id", "Partial", "partial")
+	partialLine, _ := json.Marshal(partial)
+	raw := append(append(append(validLine, '\n'), []byte("{bad json}\n")...), partialLine...)
+	if err := os.WriteFile(filepath.Join(root, historyDirName, "2026-08-04.jsonl"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, historyDirName, "ignored.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repository, err := Open(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := Open(context.Background(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer repository.Close()
 	from := base.Add(24 * time.Hour)
 	to := from.Add(24 * time.Hour)
 	items, err := repository.List(context.Background(), Query{From: &from, To: &to})
-	if err != nil || len(items) != 1 || items[0].ID != 2 {
-		t.Fatalf("[from,to) history range = %+v, err=%v", items, err)
-	}
-	days, total, err := repository.Stats(context.Background(), "2026-08-04", "2026-08-05")
-	if err != nil || len(days) != 1 {
-		t.Fatalf("stats range = %+v, err=%v", days, err)
-	}
-	if total.SuccessfulCount != 1 || total.DurationMS != 5320 || total.CharCount != 2 {
-		t.Fatalf("stats must use usage_daily facts: %+v", total)
+	if err != nil || len(items) != 1 || items[0].ID != "new" {
+		t.Fatalf("range/bad row/incomplete tail = %+v, err=%v", items, err)
 	}
 }
 
-func TestRepositoryMissingStorageAndSchema(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "voice")
-	_, err := Open(context.Background(), missing)
+func TestRepositoryMissingJSONLDoesNotFallbackToSQLite(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "voice")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "voice.sqlite3"), []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(context.Background(), root)
 	var typed *errs.Error
 	if !errors.As(err, &typed) || typed.Code != errs.CodeVoiceStorageNotFound {
-		t.Fatalf("missing storage error = %v", err)
+		t.Fatalf("missing JSONL storage must not fall back to SQLite: %v", err)
 	}
 
-	dir := filepath.Join(t.TempDir(), "voice")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, databaseFileName))
+	emptyRoot := createVoiceJSONLRoot(t)
+	repository, err := Open(context.Background(), emptyRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("CREATE TABLE unrelated (id INTEGER)"); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	_, err = Open(context.Background(), dir)
-	if !errors.As(err, &typed) || typed.Code != errs.CodeVoiceSchemaUnsupported {
-		t.Fatalf("unsupported schema error = %v", err)
-	}
-}
-
-func TestRepositoryEmptyDatabaseReturnsEmptyResults(t *testing.T) {
-	dir, _ := createVoiceTestDatabase(t)
-	repository, err := Open(context.Background(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer repository.Close()
 	items, err := repository.List(context.Background(), Query{})
 	if err != nil || items == nil || len(items) != 0 {
 		t.Fatalf("empty history = %#v, err=%v", items, err)
@@ -236,13 +258,9 @@ func TestRepositoryEmptyDatabaseReturnsEmptyResults(t *testing.T) {
 	if err != nil || apps == nil || len(apps) != 0 {
 		t.Fatalf("empty apps = %#v, err=%v", apps, err)
 	}
-	days, total, err := repository.Stats(context.Background(), "", "")
-	if err != nil || days == nil || len(days) != 0 || total != (UsageTotal{}) {
-		t.Fatalf("empty stats = %#v total=%+v, err=%v", days, total, err)
-	}
 }
 
-func TestParseBoundaryAndLocalDate(t *testing.T) {
+func TestParseBoundary(t *testing.T) {
 	date, err := ParseBoundary("2026-08-04", "--from")
 	if err != nil || date.Hour() != 0 || date.Location() != time.Local {
 		t.Fatalf("local date boundary = %v, err=%v", date, err)
@@ -253,18 +271,5 @@ func TestParseBoundaryAndLocalDate(t *testing.T) {
 	}
 	if _, err := ParseBoundary("2026/08/04", "--from"); err == nil {
 		t.Fatal("invalid history boundary should fail")
-	}
-	if _, err := ParseLocalDate("2026-08-04T00:00:00Z", "--from"); err == nil {
-		t.Fatal("stats boundary must be a local date")
-	}
-}
-
-func TestReadOnlyDatabaseURIHandlesWindowsDriveAndSpaces(t *testing.T) {
-	got := readOnlyDatabaseURI(`C:\Users\Y J H\.yoooclaw\profiles\default\voice\voice.sqlite3`, "windows")
-	if want := "file:///C:/Users/Y%20J%20H/.yoooclaw/profiles/default/voice/voice.sqlite3"; !strings.HasPrefix(got, want) {
-		t.Fatalf("Windows SQLite URI = %q, want prefix %q", got, want)
-	}
-	if !strings.Contains(got, "mode=ro") || !strings.Contains(got, "query_only") || !strings.Contains(got, "busy_timeout") {
-		t.Fatalf("read-only SQLite URI is missing safeguards: %q", got)
 	}
 }

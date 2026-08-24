@@ -102,7 +102,9 @@ func (d *Dispatcher) handleReq(frame Frame) {
 		params = map[string]any{}
 	}
 	d.logger.Info("Relay dispatcher: req id=" + id + " method=" + method)
-	raw, status, err := d.loopbackJSON(http.MethodPost, "/gateway/"+url.PathEscape(method), params, nil)
+	raw, status, err := d.loopbackJSON(http.MethodPost, "/gateway/"+url.PathEscape(method), params, map[string]string{
+		InternalRequestIDHeader: id,
+	})
 	if err != nil {
 		d.client.Send(RPCResponseFrame{Type: "res", ID: id, OK: false, Error: map[string]any{"code": "INTERNAL_ERROR", "message": err.Error()}})
 		return
@@ -149,6 +151,7 @@ func (d *Dispatcher) handleRequest(frame Frame) {
 			delete(headers, k)
 		}
 	}
+	headers[InternalRequestIDHeader] = id
 	d.addInternalHeaders(headers)
 
 	target := d.httpBaseURL + path

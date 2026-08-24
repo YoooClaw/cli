@@ -28,8 +28,8 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 | -------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ |
 | 📱 Notification            | Query by time/app/sender/keyword, today/recent summaries, multi-dimension aggregate stats, chunked summarization for large batches | 🟢     |
 | 🔄 Sync                     | Scan/iterate unprocessed notifications, fetch details by date, commit batches — feeds memory systems       | 🟢     |
-| 🗣️ Voice input              | List/search local dictation history, resolve App names, inspect optional audio, query authoritative usage stats | 🟢     |
-| 🎙️ Recording                | List/query recordings, ASR transcription config (api/model-proxy; local mode deprecated), follow status event stream | 🟢     |
+| 🗣️ Voice input              | List/search daily JSONL dictation history, discover recent desktop App IDs/names, inspect optional audio | 🟢     |
+| 🎙️ Recording                | Unified queries for YoooClaw Capture and smart-hardware recordings, plus hardware ASR config and events | 🟢     |
 | 🖼️ Image                    | List/query images, resolve local paths / thumbnails                                                        | 🟢     |
 | 🌐 Web                      | List/search captured web pages, resolve Markdown and storage paths                                         | 🟢     |
 | 💡 Light                    | Send light-effect commands to hardware (segment / preset / rule — pick one), connectivity self-check       | 🟡     |
@@ -296,14 +296,13 @@ Run `yoooclaw <service> --help` to see all shortcuts for a given service.
 yoooclaw notification search --app WeChat --keyword meeting --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # Chunked summarization for large notification batches: create→next→commit→result
-yoooclaw recording list --status synced [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
+yoooclaw recording list [--source all|capture_app|smart_hardware] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
 yoooclaw voice list [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
-yoooclaw voice search "project" --app "ChatGPT"
-yoooclaw voice apps
-yoooclaw voice stats [--from <DATE>] [--to <DATE>]
+yoooclaw voice apps                                # Deduplicated App IDs/names from the recent 7 days
+yoooclaw voice search "project" --app com.microsoft.VSCode
 yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>
@@ -319,6 +318,12 @@ timezone.
 For ASR language hints, `auto` keeps provider-side detection. Use `zh-TW` for Traditional Chinese in a Taiwan context, or `zh-Hant` when only the Traditional Chinese script preference matters.
 
 An unfiltered `voice list` returns the rolling last 72 hours and includes an explicit notice in JSON. Use `voice list --all` for all saved history. There is no default row-count limit.
+`voice apps` defaults to the rolling last seven days, deduplicates by `app_id`, and returns both the
+observed `app_id` and `app_name`; use `voice apps --all` for an explicit all-history inventory.
+Voice history is read from daily `audio-jsonl/YYYY-MM-DD.jsonl` files; returned IDs are stable
+`voice_id` strings and the CLI never falls back to the legacy SQLite database. Recording queries
+default to both `YoooClaw Capture` (`capture_app`) and YoooClaw smart hardware (`smart_hardware`),
+and every result includes its source.
 
 ### 3. Raw API
 
@@ -425,7 +430,8 @@ Full documentation lives at [yc-docs/src/cli](https://github.com/YoooClaw/yc-doc
 | [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
 | [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | in-process dispatch from inbound Relay frames to daemon HTTP/gateway |
 | [internal/recording](internal/recording)                | recording OSS download, state machine, ASR, transcript storage |
-| [internal/voice](internal/voice)                        | read-only SQLite/WAL queries for local voice-input history and usage |
+| [internal/capturerecording](internal/capturerecording)  | read-only daily indexes and artifact checks for YoooClaw Capture recordings |
+| [internal/voice](internal/voice)                        | read-only daily JSONL queries for local voice-input history |
 | [internal/image](internal/image)                        | image OSS download and indexing |
 | [internal/light](internal/light)                        | light-effect wire protocol, presets, sender |
 | [internal/skills](internal/skills)                      | built-in Skill listing / installation into agent skills directories |

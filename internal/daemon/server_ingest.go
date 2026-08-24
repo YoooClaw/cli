@@ -9,6 +9,7 @@ import (
 	"github.com/YoooClaw/cli/internal/fsutil"
 	imgstore "github.com/YoooClaw/cli/internal/image"
 	"github.com/YoooClaw/cli/internal/recording"
+	"github.com/YoooClaw/cli/internal/relay"
 )
 
 type recordingIDBody struct {
@@ -52,6 +53,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			case err.Error() == "recordingId is required" || err.Error() == "transcript or summary is required":
 				code = "INVALID_PARAMS"
 			}
+			s.logRecordingWriteFailure(recordingID, r.Header.Get(relay.InternalRequestIDHeader), err)
 			gatewayErr(w, code, err.Error())
 			return
 		}
