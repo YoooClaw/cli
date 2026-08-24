@@ -82,6 +82,37 @@ func TestProfileCreateUseDelete(t *testing.T) {
 	}
 }
 
+func TestProfileUseTransfersRunningManagedService(t *testing.T) {
+	home := sandbox(t)
+	imp := filepath.Join(home, "import.json")
+	if err := os.WriteFile(imp, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := execCLI(t, "config", "init", "--non-interactive", "--from-file", imp, "--no-start"); code != 0 {
+		t.Fatalf("default init: %s", out)
+	}
+	if out, code := execCLI(t, "profile", "create", "work", "--non-interactive", "--from-file", imp, "--no-start"); code != 0 {
+		t.Fatalf("profile create: %s", out)
+	}
+	if out, code := execCLI(t, "daemon", "autostart", "enable"); code != 0 {
+		t.Fatalf("autostart enable: %s", out)
+	}
+	out, code := execCLI(t, "profile", "use", "work")
+	if code != 0 {
+		t.Fatalf("profile use: %s", out)
+	}
+	result := decode(t, out)
+	daemonInfo := result["daemon"].(map[string]any)
+	if daemonInfo["started"] != true || daemonInfo["supervised"] != true {
+		t.Fatalf("managed service was not transferred: %+v", result)
+	}
+	out, code = execCLI(t, "daemon", "autostart", "status")
+	status := decode(t, out)
+	if code != 0 || status["profile"] != "work" || status["running"] != true {
+		t.Fatalf("unexpected service status after profile use: %s", out)
+	}
+}
+
 func TestProfileUseRepairsStaleActiveProfile(t *testing.T) {
 	home := sandbox(t)
 	if err := os.MkdirAll(filepath.Join(home, "profiles", "default"), 0o700); err != nil {

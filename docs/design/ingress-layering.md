@@ -50,6 +50,7 @@
   ```go
   type Egress interface {
       PushEvent(event string, payload any) error
+      PushEventTo(label string, event string, payload any) error
   }
   ```
   实现：`RelayEgress`（走隧道，= 现状）、`ProxyEgress`（POST 到 host 回调 URL）、`NoopEgress`（落盘即止）。
@@ -87,9 +88,11 @@ POST http://127.0.0.1:<port>/images
 
 `clientLabel` 由 api-key 映射得到（server.go `labelForAPIKey`），用于多租户区分，无需新协议。
 
+读取侧按同一个 label 隔离：能确指客户端的鉴权方式（Relay 隧道、api-key）只看得到自己写入的数据，本机 loopback 与宿主 gateway token 看全量（`authResult.scope()`）。判定集中在 `internal/clientlabel`：label 为空 / `default` / `legacy` 的条目属于「来源不明的历史数据」，对所有客户端可见——0.9.0 之前入库的存量数据几乎全是这一类，严格隔离会让它们从手机端整片消失。
+
 ### 5.2 出站：cli → 插件（回事件）
 
-已采用 **回调 webhook**（与入站对称）：daemon 启动时由 `--egress-callback-url` + `--egress-callback-token`（或 `config.ingress.egressCallback`）拿到 host 回调地址；`ProxyEgress.PushEvent` 即 `POST callbackUrl {event, payload}`（带 `Authorization: Bearer <token>`）。插件收到后用自己的 app_transport relay 转发给手机。未配置回调时退化为 `NoopEgress`（出站丢弃，仅告警）。
+已采用 **回调 webhook**（与入站对称）：daemon 启动时由 `--egress-callback-url` + `--egress-callback-token`（或 `config.ingress.egressCallback`）拿到 host 回调地址；`ProxyEgress.PushEvent` 即 `POST callbackUrl {event, payload}`（带 `Authorization: Bearer <token>`）；定向事件多带一个 `clientLabel`，由宿主按 label 转发给对应手机，缺省字段即广播。插件收到后用自己的 app_transport relay 转发给手机。未配置回调时退化为 `NoopEgress`（出站丢弃，仅告警）。
 
 > 备选未采用：拉取队列 `GET /egress/events`（SSE / long-poll）。无需 host 开端口，但插件要常驻订阅循环；如宿主不便监听端口可再切换。
 
@@ -121,14 +124,14 @@ L1/L2 几乎不动，主要是把传输从 server 里抽出去：
 - `config.IngressSection`（`ingress.mode` + `ingress.egressCallback{url,token}`，默认 `standalone`）。
 - `daemon.Egress` 端口 + `RelayEgress` / `ProxyEgress` / `NoopEgress`（`internal/daemon/egress.go`）。
 - `RunForeground` 按模式装配：`proxied` 跳过 Supervisor 并强制要求 api-key（否则 `YOOOCLAW_UNAUTHORIZED`）、装配 `ProxyEgress`；`direct` 跳过 Supervisor + `NoopEgress`；`standalone` 维持原 Relay 行为。`/daemon/reload` 仅在 `standalone` 重建隧道。
-- `recording.status` 出站改走 `s.egress.PushEvent`（`server_ingest.go`）。
+- `recording.status` 出站改走 `s.egress.PushEventTo`（`server_ingest.go`）：只回给这条录音的来源客户端，来源不明的历史录音仍旧广播。
 - `daemon run-foreground|start|restart` 新增 `--ingress` / `--egress-callback-url` / `--egress-callback-token`，经 `Spawn` 透传给 detach 子进程。
 - `/daemon/status` 新增 `ingressMode` 字段。
 - 单测 `internal/daemon/egress_test.go`；三模式手工冒烟通过。
 
 待办（hermes-plugin 侧，见第 6 节第 5 项）：`DaemonSupervisor` spawn 传 `--ingress=proxied` + egress 回调；provision `hermes` api-key；app_transport 入站改为 POST cli ingest API、订阅 egress 回调转发。
 
-> 注意：`config init` 收尾会自动 `Spawn` 一个 **standalone** daemon（`startDaemonForInit`）。嵌入流程里插件应在 init 后先 `daemon stop`，再以 `--ingress=proxied` 拉起，避免起到 standalone 实例。
+> 注意：`config init` 默认会注册用户级自启服务并启动一个 **standalone** daemon。嵌入流程应使用 `--no-autostart` 初始化，或在 init 后执行 `daemon autostart disable`，再以 `--ingress=proxied` 拉起，避免 standalone 服务与宿主实例竞争。
 
 ## 7. 兼容与迁移
 

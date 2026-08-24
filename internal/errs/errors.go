@@ -32,6 +32,7 @@ const (
 	CodeConfirmationRequired    = "YOOOCLAW_CONFIRMATION_REQUIRED"
 	CodeNotInteractive          = "YOOOCLAW_NOT_INTERACTIVE"
 	CodeDaemonUnresponsive      = "YOOOCLAW_DAEMON_UNRESPONSIVE"
+	CodeAutostartUnavailable    = "YOOOCLAW_AUTOSTART_UNAVAILABLE"
 	CodeVoiceStorageNotFound    = "YOOOCLAW_VOICE_STORAGE_NOT_FOUND"
 	CodeVoiceSchemaUnsupported  = "YOOOCLAW_VOICE_SCHEMA_UNSUPPORTED"
 )

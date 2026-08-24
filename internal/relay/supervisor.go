@@ -153,6 +153,19 @@ func (s *Supervisor) PushEvent(event string, payload any) {
 	}
 }
 
+// PushEventTo 只把事件投给 label 对应的那条隧道，返回是否投出去了。
+// 隧道不存在或没连上时返回 false——事件属于那个客户端，广播出去等于泄露。
+func (s *Supervisor) PushEventTo(label string, event string, payload any) bool {
+	s.mu.Lock()
+	managed := s.tunnels[label]
+	s.mu.Unlock()
+	if managed == nil {
+		return false
+	}
+	managed.dispatcher.PushEvent(event, payload)
+	return true
+}
+
 // Status 返回所有隧道状态。
 func (s *Supervisor) Status() SupervisorStatus {
 	s.mu.Lock()

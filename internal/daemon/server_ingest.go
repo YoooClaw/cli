@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/YoooClaw/cli/internal/clientlabel"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	imgstore "github.com/YoooClaw/cli/internal/image"
@@ -15,7 +16,7 @@ type recordingIDBody struct {
 	ASR         *recording.AsrConfig `json:"asr,omitempty"`
 }
 
-func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, path string) {
+func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, auth authResult, path string) {
 	method := strings.TrimPrefix(path, "/gateway/")
 	switch method {
 	case "recordings.result.write":
@@ -41,6 +42,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		body.RecordingID = recordingID
 		result, err := recording.HandleRecordingResultWrite(body, s.recordingStorage, s.logger, recording.SyncOptions{
 			NotifyStatus: s.notifyRecordingStatus,
+			ClientLabel:  auth.clientLabel,
 		})
 		if err != nil {
 			code := "RESULT_WRITE_FAILED"
@@ -81,7 +83,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		entry, ok := s.recordingStorage.FindByID(recordingID)
-		if !ok {
+		if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
 			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 			return
 		}
@@ -132,8 +134,12 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if status != "" {
 			entries = s.recordingStorage.ListByStatus(status)
 		}
+		scope := auth.scope()
 		items := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
+			if !clientlabel.Visible(entry.ClientLabel, scope) {
+				continue
+			}
 			items = append(items, recordingListItem(entry))
 		}
 		gatewayOK(w, map[string]any{"total": len(items), "recordings": items})
@@ -149,7 +155,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		entry, ok := s.recordingStorage.FindByID(recordingID)
-		if !ok {
+		if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
 			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 			return
 		}
@@ -167,6 +173,11 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		name := strings.TrimSpace(body.Name)
 		if recordingID == "" || name == "" {
 			gatewayErr(w, "INVALID_PARAMS", "recordingId and name are required")
+			return
+		}
+		if existing, found := s.recordingStorage.FindByID(recordingID); !found ||
+			!clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 			return
 		}
 		entry, ok, err := s.recordingStorage.Rename(recordingID, name)
@@ -191,6 +202,11 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		recordingID := strings.TrimSpace(body.RecordingID)
 		if recordingID == "" {
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
+			return
+		}
+		if existing, found := s.recordingStorage.FindByID(recordingID); !found ||
+			!clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 			return
 		}
 		deleted, err := s.recordingStorage.Delete(recordingID, !body.DeleteRemote)
@@ -251,8 +267,16 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 			s.logger.Warn("[recording-status] 事件落盘失败: " + err.Error())
 		}
 	}
+	// 事件只回给这条录音的来源客户端；来源不明的历史数据（label 空/default）
+	// 仍旧广播，否则老录音的转写进度谁都收不到。
+	label := ""
+	if s.recordingStorage != nil {
+		if entry, ok := s.recordingStorage.FindByID(event.RecordingID); ok && !clientlabel.Shared(entry.ClientLabel) {
+			label = entry.ClientLabel
+		}
+	}
 	if egress := s.currentEgress(); egress != nil {
-		if err := egress.PushEvent("recording.status", event); err != nil {
+		if err := egress.PushEventTo(label, "recording.status", event); err != nil {
 			s.logger.Warn("[recording-status] 出站事件投递失败: " + err.Error())
 		}
 	}

@@ -30,6 +30,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/YoooClaw/cli/internal/clientlabel"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
@@ -284,9 +285,9 @@ func DecodeArchive(archive Archive) ([]byte, error) {
 
 // Status 回答「这些 URL 收过没有」。入参可以是完整 hash，也可以是扩展本地
 // 索引里那种 16 位前缀（§3.4：本地索引存 hash 不存明文 URL）。
-func Status(dir string, hashes []string) map[string]map[string]string {
+func Status(dir string, hashes []string, scope string) map[string]map[string]string {
 	saved := map[string]map[string]string{}
-	entries := ReadIndex(dir)
+	entries := FilterByScope(ReadIndex(dir), scope)
 	for _, raw := range hashes {
 		query := strings.ToLower(strings.TrimSpace(raw))
 		// 太短的前缀会命中一大片，不如不答。
@@ -301,6 +302,21 @@ func Status(dir string, hashes []string) map[string]map[string]string {
 		}
 	}
 	return saved
+}
+
+// FilterByScope 只保留 scope 视角可见的网页：scope 为空（本机/宿主）时返回全部，
+// 否则只留本客户端收藏的与来源不明的历史条目。
+func FilterByScope(entries []Entry, scope string) []Entry {
+	if strings.TrimSpace(scope) == "" {
+		return entries
+	}
+	visible := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if clientlabel.Visible(entry.ClientLabel, scope) {
+			visible = append(visible, entry)
+		}
+	}
+	return visible
 }
 
 // ReadIndex 读取 web-pages/index.json 的 pages[]；不存在返回空。

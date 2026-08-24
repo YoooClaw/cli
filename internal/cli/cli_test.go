@@ -46,6 +46,7 @@ func sandbox(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("YOOOCLAW_HOME", home)
 	t.Setenv("YOOOCLAW_PROFILE", "")
+	t.Setenv("YOOOCLAW_AUTOSTART_TEST_DIR", filepath.Join(home, "test-services"))
 	return home
 }
 
@@ -96,6 +97,10 @@ func TestConfigInitShowSetUnset(t *testing.T) {
 	if m["ok"] != true {
 		t.Errorf("init not ok: %+v", m)
 	}
+	daemonInfo := m["daemon"].(map[string]any)
+	if daemonInfo["autostart"] != true || daemonInfo["started"] != false {
+		t.Errorf("--no-start should enable autostart without starting: %+v", daemonInfo)
+	}
 
 	// 再次 init 无 force -> ALREADY_EXISTS
 	out, code = execCLI(t, "config", "init", "--non-interactive", "--from-file", cfgFile, "--no-start")
@@ -134,6 +139,76 @@ func TestConfigInitShowSetUnset(t *testing.T) {
 	out, code = execCLI(t, "config", "unset", "daemon.port")
 	if code != 0 || decode(t, out)["removed"] != true {
 		t.Errorf("unset failed: %s", out)
+	}
+}
+
+func TestDaemonAutostartEnableStatusDisable(t *testing.T) {
+	home := sandbox(t)
+	cfgFile := filepath.Join(home, "import.json")
+	if err := os.WriteFile(cfgFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := execCLI(t, "config", "init", "--non-interactive", "--from-file", cfgFile, "--no-start"); code != 0 {
+		t.Fatalf("config init failed: %s", out)
+	}
+
+	out, code := execCLI(t, "daemon", "autostart", "status")
+	if code != 0 {
+		t.Fatalf("autostart status failed: %s", out)
+	}
+	status := decode(t, out)
+	if status["desired"] != "enabled" || status["installed"] != true || status["running"] != false {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+
+	out, code = execCLI(t, "daemon", "autostart", "disable")
+	if code != 0 {
+		t.Fatalf("autostart disable failed: %s", out)
+	}
+	status = decode(t, out)
+	if status["desired"] != "disabled" || status["installed"] != false {
+		t.Fatalf("unexpected disabled status: %+v", status)
+	}
+}
+
+func TestConfigInitEnablesAndStartsAutostartByDefault(t *testing.T) {
+	home := sandbox(t)
+	cfgFile := filepath.Join(home, "import.json")
+	if err := os.WriteFile(cfgFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := execCLI(t, "config", "init", "--non-interactive", "--from-file", cfgFile)
+	if code != 0 {
+		t.Fatalf("config init failed: %s", out)
+	}
+	info := decode(t, out)["daemon"].(map[string]any)
+	if info["autostart"] != true || info["started"] != true {
+		t.Fatalf("default init did not enable/start autostart: %+v", info)
+	}
+	out, code = execCLI(t, "daemon", "autostart", "status")
+	status := decode(t, out)
+	if code != 0 || status["desired"] != "enabled" || status["running"] != true {
+		t.Fatalf("unexpected autostart status: %s", out)
+	}
+}
+
+func TestConfigInitNoAutostartPersistsOptOut(t *testing.T) {
+	home := sandbox(t)
+	cfgFile := filepath.Join(home, "import.json")
+	if err := os.WriteFile(cfgFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := execCLI(t, "config", "init", "--non-interactive", "--from-file", cfgFile, "--no-start", "--no-autostart")
+	if code != 0 {
+		t.Fatalf("config init failed: %s", out)
+	}
+	info := decode(t, out)["daemon"].(map[string]any)
+	if info["autostart"] != false {
+		t.Fatalf("unexpected daemon info: %+v", info)
+	}
+	out, code = execCLI(t, "daemon", "autostart", "status")
+	if code != 0 || decode(t, out)["desired"] != "disabled" {
+		t.Fatalf("opt-out was not persisted: %s", out)
 	}
 }
 
@@ -217,8 +292,8 @@ func TestLightruleCloudValidation(t *testing.T) {
 		args     []string
 		wantCode string
 	}{
-		{[]string{"lightrule", "create"}, "YOOOCLAW_INVALID_ARGUMENT"},                                        // 缺 --intent
-		{[]string{"lightrule", "update", "r1"}, "YOOOCLAW_INVALID_ARGUMENT"},                                  // 无更新字段
+		{[]string{"lightrule", "create"}, "YOOOCLAW_INVALID_ARGUMENT"},                                          // 缺 --intent
+		{[]string{"lightrule", "update", "r1"}, "YOOOCLAW_INVALID_ARGUMENT"},                                    // 无更新字段
 		{[]string{"lightrule", "update", "r1", "--intent", "改绿灯", "--title", "t"}, "YOOOCLAW_INVALID_ARGUMENT"}, // ruleText 与普通字段混用
 		{[]string{"lightrule", "update", "r1", "--repeat-times", "abc"}, "YOOOCLAW_INVALID_ARGUMENT"},
 		{[]string{"lightrule", "update", "r1", "--segments", `[{"mode":"nope"}]`}, "VALIDATION_FAILED"},

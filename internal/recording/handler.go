@@ -6,6 +6,9 @@ import "fmt"
 type SyncOptions struct {
 	NotifyStatus    func(StatusEvent)
 	DownloadOptions DownloadOptions
+	// ClientLabel 是本次调用的来源客户端 label（daemon 侧鉴权解析，非请求体字段）；
+	// 留空按 "default" 入库。
+	ClientLabel string
 }
 
 // TriggerTranscription 触发 ASR 转写。

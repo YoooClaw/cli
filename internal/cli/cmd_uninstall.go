@@ -43,7 +43,12 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 		}
 	}
 
-	// 1. 停掉所有 profile 的 daemon。
+	// 1. 先卸载系统用户服务，避免删除二进制后留下失效的自启项；再清理
+	// 可能由旧版本或 --no-autostart 启动的 detached daemon。
+	autostartRemoved, err := removeAutostartForUninstall()
+	if err != nil {
+		return nil, err
+	}
 	stopped := stopAllDaemons()
 
 	// 2. 删配置（默认保留数据）或整目录（--data）。
@@ -58,6 +63,7 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	} else {
 		removed = removeConfigKeepData()
 	}
+	removed = append(autostartRemoved, removed...)
 
 	// 3. 删二进制（npm 安装无法自删，给提示）。
 	binRemoved, hint := removeSelfBinary()

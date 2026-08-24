@@ -184,6 +184,30 @@ yoooclaw auth token-rotate
 yoooclaw daemon restart
 ```
 
+## Daemon autostart
+
+Initializing the active profile enables per-user login autostart by default
+(launchd on macOS, systemd user services on Linux, and Task Scheduler on
+Windows) and starts the daemon immediately. It never requires a system service
+or administrator privileges.
+
+```bash
+yoooclaw daemon autostart status
+yoooclaw daemon stop                 # stop for this login; autostart stays enabled
+yoooclaw daemon start                # start now; does not change the saved preference
+yoooclaw daemon autostart disable    # stop now and opt out of future login starts
+yoooclaw daemon autostart enable     # opt in and start now
+yoooclaw daemon logs --supervisor    # inspect OS service startup failures
+
+yoooclaw config init --no-start      # enable autostart, but do not start now
+yoooclaw config init --no-autostart  # start now without enabling autostart
+```
+
+Autostart always follows the active profile. `profile use` transfers a running
+daemon to the new profile while preserving a manually stopped state. On Linux,
+autostart begins with the user service manager; enabling pre-login boot via
+`loginctl enable-linger` remains an explicit system-administration choice.
+
 ## Daemon lifecycle protocol
 
 `yoooclaw daemon` exposes lifecycle metadata so external orchestrators such as

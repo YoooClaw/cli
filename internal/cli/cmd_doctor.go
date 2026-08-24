@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strconv"
 
+	"github.com/YoooClaw/cli/internal/autostart"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
@@ -106,6 +107,49 @@ func doctor(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 		checks = append(checks, check{"daemon", "warn", "锁文件存在但进程已死（陈旧锁）"})
 	default:
 		checks = append(checks, check{"daemon", "skip", "未运行"})
+	}
+
+	manager := autostartManager()
+	desired, desiredErr := autostart.Desired(paths.RootDir())
+	serviceStatus, serviceErr := manager.Status()
+	storedState, storedExists, _ := autostart.ReadState(paths.RootDir())
+	currentSpec, specErr := autostartSpec()
+	executableDrift := storedExists && specErr == nil && storedState.Executable != "" && storedState.Executable != currentSpec.Executable
+	needsEnableRepair := desired == autostart.DesiredEnabled && (!serviceStatus.Installed || executableDrift)
+	switch {
+	case desiredErr != nil:
+		checks = append(checks, check{"daemon-autostart", "fail", desiredErr.Error()})
+	case serviceErr != nil:
+		checks = append(checks, check{"daemon-autostart", "warn", serviceErr.Error()})
+	case needsEnableRepair && fix:
+		if specErr == nil {
+			_, specErr = autostart.Enable(manager, currentSpec, false)
+		}
+		if specErr != nil {
+			checks = append(checks, check{"daemon-autostart", "fail", "修复失败：" + specErr.Error()})
+		} else {
+			checks = append(checks, check{"daemon-autostart", "ok", "已重新注册用户级自启服务"})
+		}
+	case needsEnableRepair:
+		detail := "期望启用但系统服务缺失（doctor --fix 可修复）"
+		if executableDrift {
+			detail = "系统服务仍指向旧版本二进制（doctor --fix 可修复）"
+		}
+		checks = append(checks, check{"daemon-autostart", "warn", detail})
+	case desired == autostart.DesiredEnabled && serviceStatus.Installed:
+		checks = append(checks, check{"daemon-autostart", "ok", serviceStatus.Manager + " 已启用"})
+	case desired == autostart.DesiredDisabled && serviceStatus.Installed && fix:
+		if _, disableErr := autostart.Disable(manager, paths.RootDir()); disableErr != nil {
+			checks = append(checks, check{"daemon-autostart", "fail", "修复失败：" + disableErr.Error()})
+		} else {
+			checks = append(checks, check{"daemon-autostart", "ok", "已移除用户级自启服务"})
+		}
+	case desired == autostart.DesiredDisabled && serviceStatus.Installed:
+		checks = append(checks, check{"daemon-autostart", "warn", "已关闭自启但系统服务仍存在"})
+	case desired == autostart.DesiredDisabled:
+		checks = append(checks, check{"daemon-autostart", "skip", "用户已关闭"})
+	default:
+		checks = append(checks, check{"daemon-autostart", "skip", "尚未配置（下一次 config init 默认启用）"})
 	}
 
 	failed, warned := 0, 0

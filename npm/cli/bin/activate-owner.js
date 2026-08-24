@@ -58,6 +58,15 @@ function run(args) {
   }
 }
 
+function tryRun(args) {
+  const result = spawnSync(bin, args, {
+    stdio: "inherit",
+    env: process.env,
+    windowsHide: true,
+  });
+  return !result.error && result.status === 0;
+}
+
 if (activationRequested) {
   const args = ["owner", "activate", "cli", "--format", "json"];
   if (process.env.HERMES_PROFILE) {
@@ -66,7 +75,14 @@ if (activationRequested) {
   run(args);
 } else {
   for (const profile of runningProfiles) {
-    run(["--profile", profile, "daemon", "start", "--format", "json"]);
+    if (
+      !tryRun(["--profile", profile, "daemon", "autostart", "enable", "--format", "json"])
+    ) {
+      process.stderr.write(
+        `@yoooclaw/cli: autostart unavailable; restoring detached daemon for ${profile}\n`,
+      );
+      run(["--profile", profile, "daemon", "start", "--format", "json"]);
+    }
   }
 }
 

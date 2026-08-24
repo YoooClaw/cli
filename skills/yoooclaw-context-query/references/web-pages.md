@@ -12,12 +12,12 @@ The captured copy is local historical context, not proof of the current live Int
 
 ```bash
 yoooclaw synced-web-page storage-path --format json
-yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>] --format json
-yoooclaw synced-web-page search "<keyword>" --limit <requested-count-or-total-pages> --format json
+yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>] [--client <label>] --format json
+yoooclaw synced-web-page search "<keyword>" --limit <requested-count-or-total-pages> [--client <label>] --format json
 yoooclaw synced-web-page path <urlHash> --format json
 ```
 
-`yoooclaw synced-web-page list` returns newest capture first with fields including `urlHash`, `title`, `siteName`, `canonicalUrl`, `capturedAt`, `firstCapturedAt`, `captureCount`, `relativePath`, and `hasArchive`. Its optional ISO 8601 `--from` boundary is inclusive and `--to` boundary is exclusive.
+`yoooclaw synced-web-page list` returns newest capture first with fields including `urlHash`, `title`, `siteName`, `canonicalUrl`, `capturedAt`, `firstCapturedAt`, `captureCount`, `relativePath`, and `hasArchive`. Its optional ISO 8601 `--from` boundary is inclusive and `--to` boundary is exclusive. Pass `--client <label>` only for an explicit source filter (`all` disables it); pages captured before client labels existed report `legacy`.
 
 `yoooclaw synced-web-page search` searches title, site name, URL, canonical URL, and Markdown body. It intentionally does not search raw HTML archives or access the Internet.
 

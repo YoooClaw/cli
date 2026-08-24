@@ -297,7 +297,7 @@ func TestStatusMatchesFullHashAndPrefix(t *testing.T) {
 	}
 	full := result.URLHash
 
-	saved := Status(dir, []string{full, full[:16], strings.ToUpper(full[:16]), "deadbeef", "abc"})
+	saved := Status(dir, []string{full, full[:16], strings.ToUpper(full[:16]), "deadbeef", "abc"}, "")
 	if saved[full]["capturedAt"] != "2026-07-27T15:04:22+08:00" {
 		t.Errorf("完整 hash 未命中: %+v", saved)
 	}

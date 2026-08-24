@@ -30,15 +30,15 @@ func (s *server) handleWebPageIngest(w http.ResponseWriter, r *http.Request, aut
 
 // handleWebPageStatus 回答「这些网页收过没有」（GET /web-pages/status?h=…&h=…），
 // 供扩展 popup 打开时就地核对本地索引（§3.4）。
-func (s *server) handleWebPageStatus(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleWebPageStatus(w http.ResponseWriter, r *http.Request, auth authResult) {
 	hashes := r.URL.Query()["h"]
-	writeJSON(w, 200, map[string]any{"saved": webpage.Status(s.ctx.Paths.WebPages, hashes)})
+	writeJSON(w, 200, map[string]any{"saved": webpage.Status(s.ctx.Paths.WebPages, hashes, auth.scope())})
 }
 
 // handleWebPageIndex 返回索引（GET /web-pages/index?fields=hash,capturedAt），
 // 供扩展登录后一次性回填本地收藏状态。
-func (s *server) handleWebPageIndex(w http.ResponseWriter, r *http.Request) {
-	entries := webpage.ReadIndex(s.ctx.Paths.WebPages)
+func (s *server) handleWebPageIndex(w http.ResponseWriter, r *http.Request, auth authResult) {
+	entries := webpage.FilterByScope(webpage.ReadIndex(s.ctx.Paths.WebPages), auth.scope())
 	webpage.SortByCapturedDesc(entries)
 	var fields []string
 	if raw := strings.TrimSpace(r.URL.Query().Get("fields")); raw != "" {

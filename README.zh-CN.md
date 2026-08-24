@@ -184,6 +184,28 @@ yoooclaw auth token-rotate
 yoooclaw daemon restart
 ```
 
+## Daemon 开机自启
+
+初始化 active profile 时，默认注册用户登录自启并立即启动 daemon：macOS 使用
+launchd，Linux 使用 systemd user service，Windows 使用计划任务。整个流程不安装
+系统级服务，也不需要管理员权限。
+
+```bash
+yoooclaw daemon autostart status
+yoooclaw daemon stop                 # 只停止本次登录，自启保持开启
+yoooclaw daemon start                # 立即启动，不改变自启偏好
+yoooclaw daemon autostart disable    # 立即停止，并关闭以后登录自启
+yoooclaw daemon autostart enable     # 开启自启并立即启动
+yoooclaw daemon logs --supervisor    # 查看系统服务启动失败日志
+
+yoooclaw config init --no-start      # 开启自启，但当前不启动
+yoooclaw config init --no-autostart  # 当前启动，但不开启自启
+```
+
+自启服务始终跟随 active profile；`profile use` 会在 profile 间转移正在运行的
+daemon，但会保留用户手动 stop 后的停止状态。Linux 默认随用户服务管理器启动；是否
+通过 `loginctl enable-linger` 扩展为登录前启动，仍由系统管理员显式决定。
+
 ## Daemon lifecycle protocol
 
 `yoooclaw daemon` exposes lifecycle metadata so external orchestrators such as

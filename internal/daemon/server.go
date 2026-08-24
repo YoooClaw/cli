@@ -357,7 +357,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
 	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
-		s.handleRecordingGateway(w, r, path)
+		s.handleRecordingGateway(w, r, authCtx, path)
 	case path == "/images" && r.Method == http.MethodPost:
 		s.handleImageHTTP(w, r, authCtx)
 	case path == "/gateway/images.sync" && r.Method == http.MethodPost:
@@ -365,9 +365,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/web-pages" && r.Method == http.MethodPost:
 		s.handleWebPageIngest(w, r, authCtx)
 	case path == "/web-pages/status" && r.Method == http.MethodGet:
-		s.handleWebPageStatus(w, r)
+		s.handleWebPageStatus(w, r, authCtx)
 	case path == "/web-pages/index" && r.Method == http.MethodGet:
-		s.handleWebPageIndex(w, r)
+		s.handleWebPageIndex(w, r, authCtx)
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
 		s.handleMonitors(w, r, path)
 	case path == "/light/send" && r.Method == http.MethodPost:
@@ -417,6 +417,17 @@ func (s *server) reloadCredentials() (creds.CredentialSet, relay.ApplyResult) {
 type authResult struct {
 	clientLabel string
 	authKind    string
+}
+
+// scope 返回本次请求在读取侧应被限制到的 client label；空串表示不隔离。
+// 只有能确指某个客户端的鉴权方式（Relay 隧道、api-key）才收窄可见范围；
+// 本机 loopback 与宿主 gateway token 代表机器主人，看全量。
+func (a authResult) scope() string {
+	switch a.authKind {
+	case "relay-api-key", "http-api-key":
+		return a.clientLabel
+	}
+	return ""
 }
 
 func (s *server) authContext(r *http.Request, path string) (authResult, bool) {

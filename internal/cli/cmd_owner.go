@@ -125,14 +125,16 @@ func activateCLIOwner(ctx *clictx.Context, hermesProfile string, start bool) (ma
 		result["hint"] = "运行 `yoooclaw config init`；配置完成后 daemon 会自动启动"
 		return result, nil
 	}
-	lock, err := daemon.Spawn(ctx, daemon.StartOpts{})
+	lock, err := startStandalone(ctx)
 	if err != nil {
 		return nil, errs.New(errs.CodeUnknown, "CLI owner 已释放，但 standalone daemon 启动失败："+err.Error()).
 			WithHint("检查 `yoooclaw daemon logs`，修复后运行 `yoooclaw daemon start`")
 	}
 	result["activation"] = "active"
 	result["daemonStarted"] = true
-	result["pid"] = lock.PID
+	if lock != nil && lock.PID > 0 {
+		result["pid"] = lock.PID
+	}
 	return result, nil
 }
 
