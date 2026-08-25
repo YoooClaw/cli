@@ -64,6 +64,9 @@ func (m *fileManager) Stop() error {
 }
 func (m *fileManager) Restart() error { return m.Start() }
 func (m *fileManager) Uninstall() error {
+	if err := m.Stop(); err != nil {
+		return err
+	}
 	if err := os.Remove(m.path()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
