@@ -9,6 +9,7 @@ import (
 	"html"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -25,14 +26,27 @@ func (m *platformManager) Available() error {
 	}
 	return nil
 }
-func schtasks(args ...string) ([]byte, error) {
+
+var schtasks = func(args ...string) ([]byte, error) {
 	return exec.Command("schtasks.exe", args...).CombinedOutput()
+}
+
+func (m *platformManager) taskFile() string {
+	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+	relative := strings.ReplaceAll(strings.TrimPrefix(m.task, `\`), `\`, "/")
+	return filepath.Join(systemRoot, "System32", "Tasks", filepath.FromSlash(relative))
 }
 func (m *platformManager) Status() (Status, error) {
 	status := Status{Manager: "task-scheduler", Unit: m.task}
 	out, err := schtasks("/Query", "/TN", m.task, "/FO", "LIST", "/V")
 	if err != nil {
-		return status, nil
+		if _, statErr := os.Stat(m.taskFile()); os.IsNotExist(statErr) {
+			return status, nil
+		}
+		return status, fmt.Errorf("查询计划任务失败: %s", strings.TrimSpace(string(out)))
 	}
 	status.Installed, status.Loaded = true, true
 	text := strings.ToLower(string(out))
@@ -123,15 +137,27 @@ func (m *platformManager) Start() error {
 	return nil
 }
 func (m *platformManager) Stop() error {
-	status, _ := m.Status()
-	if !status.Installed {
+	status, err := m.Status()
+	if err != nil {
+		return err
+	}
+	if !status.Installed || !status.Running {
 		return nil
 	}
-	// /End is idempotent for our purposes. Its "not currently running" error
-	// text is localized, so do not parse it; the daemon lock/HTTP stop path
-	// still verifies and retires any process that remains alive.
-	_, _ = schtasks("/End", "/TN", m.task)
-	return nil
+	out, stopErr := schtasks("/End", "/TN", m.task)
+	after, statusErr := waitForServiceState(m.Status, func(status Status) bool {
+		return !status.Installed || !status.Running
+	})
+	if statusErr == nil && (!after.Installed || !after.Running) {
+		return nil
+	}
+	if stopErr != nil {
+		return fmt.Errorf("停止计划任务失败: %s", strings.TrimSpace(string(out)))
+	}
+	if statusErr != nil {
+		return fmt.Errorf("停止计划任务后无法确认状态: %w", statusErr)
+	}
+	return fmt.Errorf("停止计划任务后任务仍在运行: %s", m.task)
 }
 func (m *platformManager) Restart() error {
 	if err := m.Stop(); err != nil {
@@ -140,13 +166,26 @@ func (m *platformManager) Restart() error {
 	return m.Start()
 }
 func (m *platformManager) Uninstall() error {
-	status, _ := m.Status()
+	if err := m.Stop(); err != nil {
+		return err
+	}
+	status, err := m.Status()
+	if err != nil {
+		return err
+	}
 	if !status.Installed {
 		return nil
 	}
-	out, err := schtasks("/Delete", "/TN", m.task, "/F")
-	if err != nil {
+	out, deleteErr := schtasks("/Delete", "/TN", m.task, "/F")
+	after, statusErr := m.Status()
+	if statusErr == nil && !after.Installed {
+		return nil
+	}
+	if deleteErr != nil {
 		return fmt.Errorf("删除计划任务失败: %s", strings.TrimSpace(string(out)))
 	}
-	return nil
+	if statusErr != nil {
+		return fmt.Errorf("删除计划任务后无法确认状态: %w", statusErr)
+	}
+	return fmt.Errorf("删除计划任务后任务仍存在: %s", m.task)
 }

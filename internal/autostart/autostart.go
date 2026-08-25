@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
@@ -48,6 +49,9 @@ type State struct {
 }
 
 // Manager abstracts launchd, systemd --user and Windows Task Scheduler.
+// Stop and Uninstall are idempotent. Uninstall must stop the service before
+// removing its registration, so callers do not need to coordinate two
+// separate lifecycle operations.
 type Manager interface {
 	Available() error
 	Status() (Status, error)
@@ -98,14 +102,11 @@ func Enable(m Manager, spec Spec, start bool) (Status, error) {
 	return status, err
 }
 
-// Disable stops and removes the service, then persists the explicit opt-out.
+// Disable removes the service, then persists the explicit opt-out.
 func Disable(m Manager, root string) (Status, error) {
 	if err := m.Available(); err != nil {
 		status, _ := m.Status()
 		if status.Installed || status.Loaded {
-			if stopErr := m.Stop(); stopErr != nil {
-				return status, stopErr
-			}
 			if uninstallErr := m.Uninstall(); uninstallErr != nil {
 				return status, uninstallErr
 			}
@@ -116,9 +117,6 @@ func Disable(m Manager, root string) (Status, error) {
 		return status, nil
 	}
 	before, _ := m.Status()
-	if err := m.Stop(); err != nil && before.Installed {
-		return before, err
-	}
 	if err := m.Uninstall(); err != nil {
 		return before, err
 	}
@@ -195,3 +193,27 @@ func Current(root string) Manager {
 }
 
 var ErrUnavailable = errors.New("当前环境没有可用的用户级服务管理器")
+
+const (
+	serviceStatePollInterval = 50 * time.Millisecond
+	serviceStatePollTimeout  = 3 * time.Second
+)
+
+// waitForServiceState allows native service managers to converge after a
+// synchronous lifecycle command returns. launchd in particular can report a
+// service as loaded briefly after bootout has already accepted the request.
+func waitForServiceState(status func() (Status, error), done func(Status) bool) (Status, error) {
+	deadline := time.Now().Add(serviceStatePollTimeout)
+	var current Status
+	var err error
+	for {
+		current, err = status()
+		if err == nil && done(current) {
+			return current, nil
+		}
+		if !time.Now().Before(deadline) {
+			return current, err
+		}
+		time.Sleep(serviceStatePollInterval)
+	}
+}

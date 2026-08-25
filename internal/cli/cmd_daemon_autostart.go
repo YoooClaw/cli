@@ -336,9 +336,6 @@ func removeAutostartForUninstall() ([]string, error) {
 		return nil, autostartError(statusErr)
 	}
 	if status.Installed || status.Loaded {
-		if err := manager.Stop(); err != nil {
-			return nil, autostartError(err)
-		}
 		if err := manager.Uninstall(); err != nil {
 			return nil, autostartError(err)
 		}

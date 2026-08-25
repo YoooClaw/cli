@@ -25,9 +25,11 @@ func newPlatformManager(root string) Manager {
 	unit := id + ".service"
 	return &platformManager{root: root, id: id, unit: unit, path: filepath.Join(configHome, "systemd", "user", unit)}
 }
-func systemctl(args ...string) ([]byte, error) {
+
+var systemctl = func(args ...string) ([]byte, error) {
 	return exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
 }
+
 func (m *platformManager) Available() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("%w: systemctl 不可用", ErrUnavailable)
@@ -42,23 +44,39 @@ func (m *platformManager) Status() (Status, error) {
 	if _, err := os.Stat(m.path); err == nil {
 		status.Installed = true
 	}
-	out, err := systemctl("show", m.unit, "--property=LoadState,ActiveState,MainPID", "--value")
-	if err != nil {
-		return status, nil
-	}
+	out, commandErr := systemctl("show", m.unit, "--property=LoadState,ActiveState,MainPID")
+	loadState := ""
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, value := range lines {
-		value = strings.TrimSpace(value)
-		switch value {
-		case "loaded":
-			status.Loaded = true
-		case "active", "activating", "reloading":
-			status.Running = true
-		default:
-			if pid, e := strconv.Atoi(value); e == nil && pid > 0 {
+	for _, line := range lines {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found {
+			continue
+		}
+		switch key {
+		case "LoadState":
+			loadState = value
+			if value == "loaded" {
+				status.Loaded = true
+			}
+		case "ActiveState":
+			switch value {
+			case "active", "activating", "reloading":
+				status.Running = true
+			}
+		case "MainPID":
+			if pid, err := strconv.Atoi(value); err == nil && pid > 0 {
 				status.PID = pid
 			}
 		}
+	}
+	if commandErr != nil && loadState != "not-found" {
+		// A missing unit is not an error for lifecycle operations. Ask systemd
+		// for an exact unit listing instead of matching localized error text.
+		listed, listErr := systemctl("list-units", "--all", "--full", "--plain", "--no-legend", m.unit)
+		if listErr == nil && strings.TrimSpace(string(listed)) == "" {
+			return status, nil
+		}
+		return status, fmt.Errorf("systemctl show 失败: %s (%v)", strings.TrimSpace(string(out)), commandErr)
 	}
 	return status, nil
 }
@@ -113,11 +131,25 @@ func (m *platformManager) Start() error {
 	return nil
 }
 func (m *platformManager) Stop() error {
-	out, err := systemctl("stop", m.unit)
-	if err != nil && !strings.Contains(string(out), "not loaded") {
+	status, err := m.Status()
+	if err != nil {
+		return err
+	}
+	if !status.Running {
+		return nil
+	}
+	out, stopErr := systemctl("stop", m.unit)
+	after, statusErr := waitForServiceState(m.Status, func(status Status) bool { return !status.Running })
+	if statusErr == nil && !after.Running {
+		return nil
+	}
+	if stopErr != nil {
 		return fmt.Errorf("systemctl stop 失败: %s", strings.TrimSpace(string(out)))
 	}
-	return nil
+	if statusErr != nil {
+		return fmt.Errorf("systemctl stop 后无法确认服务状态: %w", statusErr)
+	}
+	return fmt.Errorf("systemctl stop 后服务仍在运行: %s", m.unit)
 }
 func (m *platformManager) Restart() error {
 	out, err := systemctl("restart", m.unit)
@@ -127,10 +159,31 @@ func (m *platformManager) Restart() error {
 	return nil
 }
 func (m *platformManager) Uninstall() error {
-	_, _ = systemctl("disable", m.unit)
+	if err := m.Stop(); err != nil {
+		return err
+	}
+	status, err := m.Status()
+	if err != nil {
+		return err
+	}
+	if !status.Installed && !status.Loaded {
+		return nil
+	}
+	if out, err := systemctl("disable", m.unit); err != nil {
+		return fmt.Errorf("systemctl disable 失败: %s", strings.TrimSpace(string(out)))
+	}
 	if err := os.Remove(m.path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	_, _ = systemctl("daemon-reload")
+	if out, err := systemctl("daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload 失败: %s", strings.TrimSpace(string(out)))
+	}
+	after, err := m.Status()
+	if err != nil {
+		return err
+	}
+	if after.Installed || after.Loaded {
+		return fmt.Errorf("systemd 服务卸载后仍有注册: %s", m.unit)
+	}
 	return nil
 }
