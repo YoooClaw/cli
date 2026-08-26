@@ -38,7 +38,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 | 🔌 Tunnel                   | Relay tunnel status, force reconnect, local ingest loopback self-check                                      | 🟡     |
 | 🛡️ Gateway                  | Simulate phone-side calls into the daemon, verify local connectivity & auth                                 | 🟢/🟡  |
 | 📋 Log                      | daemon log search & error-level filtering                                                                   | 🟢     |
-| ⚙️ Infrastructure           | config / profile / auth / daemon / migrate / update / doctor / uninstall                                    | 🟢/🔵  |
+| ⚙️ Infrastructure           | config / profile / auth / daemon / owner / migrate / update / doctor / uninstall                            | 🟢/🔵/🟡  |
 | 🧩 Skills                   | Install bundled SKILL.md into the agent's discovery directory                                               | 🟢     |
 
 > daemon legend: 🟢 no daemon needed · 🟡 daemon must be running · 🔵 manages the daemon itself.
@@ -207,6 +207,32 @@ Autostart always follows the active profile. `profile use` transfers a running
 daemon to the new profile while preserving a manually stopped state. On Linux,
 autostart begins with the user service manager; enabling pre-login boot via
 `loginctl enable-linger` remains an explicit system-administration choice.
+
+Switching or deleting a profile (`profile use` / `profile delete`) first waits
+for the old profile's daemon to actually release the **account-level Relay
+consumer lock** before proceeding (so a not-yet-exited old process can't keep
+writing production messages into a profile you've switched away from); an
+OS-managed autostart service is stopped/started along with it.
+
+## Storage ownership: CLI ↔ Hermes plugin
+
+`~/.yoooclaw/profiles/<profile>/writer.lock` guarantees exactly one storage
+writer per profile at a time. When the Hermes plugin runs in daemonless mode
+it holds this lock, and `daemon start` / `daemon run-foreground` are then
+refused with `YOOOCLAW_DAEMON_DISABLED_BY_PLUGIN`. On Windows, if probing the
+lock itself fails (e.g. a permission error), the behavior is **fail-closed**:
+startup is refused outright with `YOOOCLAW_STORAGE_UNAVAILABLE`, rather than
+treating a failed probe as "not held."
+
+```bash
+yoooclaw owner activate cli                          # hand ownership from the Hermes plugin to the standalone CLI
+yoooclaw owner activate cli --hermes-profile work --no-start
+```
+
+`install.sh` **preserves ownership as it was before the upgrade** by default —
+an upgrade never silently hands it off. Only passing `--activate` explicitly
+(or setting `YOOOCLAW_ACTIVATE_OWNER=cli`) makes it actively hand ownership to
+the standalone CLI after install.
 
 ## Daemon lifecycle protocol
 
@@ -393,7 +419,7 @@ yoooclaw recording events --since 1h --limit 50
 yoooclaw recording events --id <recording-id> --watch
 ```
 
-Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively.
+Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
 
 ### Data Directory
 
