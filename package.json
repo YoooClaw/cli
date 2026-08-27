@@ -6,7 +6,9 @@
   "scripts": {
     "build": "scripts/build-go.sh",
     "build:current": "scripts/build-go.sh --current",
-    "test": "go test ./...",
+    "build:openharmony": "scripts/build-openharmony.sh",
+    "test": "go test ./... && node --test npm/cli/test/*.test.js",
+    "test:launcher": "node --test npm/cli/test/*.test.js",
     "vet": "go vet ./...",
     "release:patch": "./release.sh patch",
     "release:minor": "./release.sh minor"
