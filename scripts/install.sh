@@ -387,4 +387,13 @@ else
   done
   info "已保留当前 Relay owner（如需切换到 CLI，请重新运行并加 --activate）"
 fi
+
+# Older releases had no persisted autostart preference. Register the active
+# profile on first upgrade even when its daemon happened to be stopped. The
+# migration command preserves an explicit opt-out and skips Hermes-owned data.
+if yoooclaw daemon autostart migrate --format json >/dev/null; then
+  info "daemon 登录自启状态已核对"
+else
+  warn "无法迁移 daemon 登录自启；可稍后运行: yoooclaw daemon autostart enable"
+fi
 HANDOFF_PENDING=0

@@ -205,6 +205,9 @@ yoooclaw config init --no-autostart  # 当前启动，但不开启自启
 自启服务始终跟随 active profile；`profile use` 会在 profile 间转移正在运行的
 daemon，但会保留用户手动 stop 后的停止状态。Linux 默认随用户服务管理器启动；是否
 通过 `loginctl enable-linger` 扩展为登录前启动，仍由系统管理员显式决定。
+从尚无自启偏好的旧版本升级时，即使 daemon 当时处于停止状态，也会为已初始化的
+active profile 注册自启；用户明确执行过 `autostart disable` 或 Hermes 正在持有
+owner 时不会被覆盖。
 
 `profile use` / `profile delete` 切换时会先等旧 profile 的 daemon 真正释放**账号级
 Relay 消费锁**再继续（防止旧进程还没退干净就把生产消息落错 profile），OS 托管自启

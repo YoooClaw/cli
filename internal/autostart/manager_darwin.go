@@ -56,10 +56,15 @@ func (m *platformManager) Status() (Status, error) {
 		return status, fmt.Errorf("launchctl print 失败: %s (%v)", strings.TrimSpace(string(out)), err)
 	}
 	status.Loaded = true
+	serviceStateSeen := false
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "state = ") {
+		// launchctl also prints nested coalition blocks with their own
+		// "state = active" fields. The first state belongs to the service;
+		// later nested states must not overwrite it.
+		if !serviceStateSeen && strings.HasPrefix(line, "state = ") {
 			status.Running = strings.TrimSpace(strings.TrimPrefix(line, "state = ")) == "running"
+			serviceStateSeen = true
 		}
 		if strings.HasPrefix(line, "pid = ") {
 			status.PID, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "pid = ")))

@@ -207,6 +207,9 @@ Autostart always follows the active profile. `profile use` transfers a running
 daemon to the new profile while preserving a manually stopped state. On Linux,
 autostart begins with the user service manager; enabling pre-login boot via
 `loginctl enable-linger` remains an explicit system-administration choice.
+Upgrades from releases without an autostart preference register the initialized
+active profile even if its daemon was stopped during the upgrade. An explicit
+`autostart disable` preference and a live Hermes owner are always preserved.
 
 Switching or deleting a profile (`profile use` / `profile delete`) first waits
 for the old profile's daemon to actually release the **account-level Relay

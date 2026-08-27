@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/autostart"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/daemon"
@@ -123,6 +124,34 @@ func activateCLIOwner(ctx *clictx.Context, hermesProfile string, start bool) (ma
 	if !config.Exists(ctx.Paths) {
 		result["activation"] = "pending-config"
 		result["hint"] = "运行 `yoooclaw config init`；配置完成后 daemon 会自动启动"
+		return result, nil
+	}
+	desired, desiredErr := autostart.Desired(paths.RootDir())
+	if desiredErr != nil {
+		return nil, desiredErr
+	}
+	if desired != autostart.DesiredDisabled {
+		spec, specErr := autostartSpec()
+		if specErr != nil {
+			return nil, autostartError(specErr)
+		}
+		status, enableErr := autostart.Enable(autostartManager(), spec, true)
+		if enableErr != nil {
+			return nil, autostartError(enableErr)
+		}
+		if status.Manager != "test" {
+			if readyErr := waitForManagedDaemon(ctx); readyErr != nil {
+				return nil, readyErr
+			}
+		}
+		state := daemon.State(ctx.Paths)
+		result["activation"] = "active"
+		result["daemonStarted"] = true
+		result["supervised"] = true
+		result["autostart"] = true
+		if state.Lock != nil {
+			result["pid"] = state.Lock.PID
+		}
 		return result, nil
 	}
 	lock, err := startStandalone(ctx)

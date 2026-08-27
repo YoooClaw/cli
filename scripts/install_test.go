@@ -129,7 +129,7 @@ func TestInstallScriptRequiresExplicitOwnerActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := string(text)
-	for _, want := range []string{"--activate", "YOOOCLAW_ACTIVATE_OWNER", "stop_existing_daemons", "yoooclaw owner activate cli", "已保留当前 Relay owner"} {
+	for _, want := range []string{"--activate", "YOOOCLAW_ACTIVATE_OWNER", "stop_existing_daemons", "yoooclaw owner activate cli", "daemon autostart migrate", "已保留当前 Relay owner"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("install.sh missing %q", want)
 		}
@@ -209,6 +209,7 @@ esac
 		"old:--profile default daemon status",
 		"old:--profile default daemon stop",
 		"new:--profile default daemon autostart enable",
+		"new:daemon autostart migrate --format json",
 	} {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("update did not preserve CLI owner (%q missing):\n%s", want, logText)
@@ -238,7 +239,7 @@ func TestNpmPackagePreservesOwnerUnlessExplicitlyActivated(t *testing.T) {
 	if !strings.Contains(string(activation), `"owner", "activate", "cli"`) {
 		t.Fatal("npm postinstall does not activate CLI owner")
 	}
-	for _, want := range []string{"YOOOCLAW_ACTIVATE_OWNER", "runningProfiles", "current Relay owner preserved"} {
+	for _, want := range []string{"YOOOCLAW_ACTIVATE_OWNER", "runningProfiles", "daemon\", \"autostart\", \"migrate", "current Relay owner preserved"} {
 		if !strings.Contains(string(activation), want) {
 			t.Fatalf("npm postinstall missing owner-preservation marker %q", want)
 		}
@@ -310,6 +311,7 @@ exit 0
 		"old:--profile default daemon status",
 		"old:--profile default daemon stop",
 		"new:--profile default daemon autostart enable",
+		"new:daemon autostart migrate --format json",
 	} {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("npm lifecycle did not restore CLI owner (%q missing):\n%s", want, logText)

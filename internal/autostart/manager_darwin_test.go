@@ -74,6 +74,23 @@ func TestPlistUsesArgumentArrayAndEscapesValues(t *testing.T) {
 	}
 }
 
+func TestDarwinStatusIgnoresNestedCoalitionState(t *testing.T) {
+	original := launchctl
+	launchctl = func(args ...string) ([]byte, error) {
+		return []byte("state = running\npid = 123\nresource coalition = {\n\tstate = active\n}\n"), nil
+	}
+	t.Cleanup(func() { launchctl = original })
+
+	m := &platformManager{label: "com.yoooclaw.test", plist: filepath.Join(t.TempDir(), "test.plist")}
+	status, err := m.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Loaded || !status.Running || status.PID != 123 {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
 func TestDarwinStopAcceptsBootoutErrorWhenServiceIsGone(t *testing.T) {
 	loaded := true
 	bootoutCalls := stubLaunchctl(t, &loaded, fakeLaunchctlExitError{code: 3}, true)

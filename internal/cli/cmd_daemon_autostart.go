@@ -25,7 +25,8 @@ func newDaemonAutostartCmd() *cobra.Command {
 	enable.Flags().Bool("no-start", false, "只启用自启，当前不启动")
 	disable := &cobra.Command{Use: "disable", Short: "停止 daemon 并关闭自启", Args: cobra.NoArgs, RunE: run(daemonAutostartDisable)}
 	status := &cobra.Command{Use: "status", Short: "显示自启期望与系统服务状态", Args: cobra.NoArgs, RunE: run(daemonAutostartStatus)}
-	c.AddCommand(enable, disable, status)
+	migrate := &cobra.Command{Use: "migrate", Short: "迁移旧版本的 daemon 自启状态", Hidden: true, Args: cobra.NoArgs, RunE: run(daemonAutostartMigrate)}
+	c.AddCommand(enable, disable, status, migrate)
 	return c
 }
 
@@ -73,6 +74,14 @@ func autostartSnapshot() (map[string]any, error) {
 	if status.PID > 0 {
 		result["pid"] = status.PID
 	}
+	if exists && state.Executable != "" {
+		result["executable"] = state.Executable
+		_, executableErr := os.Stat(state.Executable)
+		result["executableExists"] = executableErr == nil
+		if os.IsNotExist(executableErr) {
+			result["drift"] = true
+		}
+	}
 	if stateErr != nil {
 		result["stateError"] = stateErr.Error()
 	}
@@ -92,6 +101,63 @@ func daemonAutostartStatus(_ *clictx.Context, _ *cobra.Command, _ []string) (any
 		return nil, autostartError(err)
 	}
 	return result, nil
+}
+
+// daemonAutostartMigrate is called by installers after an upgrade. It only
+// supplies the new default for installations that predate autostart.json;
+// an explicit user opt-out is never overwritten. Registration is deliberately
+// cold: a daemon that was stopped before the upgrade remains stopped until the
+// next login, while an installer can separately restore one that was running.
+func daemonAutostartMigrate(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+	root := paths.RootDir()
+	desired, err := autostart.Desired(root)
+	if err != nil {
+		return nil, err
+	}
+	if desired == autostart.DesiredDisabled {
+		return map[string]any{"ok": true, "migrated": false, "desired": desired, "reason": "用户已明确关闭自启"}, nil
+	}
+	if ctx.Profile != persistentActiveProfile() {
+		return map[string]any{"ok": true, "migrated": false, "desired": desiredOrUnknown(desired), "reason": "只迁移 active profile"}, nil
+	}
+	if !config.Exists(ctx.Paths) {
+		return map[string]any{"ok": true, "migrated": false, "desired": desiredOrUnknown(desired), "reason": "active profile 尚未初始化"}, nil
+	}
+	// A running daemon already proves that the active standalone owner is
+	// valid. Probing the account Relay lock in that state would mistake the
+	// daemon's own lock for a conflicting profile.
+	if state := daemon.State(ctx.Paths); !state.Running {
+		if err := daemon.PrecheckStart(ctx, daemon.StartOpts{}); err != nil {
+			var structured *errs.Error
+			if errors.As(err, &structured) && structured.Code == errs.CodeDaemonDisabledByPlugin {
+				return map[string]any{"ok": true, "migrated": false, "desired": desiredOrUnknown(desired), "reason": structured.Message}, nil
+			}
+			return nil, err
+		}
+	}
+	spec, err := autostartSpec()
+	if err != nil {
+		return nil, autostartError(err)
+	}
+	status, err := autostart.Enable(autostartManager(), spec, false)
+	if err != nil {
+		return nil, autostartError(err)
+	}
+	result, snapshotErr := autostartSnapshot()
+	if snapshotErr != nil {
+		return nil, autostartError(snapshotErr)
+	}
+	result["migrated"] = desired == ""
+	result["repaired"] = desired == autostart.DesiredEnabled
+	result["manager"] = status.Manager
+	return result, nil
+}
+
+func desiredOrUnknown(desired string) string {
+	if desired == "" {
+		return "unknown"
+	}
+	return desired
 }
 
 func daemonAutostartEnable(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {

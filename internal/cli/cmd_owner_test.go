@@ -7,7 +7,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/YoooClaw/cli/internal/autostart"
 	"github.com/YoooClaw/cli/internal/clictx"
+	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/paths"
 )
 
@@ -48,6 +50,34 @@ func TestActivateCLIOwnerDisablesHermesAndLeavesUnconfiguredInstallPending(t *te
 	}
 	if result["gatewayRestarted"] != false || result["daemonStarted"] != false {
 		t.Fatalf("unheld/unconfigured install should not restart/start: %#v", result)
+	}
+}
+
+func TestActivateCLIOwnerDefaultsLegacyInstallToManagedAutostart(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("YOOOCLAW_HOME", root)
+	t.Setenv("YOOOCLAW_AUTOSTART_TEST_DIR", filepath.Join(root, "test-services"))
+
+	oldFind := findExecutable
+	t.Cleanup(func() { findExecutable = oldFind })
+	findExecutable = func(string) (string, error) { return "", errors.New("not installed") }
+
+	p := paths.For("default")
+	if err := config.Save(p, config.Default(p.Credentials)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &clictx.Context{Profile: "default", Paths: p}
+	result, err := activateCLIOwner(ctx, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["daemonStarted"] != true || result["supervised"] != true || result["autostart"] != true {
+		t.Fatalf("owner activation did not enable managed autostart: %#v", result)
+	}
+	if desired, err := autostart.Desired(root); err != nil || desired != autostart.DesiredEnabled {
+		t.Fatalf("desired=%q err=%v", desired, err)
 	}
 }
 

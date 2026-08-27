@@ -210,6 +210,42 @@ func TestConfigInitNoAutostartPersistsOptOut(t *testing.T) {
 	if code != 0 || decode(t, out)["desired"] != "disabled" {
 		t.Fatalf("opt-out was not persisted: %s", out)
 	}
+	out, code = execCLI(t, "daemon", "autostart", "migrate")
+	if code != 0 || decode(t, out)["migrated"] != false {
+		t.Fatalf("migration overwrote explicit opt-out: %s", out)
+	}
+	out, code = execCLI(t, "daemon", "autostart", "status")
+	if code != 0 || decode(t, out)["desired"] != "disabled" {
+		t.Fatalf("migration changed explicit opt-out: %s", out)
+	}
+}
+
+func TestDaemonAutostartMigrateLegacyInitializedProfile(t *testing.T) {
+	home := sandbox(t)
+	cfgFile := filepath.Join(home, "import.json")
+	if err := os.WriteFile(cfgFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := execCLI(t, "config", "init", "--non-interactive", "--from-file", cfgFile, "--no-start"); code != 0 {
+		t.Fatalf("config init failed: %s", out)
+	}
+	// Simulate an initialized pre-autostart installation: it has config but no
+	// desired-state file or native service registration.
+	if err := os.Remove(filepath.Join(home, "autostart.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(home, "test-services")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := execCLI(t, "daemon", "autostart", "migrate")
+	if code != 0 {
+		t.Fatalf("autostart migrate failed: %s", out)
+	}
+	result := decode(t, out)
+	if result["migrated"] != true || result["desired"] != "enabled" || result["installed"] != true || result["running"] != false {
+		t.Fatalf("legacy profile was not migrated cold: %+v", result)
+	}
 }
 
 func TestConfigShowBeforeInit(t *testing.T) {
