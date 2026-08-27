@@ -22,10 +22,15 @@ func TriggerTranscription(recordingID string, storage *Storage, asr AsrConfig, l
 		logger.Warn("[asr-trigger] 当前状态不允许转写: " + recordingID + " (status=" + entry.Status + ")")
 		return nil
 	}
-	if _, err := storage.UpdateStatus(recordingID, StatusTranscribing); err != nil {
+	baseRevision := cloneInt64(entry.WriteRevision)
+	started, err := storage.beginTranscriptionAtRevision(recordingID, baseRevision)
+	if err != nil {
 		return err
 	}
-	_ = storage.SetLastError(recordingID, "")
+	if !started {
+		logger.Info("[asr-trigger] revision 已变化或状态不允许，跳过: " + recordingID)
+		return nil
+	}
 	emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, "", nil)
 
 	entry, _ = storage.FindByID(recordingID)
@@ -33,19 +38,25 @@ func TriggerTranscription(recordingID string, storage *Storage, asr AsrConfig, l
 	if !result.OK {
 		message := "转写失败: " + result.Error
 		logger.Error("[asr-trigger] " + message + ": " + recordingID)
-		_, _ = storage.UpdateStatus(recordingID, StatusTranscribeFailed)
-		_ = storage.SetLastError(recordingID, message)
-		emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, message, nil)
+		applied, applyErr := storage.failTranscriptionAtRevision(recordingID, baseRevision, message)
+		if applyErr != nil {
+			return applyErr
+		}
+		if applied {
+			emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, message, nil)
+		}
 		return nil
 	}
-	_ = storage.SetTranscriptDataFile(recordingID, result.TranscriptDataFilename)
-	_ = storage.SetTranscriptFile(recordingID, result.TranscriptFilename)
-	if result.SummaryFilename != "" {
-		_ = storage.SetSummaryFile(recordingID, result.SummaryFilename)
+	applied, applyErr := storage.commitTranscriptionAtRevision(recordingID, baseRevision, result)
+	if applyErr != nil {
+		storage.cleanupSupersededTranscription(result)
+		return applyErr
 	}
-	_ = storage.SetTitle(recordingID, result.Title)
-	_, _ = storage.UpdateStatus(recordingID, StatusTranscribed)
-	_ = storage.SetLastError(recordingID, "")
+	if !applied {
+		storage.cleanupSupersededTranscription(result)
+		logger.Info("[asr-trigger] 转写结果已被更高 writeRevision 取代: " + recordingID)
+		return nil
+	}
 	logger.Info("[asr-trigger] 转写完成: " + recordingID + ", summary=\"" + result.Title + "\"")
 	emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, "", &StatusEvent{
 		Transcript: result.Transcript,
@@ -79,6 +90,7 @@ func emitRecordingStatus(recordingID string, storage *Storage, logger Logger, no
 	}
 	event := StatusEvent{
 		RecordingID:        entry.ID,
+		WriteRevision:      cloneInt64(entry.WriteRevision),
 		TransferStatus:     entry.Status,
 		AudioStatus:        entry.AudioStatus,
 		AudioFile:          entry.AudioFile,

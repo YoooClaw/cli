@@ -19,6 +19,7 @@ func newResultStorage(t *testing.T) *Storage {
 	if err := storage.Init(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 	return storage
 }
 

@@ -30,34 +30,49 @@ type ResultTranscriptSegment struct {
 
 // ResultTranscript 是 result.write 写入的转写结果。
 type ResultTranscript struct {
-	GeneratedAt string                    `json:"generatedAt,omitempty"`
-	Source      *ResultTranscriptSource   `json:"source,omitempty"`
-	Title       string                    `json:"title,omitempty"`
-	Category    string                    `json:"category,omitempty"`
-	Brief       string                    `json:"brief,omitempty"`
-	Text        string                    `json:"text,omitempty"`
-	Segments    []ResultTranscriptSegment `json:"segments,omitempty"`
-	Markdown    string                    `json:"markdown,omitempty"`
+	GeneratedAt     string                    `json:"generatedAt,omitempty"`
+	Source          *ResultTranscriptSource   `json:"source,omitempty"`
+	Title           string                    `json:"title,omitempty"`
+	Category        string                    `json:"category,omitempty"`
+	Brief           string                    `json:"brief,omitempty"`
+	Text            string                    `json:"text,omitempty"`
+	Segments        []ResultTranscriptSegment `json:"segments,omitempty"`
+	Markdown        string                    `json:"markdown,omitempty"`
+	textPresent     bool
+	markdownPresent bool
+	segmentsPresent bool
+	segmentsValid   bool
 }
 
 // ResultSummary 是 result.write 写入的总结结果。
 type ResultSummary struct {
-	GeneratedAt string          `json:"generatedAt,omitempty"`
-	Format      string          `json:"format,omitempty"`
-	Markdown    string          `json:"markdown,omitempty"`
-	Structured  json.RawMessage `json:"structured,omitempty"`
+	GeneratedAt       string          `json:"generatedAt,omitempty"`
+	Format            string          `json:"format,omitempty"`
+	Markdown          string          `json:"markdown,omitempty"`
+	Structured        json.RawMessage `json:"structured,omitempty"`
+	markdownPresent   bool
+	structuredPresent bool
+	structuredValid   bool
 }
 
 // ResultWriteParams 是 recordings.result.write 的入参。
 type ResultWriteParams struct {
-	RecordingID    string            `json:"recordingId"`
-	OssURL         string            `json:"ossUrl,omitempty"`
-	DurationMillis *float64          `json:"durationMillis,omitempty"`
-	Recording      *Metadata         `json:"recording,omitempty"`
-	CreatedAt      string            `json:"createdAt,omitempty"`
-	CreatedAtSnake string            `json:"created_at,omitempty"`
-	Transcript     *ResultTranscript `json:"transcript,omitempty"`
-	Summary        *ResultSummary    `json:"summary,omitempty"`
+	RecordingID              string            `json:"recordingId"`
+	WriteRevision            *int64            `json:"-"`
+	OssURL                   string            `json:"ossUrl,omitempty"`
+	DurationMillis           *float64          `json:"durationMillis,omitempty"`
+	Recording                *Metadata         `json:"recording,omitempty"`
+	CreatedAt                string            `json:"createdAt,omitempty"`
+	CreatedAtSnake           string            `json:"created_at,omitempty"`
+	Transcript               *ResultTranscript `json:"transcript,omitempty"`
+	Summary                  *ResultSummary    `json:"summary,omitempty"`
+	writeRevisionPresent     bool
+	writeRevisionValid       bool
+	recordingMarkersPresent  bool
+	recordingMarkersValid    bool
+	recordingDurationPresent bool
+	recordingDurationValid   bool
+	recordingLocationPresent bool
 }
 
 // ResultWriteStored 记录 result.write 落盘的相对路径。
@@ -71,8 +86,10 @@ type ResultWriteStored struct {
 type ResultWriteResult struct {
 	OK             bool              `json:"ok"`
 	RecordingID    string            `json:"recordingId"`
+	WriteRevision  *int64            `json:"writeRevision,omitempty"`
 	TransferStatus string            `json:"transfer_status"`
 	AudioStatus    string            `json:"audio_status,omitempty"`
+	AudioFile      string            `json:"audioFile,omitempty"`
 	Stored         ResultWriteStored `json:"stored"`
 }
 
@@ -81,6 +98,9 @@ type ResultWriteResult struct {
 // 找不到录音时按占位元数据 upsert 新建；
 // 可选 ossUrl 时在后台下载并覆盖本地音频。不触发插件侧 ASR。
 func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logger Logger, opts SyncOptions) (ResultWriteResult, error) {
+	if params.hasWriteRevision() {
+		return handleOrderedRecordingResultWrite(params, storage, logger, opts)
+	}
 	recordingID := strings.TrimSpace(params.RecordingID)
 	if recordingID == "" {
 		return ResultWriteResult{}, errors.New("recordingId is required")
@@ -88,6 +108,11 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
 	if !fsutil.IsSafeName(recordingID) {
 		return ResultWriteResult{}, errors.New("recordingId is invalid")
+	}
+	if entry, ok := storage.FindByID(recordingID); ok && entry.WriteRevision != nil {
+		return ResultWriteResult{}, newWriteError("REVISION_REQUIRED",
+			fmt.Sprintf("writeRevision is required after recording %s entered the ordered write protocol", recordingID),
+			recordingID, nil, entry.WriteRevision)
 	}
 	if params.Transcript == nil && params.Summary == nil {
 		return ResultWriteResult{}, errors.New("transcript or summary is required")
@@ -429,6 +454,15 @@ func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions
 			if ossURL == "" {
 				continue
 			}
+			if entry.WriteRevision != nil {
+				logger.Info(fmt.Sprintf("[recording-recovery] 补偿缺失音频: %s, writeRevision=%d", entry.ID, *entry.WriteRevision))
+				queueOrderedAudioDownload(validatedOrderedWrite{
+					recordingID: entry.ID,
+					revision:    *entry.WriteRevision,
+					ossURL:      ossURL,
+				}, storage, logger, opts)
+				continue
+			}
 			if err := storage.SetResultAudioPending(entry.ID, ossURL); err != nil {
 				logger.Error("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error())
 				continue
@@ -441,20 +475,28 @@ func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions
 }
 
 func emitResultDownloadStatus(recordingID string, storage *Storage, logger Logger, notify func(StatusEvent)) {
+	emitResultDownloadStatusAtRevision(recordingID, nil, storage, logger, notify)
+}
+
+func emitResultDownloadStatusAtRevision(recordingID string, expectedRevision *int64, storage *Storage, logger Logger, notify func(StatusEvent)) {
 	entry, ok := storage.FindByID(recordingID)
-	if !ok {
+	if !ok || (expectedRevision != nil && !sameWriteRevision(entry.WriteRevision, expectedRevision)) {
 		return
 	}
 	title := firstNonEmpty(entry.Title, entry.Metadata.Name, recordingID)
-	emitResultStatus(recordingID, storage, logger, notify, nil, readSummaryFile(storage, recordingID), title)
+	emitResultStatusAtRevision(recordingID, expectedRevision, storage, logger, notify, nil, readSummaryFile(storage, recordingID), title)
 }
 
 func emitResultStatus(recordingID string, storage *Storage, logger Logger, notify func(StatusEvent), transcript []TranscriptItem, summary, title string) {
+	emitResultStatusAtRevision(recordingID, nil, storage, logger, notify, transcript, summary, title)
+}
+
+func emitResultStatusAtRevision(recordingID string, expectedRevision *int64, storage *Storage, logger Logger, notify func(StatusEvent), transcript []TranscriptItem, summary, title string) {
 	if notify == nil {
 		return
 	}
 	entry, ok := storage.FindByID(recordingID)
-	if !ok {
+	if !ok || (expectedRevision != nil && !sameWriteRevision(entry.WriteRevision, expectedRevision)) {
 		return
 	}
 	if title == "" {
@@ -462,6 +504,7 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 	}
 	event := StatusEvent{
 		RecordingID:        entry.ID,
+		WriteRevision:      cloneInt64(entry.WriteRevision),
 		TransferStatus:     entry.Status,
 		AudioStatus:        entry.AudioStatus,
 		AudioFile:          entry.AudioFile,

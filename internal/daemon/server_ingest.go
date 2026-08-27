@@ -1,7 +1,12 @@
 package daemon
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/YoooClaw/cli/internal/clientlabel"
@@ -36,7 +41,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符（不允许路径分隔符等）")
 			return
 		}
-		if body.Transcript == nil && body.Summary == nil {
+		if !body.HasWriteRevision() && body.Transcript == nil && body.Summary == nil {
 			gatewayErr(w, "INVALID_PARAMS", "transcript or summary is required")
 			return
 		}
@@ -46,6 +51,12 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			ClientLabel:  auth.clientLabel,
 		})
 		if err != nil {
+			var writeErr *recording.WriteError
+			if errors.As(err, &writeErr) {
+				s.logRecordingWriteFailure(recordingID, r.Header.Get(relay.InternalRequestIDHeader), err)
+				gatewayErrData(w, writeErr)
+				return
+			}
 			code := "RESULT_WRITE_FAILED"
 			switch {
 			case strings.HasPrefix(err.Error(), "Recording not found:"):
@@ -122,7 +133,10 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 
 	case "recordings.list":
 		var body struct {
-			Status string `json:"status"`
+			Status string          `json:"status"`
+			From   string          `json:"from"`
+			To     string          `json:"to"`
+			Limit  json.RawMessage `json:"limit"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -132,19 +146,54 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "invalid recording status: "+status)
 			return
 		}
-		entries := s.recordingStorage.ListAll()
-		if status != "" {
-			entries = s.recordingStorage.ListByStatus(status)
+		fromValue := strings.TrimSpace(body.From)
+		toValue := strings.TrimSpace(body.To)
+		from, fromOK := recording.ParseTime(fromValue)
+		to, toOK := recording.ParseTime(toValue)
+		if fromValue != "" && !fromOK {
+			gatewayErr(w, "INVALID_PARAMS", "from must be an ISO 8601 timestamp or YYYY-MM-DD date")
+			return
 		}
+		if toValue != "" && !toOK {
+			gatewayErr(w, "INVALID_PARAMS", "to must be an ISO 8601 timestamp or YYYY-MM-DD date")
+			return
+		}
+		if fromOK && toOK && !from.Before(to) {
+			gatewayErr(w, "INVALID_PARAMS", "from must be earlier than to")
+			return
+		}
+		limit, hasLimit, limitErr := parseRecordingListLimit(body.Limit)
+		if limitErr != nil {
+			gatewayErr(w, "INVALID_PARAMS", limitErr.Error())
+			return
+		}
+		entries := s.recordingStorage.ListAll()
 		scope := auth.scope()
 		items := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
 			if !clientlabel.Visible(entry.ClientLabel, scope) {
 				continue
 			}
+			if status != "" && entry.Status != status {
+				continue
+			}
+			if fromOK || toOK {
+				occurredAt, ok := recording.EffectiveTime(entry)
+				if !ok || (fromOK && occurredAt.Before(from)) || (toOK && !occurredAt.Before(to)) {
+					continue
+				}
+			}
 			items = append(items, recordingListItem(entry))
 		}
-		gatewayOK(w, map[string]any{"total": len(items), "recordings": items})
+		total := len(items)
+		if hasLimit && limit < len(items) {
+			items = items[:limit]
+		}
+		gatewayOK(w, map[string]any{
+			"total":      total,
+			"recordings": items,
+			"protocol":   map[string]any{"orderedWrite": 1, "audioOnlyWrite": true},
+		})
 
 	case "recordings.status":
 		var body recordingIDBody
@@ -285,7 +334,7 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 }
 
 func recordingListItem(entry recording.Entry) map[string]any {
-	return map[string]any{
+	item := map[string]any{
 		"recordingId":        entry.ID,
 		"name":               entry.Metadata.Name,
 		"duration_sec":       entry.Metadata.DurationSec,
@@ -304,11 +353,15 @@ func recordingListItem(entry recording.Entry) map[string]any {
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
 	}
+	if entry.WriteRevision != nil {
+		item["writeRevision"] = *entry.WriteRevision
+	}
+	return item
 }
 
 func recordingDetail(entry recording.Entry) map[string]any {
 	title := firstNonEmptyStr(entry.Title, entry.Metadata.Name, entry.ID)
-	return map[string]any{
+	detail := map[string]any{
 		"recordingId":        entry.ID,
 		"name":               entry.Metadata.Name,
 		"duration_sec":       entry.Metadata.DurationSec,
@@ -320,6 +373,7 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"oss_srt_url":        nilIfEmptyStr(entry.Metadata.OssSrtURL),
 		"markers":            entry.Metadata.Markers,
 		"transfer_status":    entry.Status,
+		"audio_status":       entry.AudioStatus,
 		"audioFile":          nilIfEmptyStr(entry.AudioFile),
 		"srtFile":            nilIfEmptyStr(entry.SrtFile),
 		"transcriptDataFile": nilIfEmptyStr(entry.TranscriptDataFile),
@@ -330,6 +384,34 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
 	}
+	if entry.WriteRevision != nil {
+		detail["writeRevision"] = *entry.WriteRevision
+	}
+	return detail
+}
+
+func parseRecordingListLimit(raw json.RawMessage) (int, bool, error) {
+	if len(raw) == 0 {
+		return 0, false, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return 0, true, errors.New("limit must be a non-negative safe integer")
+	}
+	number, ok := value.(json.Number)
+	if !ok {
+		return 0, true, errors.New("limit must be a non-negative safe integer")
+	}
+	parsed, err := strconv.ParseFloat(number.String(), 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || math.Trunc(parsed) != parsed || parsed < 0 || parsed > 9007199254740991 {
+		return 0, true, errors.New("limit must be a non-negative safe integer")
+	}
+	if parsed > float64(^uint(0)>>1) {
+		return 0, true, errors.New("limit exceeds platform integer range")
+	}
+	return int(parsed), true, nil
 }
 
 func maskedKeyLog(asr *recording.AsrConfig) string {

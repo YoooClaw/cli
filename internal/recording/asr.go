@@ -200,6 +200,9 @@ type WorkflowResult struct {
 // RunTranscriptionWorkflow 转写并写 transcript-data/transcripts/summaries。
 func RunTranscriptionWorkflow(storage *Storage, entry Entry, cfg AsrConfig, logger Logger) WorkflowResult {
 	audioPath := storage.AudioFilePath(entry.ID, entry.Metadata.OssAudioURL)
+	if strings.TrimSpace(entry.AudioFile) != "" {
+		audioPath = filepath.Join(storage.dir, entry.AudioFile)
+	}
 	durationMS := entry.Metadata.DurationSec * 1000
 	result := TranscribeAudio(audioPath, cfg, logger, entry.Metadata.OssAudioURL, durationMS)
 	if !result.OK {

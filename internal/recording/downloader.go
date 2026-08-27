@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -33,6 +34,7 @@ type DownloadOptions struct {
 // DownloadResult 是单个文件下载结果。
 type DownloadResult struct {
 	OK        bool          `json:"ok"`
+	Cancelled bool          `json:"cancelled,omitempty"`
 	SizeBytes int64         `json:"sizeBytes,omitempty"`
 	Elapsed   time.Duration `json:"-"`
 	Error     string        `json:"error,omitempty"`
@@ -49,6 +51,16 @@ func (e *downloadHTTPStatusError) Error() string {
 
 // DownloadFile 从 URL 下载文件到 destPath。
 func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) DownloadResult {
+	return downloadFileContext(context.Background(), rawURL, destPath, logger, opts, false)
+}
+
+// DownloadFileContext 为有序录音写入提供可取消下载；严格校验非空文件和
+// Content-Length，取消不会被上报为业务失败。
+func DownloadFileContext(ctx context.Context, rawURL, destPath string, logger Logger, opts DownloadOptions) DownloadResult {
+	return downloadFileContext(ctx, rawURL, destPath, logger, opts, true)
+}
+
+func downloadFileContext(parent context.Context, rawURL, destPath string, logger Logger, opts DownloadOptions, strict bool) DownloadResult {
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = defaultDownloadTimeout
@@ -69,9 +81,12 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 	_ = fsutil.EnsureDir(filepath.Dir(destPath), fsutil.DirMode)
 	var lastErr string
 	for attempt := 1; attempt <= retries; attempt++ {
+		if err := parent.Err(); err != nil {
+			return DownloadResult{OK: false, Cancelled: true, Error: err.Error()}
+		}
 		start := time.Now()
 		logger.Info(fmt.Sprintf("[downloader] 开始下载 (attempt %d/%d): %s", attempt, retries, rawURL))
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(parent, timeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			cancel()
@@ -85,7 +100,7 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			resp, err = fallbackClient.Do(req.Clone(ctx))
 		}
 		if err == nil && resp != nil {
-			err = writeDownloadResponse(resp, destPath)
+			err = writeDownloadResponseChecked(resp, destPath, strict)
 		}
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -106,19 +121,38 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			return DownloadResult{OK: true, SizeBytes: size, Elapsed: elapsed}
 		}
 
+		if parent.Err() != nil || errors.Is(err, context.Canceled) {
+			message := err.Error()
+			if parent.Err() != nil {
+				message = parent.Err().Error()
+			}
+			return DownloadResult{OK: false, Cancelled: true, Error: message}
+		}
 		lastErr = err.Error()
 		logger.Warn(fmt.Sprintf("[downloader] 下载失败 (attempt %d/%d): %s", attempt, retries, lastErr))
 		if !isRetryableDownloadError(err) {
 			break
 		}
 		if attempt < retries {
-			time.Sleep(backoff * time.Duration(1<<(attempt-1)))
+			timer := time.NewTimer(backoff * time.Duration(1<<(attempt-1)))
+			select {
+			case <-parent.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return DownloadResult{OK: false, Cancelled: true, Error: parent.Err().Error()}
+			case <-timer.C:
+			}
 		}
 	}
 	return DownloadResult{OK: false, Error: lastErr}
 }
 
 func writeDownloadResponse(resp *http.Response, destPath string) error {
+	return writeDownloadResponseChecked(resp, destPath, false)
+}
+
+func writeDownloadResponseChecked(resp *http.Response, destPath string, strict bool) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &downloadHTTPStatusError{Code: resp.StatusCode, Status: resp.Status}
 	}
@@ -142,8 +176,23 @@ func writeDownloadResponse(resp *http.Response, destPath string) error {
 		}
 	}()
 	_ = f.Chmod(0o600)
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	written, err := io.Copy(f, resp.Body)
+	if err != nil {
 		return err
+	}
+	if strict && written <= 0 {
+		return fmt.Errorf("downloaded audio is empty")
+	}
+	if strict {
+		if rawLength := strings.TrimSpace(resp.Header.Get("Content-Length")); rawLength != "" {
+			declared, parseErr := strconv.ParseInt(rawLength, 10, 64)
+			if parseErr != nil || declared < 0 {
+				return fmt.Errorf("invalid Content-Length")
+			}
+			if written != declared {
+				return fmt.Errorf("downloaded size %d does not match Content-Length %d", written, declared)
+			}
+		}
 	}
 	if err := f.Close(); err != nil {
 		return err

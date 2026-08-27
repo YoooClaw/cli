@@ -69,6 +69,10 @@ func gatewayErr(w http.ResponseWriter, code, message string) {
 	writeJSON(w, 200, map[string]any{"ok": false, "error": map[string]any{"code": code, "message": message}})
 }
 
+func gatewayErrData(w http.ResponseWriter, payload any) {
+	writeJSON(w, 200, map[string]any{"ok": false, "error": payload})
+}
+
 func asString(v any) string {
 	s, _ := v.(string)
 	return s
