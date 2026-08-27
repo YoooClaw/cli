@@ -512,7 +512,7 @@ func TestRecoverMissingResultAudio(t *testing.T) {
 	}
 }
 
-func TestResultWriteFailedReplacementKeepsPreviousAudio(t *testing.T) {
+func TestResultWriteReusesPreviousAudioForNewURL(t *testing.T) {
 	t.Parallel()
 	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/good.ogg" {
@@ -541,7 +541,7 @@ func TestResultWriteFailedReplacementKeepsPreviousAudio(t *testing.T) {
 	before, _ := storage.FindByID("rec_replace")
 	beforePath := filepath.Join(storage.dir, before.AudioFile)
 
-	_, err = HandleRecordingResultWrite(ResultWriteParams{
+	result, err := HandleRecordingResultWrite(ResultWriteParams{
 		RecordingID: "rec_replace",
 		OssURL:      oss.URL + "/missing.ogg",
 		Transcript:  &ResultTranscript{Title: "标题", Text: "更新正文"},
@@ -551,13 +551,12 @@ func TestResultWriteFailedReplacementKeepsPreviousAudio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, func() bool {
-		entry, ok := storage.FindByID("rec_replace")
-		return ok && entry.AudioStatus == AudioStatusFailed
-	})
+	if result.AudioStatus != AudioStatusDownloaded {
+		t.Fatalf("existing audio should be reused immediately: %+v", result)
+	}
 	after, _ := storage.FindByID("rec_replace")
-	if after.AudioFile != before.AudioFile || after.AudioSourceURL != oss.URL+"/good.ogg" {
-		t.Fatalf("failed replacement changed known-good audio reference: before=%+v after=%+v", before, after)
+	if after.AudioFile != before.AudioFile || after.AudioSourceURL != oss.URL+"/missing.ogg" {
+		t.Fatalf("new result did not reuse known-good audio: before=%+v after=%+v", before, after)
 	}
 	data, err := os.ReadFile(beforePath)
 	if err != nil {
@@ -566,8 +565,11 @@ func TestResultWriteFailedReplacementKeepsPreviousAudio(t *testing.T) {
 	if string(data) != "known-good-audio" {
 		t.Fatalf("known-good audio was overwritten: %q", data)
 	}
-	if missing := storage.ListMissingAudio(); len(missing) != 1 || missing[0].ID != "rec_replace" {
-		t.Fatalf("failed replacement was not queued for recovery: %+v", missing)
+	if after.AudioStatus != AudioStatusDownloaded || after.LastError != "" {
+		t.Fatalf("reused audio should remain downloaded: %+v", after)
+	}
+	if missing := storage.ListMissingAudio(); len(missing) != 0 {
+		t.Fatalf("reused audio must not be queued for recovery: %+v", missing)
 	}
 }
 
