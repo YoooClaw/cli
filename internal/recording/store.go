@@ -441,14 +441,15 @@ func (s *Storage) SetAudioFile(recordingID, filename string) error {
 	})
 }
 
-// SetResultAudioPending 持久化 result.write 携带的最新 OSS URL，并把本地音频
-// 标记为待下载。即使 daemon 在后台下载前退出，下一次启动也能从索引恢复任务。
+// SetResultAudioPending 持久化 result.write 携带的最新 OSS URL；已有本地音频
+// 时直接复用，否则标记为待下载。
 func (s *Storage) SetResultAudioPending(recordingID, ossURL string) error {
 	return s.updateEntry(recordingID, func(entry *Entry) {
 		nextURL := strings.TrimSpace(ossURL)
 		entry.Metadata.OssAudioURL = nextURL
-		if strings.TrimSpace(entry.AudioSourceURL) == nextURL && entry.AudioFile != "" {
-			if info, err := os.Stat(filepath.Join(s.dir, entry.AudioFile)); err == nil && !info.IsDir() {
+		if entry.AudioFile != "" {
+			if info, err := os.Stat(filepath.Join(s.dir, entry.AudioFile)); err == nil && !info.IsDir() && info.Size() > 0 {
+				entry.AudioSourceURL = nextURL
 				entry.AudioStatus = AudioStatusDownloaded
 				entry.Metadata.FileSizeDisplay = FormatShortFileSize(info.Size())
 				entry.LastError = ""
