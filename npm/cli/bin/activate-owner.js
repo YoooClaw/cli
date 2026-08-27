@@ -86,6 +86,12 @@ if (activationRequested) {
   }
 }
 
+if (!tryRun(["daemon", "autostart", "migrate", "--format", "json"])) {
+  process.stderr.write(
+    "@yoooclaw/cli: could not migrate daemon autostart; run `yoooclaw daemon autostart enable` manually\n",
+  );
+}
+
 try {
   fs.unlinkSync(statePath);
 } catch {}

@@ -38,7 +38,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 | 🔌 隧道 Tunnel        | Relay 隧道状态、强制重连、本地 ingest 回环自检               | 🟡     |
 | 🛡️ 网关 Gateway       | 模拟手机端调 daemon，校验本地连通与鉴权                      | 🟢/🟡  |
 | 📋 日志 Log           | daemon 日志检索与 error 级筛选                               | 🟢     |
-| ⚙️ 基础设施           | config / profile / auth / daemon / migrate / update / doctor / uninstall | 🟢/🔵  |
+| ⚙️ 基础设施           | config / profile / auth / daemon / owner / migrate / update / doctor / uninstall | 🟢/🔵/🟡  |
 | 🧩 技能 Skills        | 把随包 SKILL.md 安装到 Agent 可发现目录                      | 🟢     |
 
 > daemon 标记：🟢 不需要 daemon · 🟡 需要 daemon 在跑 · 🔵 管理 daemon 自身。
@@ -205,6 +205,30 @@ yoooclaw config init --no-autostart  # 当前启动，但不开启自启
 自启服务始终跟随 active profile；`profile use` 会在 profile 间转移正在运行的
 daemon，但会保留用户手动 stop 后的停止状态。Linux 默认随用户服务管理器启动；是否
 通过 `loginctl enable-linger` 扩展为登录前启动，仍由系统管理员显式决定。
+从尚无自启偏好的旧版本升级时，即使 daemon 当时处于停止状态，也会为已初始化的
+active profile 注册自启；用户明确执行过 `autostart disable` 或 Hermes 正在持有
+owner 时不会被覆盖。
+
+`profile use` / `profile delete` 切换时会先等旧 profile 的 daemon 真正释放**账号级
+Relay 消费锁**再继续（防止旧进程还没退干净就把生产消息落错 profile），OS 托管自启
+动的一并跟着停 / 起。
+
+## 存储所有权：CLI ↔ Hermes 插件
+
+`~/.yoooclaw/profiles/<profile>/writer.lock` 保证同一 profile 同一时刻只有一个存储
+写者。Hermes 插件以 daemonless 模式运行时持有这把锁，此时 `daemon start` /
+`daemon run-foreground` 会被拒绝并返回 `YOOOCLAW_DAEMON_DISABLED_BY_PLUGIN`；
+Windows 上探测锁本身失败（如权限错误）是 **fail-closed**——直接拒绝启动并返回
+`YOOOCLAW_STORAGE_UNAVAILABLE`，不会把探测失败当成"未持有"。
+
+```bash
+yoooclaw owner activate cli                          # 把所有权从 Hermes 插件转交给独立 CLI
+yoooclaw owner activate cli --hermes-profile work --no-start
+```
+
+`install.sh` 升级时默认**保留升级前的所有权归属**，不会因为一次升级悄悄换手；只有
+显式传 `--activate`（或 `YOOOCLAW_ACTIVATE_OWNER=cli`）才会在装完后主动把所有权转
+交给独立 CLI。
 
 ## Daemon lifecycle protocol
 
@@ -391,7 +415,7 @@ yoooclaw recording events --since 1h --limit 50
 yoooclaw recording events --id <recording-id> --watch
 ```
 
-录音配置与事件分别落在当前 profile 的 `recordings/asr-config.json` 与 `recordings/state/events.jsonl`。
+录音配置与事件分别落在当前 profile 的 `recordings/asr-config.json` 与 `recordings/state/events.jsonl`；`transcripts/` / `summaries/` 文件名约定为 `<YYYYMMDDHH>_<标题>_<id>.md`，按文件名即可时间排序（升级前的旧文件保留原名，不做批量迁移）。经 `/gateway/recordings.*` 写入的录音会打上发起写入的 api-key 对应 `clientLabel`，读侧（`recording list/status/events`）同样按这个标签隔离——通过 Relay 隧道或某个 api-key 接入的客户端只能看到自己名下的录音，本机 loopback / gateway token 请求不受限，`synced-web-page` 与相关端点同理。
 
 ### 数据目录
 
