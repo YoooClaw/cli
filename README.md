@@ -143,7 +143,7 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 | ------------------------------- | ----------- |
 | `yoooclaw-context-query`        | The sole query Skill for fresh notifications, voice input, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
-| `yoooclaw-lightrule-create`     | Creates and manages persistent “notification → light effect” rules through the standalone CLI; retained because this package has no Agent light-rule tools |
+| `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
 | `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
 
 ```bash
@@ -309,7 +309,6 @@ yoooclaw recording +latest            # Details of the most recent recording
 yoooclaw recording +today             # Recordings from today's local calendar day
 yoooclaw voice +latest                # Most recent saved voice-input item
 yoooclaw voice +today                 # Today's saved voice-input history
-yoooclaw light +blink                 # Light-effect connectivity test (red-strobe-3)
 yoooclaw lightrule +on                # Enable all light-effect rules
 yoooclaw tunnel +test                 # Daemon local ingest + auth self-check
 yoooclaw log +errors                  # Error-level logs since yesterday

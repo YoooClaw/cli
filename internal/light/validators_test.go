@@ -115,33 +115,19 @@ func TestValidateBreathTiming(t *testing.T) {
 	}
 }
 
-func TestValidatePixelFrame(t *testing.T) {
+func TestValidateRemovedPixelFrame(t *testing.T) {
 	t.Parallel()
-	ok := ValidateSegments([]any{map[string]any{
+	res := ValidateSegments([]any{map[string]any{
 		"mode": "pixel_frame", "duration_s": 0.0,
 		"pixels": []any{
 			map[string]any{"index": 0.0, "brightness": 100.0, "color": color(255, 0, 0)},
-			map[string]any{"index": 1.0, "brightness": 100.0, "color": color(0, 255, 0)},
 		},
 	}})
-	if !ok.Valid {
-		t.Fatalf("valid pixel_frame should pass: %+v", ok.Errors)
+	if res.Valid {
+		t.Error("removed pixel_frame mode should fail")
 	}
-	// duplicate index + bad index + missing pixels
-	dup := ValidateSegments([]any{map[string]any{
-		"mode": "pixel_frame",
-		"pixels": []any{
-			map[string]any{"index": 0.0, "brightness": 100.0, "color": color(1, 1, 1)},
-			map[string]any{"index": 0.0, "brightness": 100.0, "color": color(1, 1, 1)},
-			map[string]any{"index": 9.0, "brightness": 100.0, "color": color(1, 1, 1)},
-		},
-	}})
-	if dup.Valid {
-		t.Error("duplicate/out-of-range pixel index should fail")
-	}
-	noPixels := ValidateSegments([]any{map[string]any{"mode": "pixel_frame", "pixels": "x"}})
-	if noPixels.Valid {
-		t.Error("non-array pixels should fail")
+	if len(res.Errors) == 0 || res.Errors[0].Field != "segments[0].mode" {
+		t.Fatalf("removed mode should fail at mode validation: %+v", res.Errors)
 	}
 }
 

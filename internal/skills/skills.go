@@ -247,6 +247,7 @@ type InstallResult struct {
 // deprecatedBundledSkills 是已并入统一 Skill 的旧目录名。
 // 安装新版 Skill 时清理这些精确名称，避免 Agent 同时发现新旧路由。
 var deprecatedBundledSkills = []string{
+	"yoooclaw-lightrule-create",
 	"yoooclaw-notification-query",
 	"yoooclaw-recording-entity-extraction",
 	"yoooclaw-recording-interview",

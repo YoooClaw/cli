@@ -143,7 +143,7 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | ------------------------------- | ---- |
 | `yoooclaw-context-query`        | 查询最新通知、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
-| `yoooclaw-lightrule-create`     | 通过独立 CLI 创建和管理「通知 → 灯效」持久规则；CLI 包没有 Agent 灯效规则工具，因此继续保留 |
+| `yoooclaw-light`                | 通过独立 CLI 播放一次性灯效并管理「通知 → 灯效」持久规则 |
 | `yoooclaw-tunnel-debug`         | 排查鉴权、daemon、ingest、Relay WebSocket 与手机同步链路（🟡） |
 
 ```bash
@@ -304,7 +304,6 @@ yoooclaw recording +latest            # 最新一条录音详情
 yoooclaw recording +today             # 本地自然日内的今日录音
 yoooclaw voice +latest                # 最新一条已保存的语音输入
 yoooclaw voice +today                 # 本地自然日内的语音输入历史
-yoooclaw light +blink                 # 灯效连通性测试（red-strobe-3）
 yoooclaw lightrule +on                # 启用所有灯效规则
 yoooclaw tunnel +test                 # daemon 本地 ingest + 鉴权自检
 yoooclaw log +errors                  # 昨天起的 error 级日志

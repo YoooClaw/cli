@@ -35,13 +35,11 @@ func newLightCmd() *cobra.Command {
 	send.Flags().Bool("repeat", false, "无限循环播放（覆盖来源默认值）")
 	send.Flags().String("repeat-times", "", "整条组合重复次数（0=无限，覆盖来源默认值）")
 
-	blink := &cobra.Command{Use: "+blink", Short: "灯效连通性测试（red-strobe-3）", Args: cobra.NoArgs, RunE: run(lightBlink)}
-
 	// （内部）hermes 插件桥的 gateway 入口：stdin 读参数 JSON，输出
 	// {"status":<http 状态码>,"body":<daemon HTTP 同构响应体>} envelope。
 	gateway := &cobra.Command{Use: "+gateway <method>", Hidden: true, Args: cobra.ExactArgs(1), RunE: run(lightGateway)}
 
-	c.AddCommand(send, blink, gateway)
+	c.AddCommand(send, gateway)
 	return c
 }
 
@@ -89,10 +87,6 @@ func lightSend(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error)
 		body["repeat_times"] = n
 	}
 	return lightSendDirect(ctx, body)
-}
-
-func lightBlink(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
-	return lightSendDirect(ctx, map[string]any{"preset": "red-strobe-3"})
 }
 
 // cloudHost 解析当前 profile 的云端主机；profile 还没 init（config 读不到）时按
