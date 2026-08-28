@@ -9,7 +9,7 @@ import (
 const MaxSegments = 12
 
 // validModes 是允许的 segment 模式。
-var validModes = []string{"wave", "breath", "strobe", "steady", "color_flow", "pixel_frame"}
+var validModes = []string{"wave", "breath", "strobe", "steady", "color_flow"}
 
 // ValidationError 是单个字段的校验错误。
 type ValidationError struct {
@@ -103,8 +103,6 @@ func validateSegment(raw any, prefix string, errs *[]ValidationError, warnings *
 		validateOptionalNonNegativeNumber(seg["interval_ms"], prefix+".interval_ms", errs)
 	case "steady":
 		validateForegroundSegment(seg, prefix, errs)
-	case "pixel_frame":
-		validatePixelFrame(seg["pixels"], prefix+".pixels", errs)
 	default:
 		validateOptionalNonNegativeNumber(seg["brightness"], prefix+".brightness", errs)
 		validateOptionalColor(seg["color"], prefix+".color", errs)
@@ -123,37 +121,6 @@ func validateForegroundSegment(seg map[string]any, prefix string, errs *[]Valida
 	mode, _ := seg["mode"].(string)
 	if b, ok := seg["brightness"].(float64); mode != "steady" && ok && b == 0 {
 		add(errs, prefix+".brightness", "brightness=0 仅 steady 模式允许；其它模式会在固件侧被过滤")
-	}
-}
-
-func validatePixelFrame(value any, field string, errs *[]ValidationError) {
-	arr, ok := value.([]any)
-	if !ok {
-		add(errs, field, "pixel_frame 必须提供 pixels 数组（1–7 项）")
-		return
-	}
-	if len(arr) < 1 || len(arr) > 7 {
-		add(errs, field, "pixels 必须为 1–7 项")
-	}
-
-	seen := map[int]bool{}
-	for i, p := range arr {
-		prefix := fmt.Sprintf("%s[%d]", field, i)
-		pixel, ok := p.(map[string]any)
-		if !ok {
-			add(errs, prefix, "必须是对象")
-			continue
-		}
-		idx, idxOK := pixel["index"].(float64)
-		if !idxOK || idx != math.Trunc(idx) || idx < 0 || idx > 6 {
-			add(errs, prefix+".index", "index 必须是 0–6 的整数")
-		} else if seen[int(idx)] {
-			add(errs, prefix+".index", fmt.Sprintf("index=%s 重复", trimNum(idx)))
-		} else {
-			seen[int(idx)] = true
-		}
-		validateNumberInRange(pixel["brightness"], prefix+".brightness", errs, 0, 255, "必须是 0–255 的数字")
-		validateColor(pixel["color"], prefix+".color", errs)
 	}
 }
 

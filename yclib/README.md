@@ -62,7 +62,7 @@ type Config struct {
 | `Daemon().Status(ctx)` | 读取 daemon 运行态（lock + 探活，无网络） | `daemon status` |
 | `Daemon().Start(ctx, DaemonStartOpts)` | **显式**启动 daemon（幂等） | `daemon start` |
 | `Daemon().Stop(ctx)` | 停止 daemon（未运行为 no-op） | `daemon stop` |
-| `Light().Send(ctx, LightSendOpts)` / `Blink(ctx)` | 下发灯效 / 连通性测试 | `light send` / `light +blink` |
+| `Light().Send(ctx, LightSendOpts)` | 下发一次性灯效 | `light send` |
 | `LightRules().List/Get/Create/Update/Delete/SetEnabled(ctx, …)` | 灯效规则增删改查与启停 | `lightrule …` |
 | `Tunnel().Status/Reconnect/Test(ctx, client)` | Relay 隧道状态 / 重连 / 回环自检 | `tunnel …` |
 
@@ -79,7 +79,11 @@ c, _ := yclib.New(yclib.Config{
 if st, _ := c.Daemon().Status(ctx); !st.Running {
     c.Daemon().Start(ctx, yclib.DaemonStartOpts{}) // 显式拉起
 }
-res, err := c.Light().Send(ctx, yclib.LightSendOpts{Preset: "red-strobe-3"})
+res, err := c.Light().Send(ctx, yclib.LightSendOpts{
+    Preset: "green-steady",
+    Title:  "任务完成",
+    Reason: "任务已完成并通过校验",
+})
 ```
 
 ## 错误处理

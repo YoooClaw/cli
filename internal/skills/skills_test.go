@@ -62,7 +62,7 @@ func TestList(t *testing.T) {
 	}
 	want := []string{
 		"yoooclaw-context-query",
-		"yoooclaw-lightrule-create",
+		"yoooclaw-light",
 		"yoooclaw-recordings-process",
 		"yoooclaw-tunnel-debug",
 	}

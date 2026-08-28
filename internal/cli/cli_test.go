@@ -282,6 +282,18 @@ func TestLightSendValidation(t *testing.T) {
 	}
 }
 
+func TestLightCommandSet(t *testing.T) {
+	light := newLightCmd()
+	if len(light.Commands()) != 2 {
+		t.Fatalf("light command count = %d, want 2", len(light.Commands()))
+	}
+	for _, command := range light.Commands() {
+		if command.Name() != "send" && command.Name() != "+gateway" {
+			t.Fatalf("unexpected light command %q", command.Name())
+		}
+	}
+}
+
 func TestLightSendForwardsTitleAndReason(t *testing.T) {
 	sandbox(t)
 	var requestBody map[string]any
