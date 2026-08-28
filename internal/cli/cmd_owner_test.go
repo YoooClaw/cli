@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/YoooClaw/cli/internal/autostart"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/paths"
 )
 
@@ -50,6 +52,39 @@ func TestActivateCLIOwnerDisablesHermesAndLeavesUnconfiguredInstallPending(t *te
 	}
 	if result["gatewayRestarted"] != false || result["daemonStarted"] != false {
 		t.Fatalf("unheld/unconfigured install should not restart/start: %#v", result)
+	}
+}
+
+func TestActivateCLIOwnerReportsRelayLockWithoutBlamingHermes(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOOOCLAW_HOME", root)
+
+	oldWriter, oldRelay, oldFind := writerLockStatus, relayConsumerLockHeld, findExecutable
+	t.Cleanup(func() {
+		writerLockStatus, relayConsumerLockHeld, findExecutable = oldWriter, oldRelay, oldFind
+	})
+	writerLockStatus = func(paths.Paths) (bool, string, error) { return false, "", nil }
+	relayConsumerLockHeld = func(paths.Paths) (bool, error) { return true, nil }
+	findExecutable = func(string) (string, error) {
+		t.Fatal("relay-only conflict must not try to control Hermes")
+		return "", nil
+	}
+
+	ctx := &clictx.Context{Profile: "default", Paths: paths.For("default")}
+	_, err := activateCLIOwner(ctx, "", false)
+	if err == nil {
+		t.Fatal("relay-only conflict unexpectedly succeeded")
+	}
+	var structured *errs.Error
+	if !errors.As(err, &structured) {
+		t.Fatalf("error is not structured: %v", err)
+	}
+	if structured.Code != errs.CodeDaemonAlreadyRunning {
+		t.Fatalf("code = %s, want %s", structured.Code, errs.CodeDaemonAlreadyRunning)
+	}
+	if strings.Contains(strings.ToLower(structured.Message), "hermes") || !strings.Contains(structured.Message, "standalone daemon") {
+		t.Fatalf("misleading relay-lock message: %s", structured.Message)
 	}
 }
 
