@@ -90,14 +90,14 @@ The dedicated installer installs the CLI, writes the account API key, initialize
 ```bash
 export YOOOCLAW_API_KEY='ock-xxxx'
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
-  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude
+  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude --env production
 
 # Codex host; replace the binary and refresh installed Skills on reinstall/upgrade
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
-  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill codex --force
+  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill codex --env development --force
 ```
 
-Current CLI releases accept `claude` and `codex` for `--skill`. The value is passed directly to the CLI Skill adapter, so the installer will not need a workflow change when a DeepSeek Harness adapter is added. The script also accepts `--version`, `--beta`, `--dir`, `--profile`, and `--modify-path`. It never prints the API key and writes it through stdin to the shared `0600` credentials file; reference an environment variable as above to keep the plaintext value out of shell history.
+Current CLI releases accept `claude` and `codex` for `--skill`. The value is passed directly to the CLI Skill adapter, so the installer will not need a workflow change when a DeepSeek Harness adapter is added. `--env` accepts `development`, `test`, or `production`; it defaults to `PHONE_NOTIFICATIONS_ENV`, then `production`, and is persisted in the profile for systemd-launched daemons. The live script installs the CLI release that shipped it by default and also accepts `--version`, `--beta`, `--dir`, `--profile`, and `--modify-path`. It never prints the API key and writes it through stdin to the shared `0600` credentials file; reference an environment variable as above to keep the plaintext value out of shell history.
 
 > `yoooclaw update self` gives you the right upgrade command for how you installed (npm → `npm update -g`, binary → install.sh).
 

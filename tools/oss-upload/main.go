@@ -48,10 +48,11 @@ import (
 )
 
 const (
-	sentinelBaseURL       = "__YOOOCLAW_CLI_OSS_BASE_URL__"
-	sentinelRendered      = "__YOOOCLAW_CLI_TEMPLATE_RENDERED__"
-	rawInstallerURL       = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh"
-	rawWuyingInstallerURL = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install-wuying.sh"
+	sentinelBaseURL        = "__YOOOCLAW_CLI_OSS_BASE_URL__"
+	sentinelRendered       = "__YOOOCLAW_CLI_TEMPLATE_RENDERED__"
+	sentinelReleaseVersion = "__YOOOCLAW_CLI_RELEASE_VERSION__"
+	rawInstallerURL        = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh"
+	rawWuyingInstallerURL  = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install-wuying.sh"
 
 	defaultBucket       = "yoooclaw-artifacts"
 	defaultPublicURL    = "https://artifact.yoooclaw.com"
@@ -326,20 +327,21 @@ func renderInstaller(root, installBaseURL string) []byte {
 	return []byte(source)
 }
 
-func renderWuyingInstaller(root, installBaseURL string) []byte {
+func renderWuyingInstaller(root, installBaseURL, version string) []byte {
 	path := filepath.Join(root, "scripts", "install-wuying.sh")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fatalf("读取无影安装脚本: %v", err)
 	}
 	source := string(data)
-	for _, sentinel := range []string{sentinelBaseURL, sentinelRendered} {
+	for _, sentinel := range []string{sentinelBaseURL, sentinelRendered, sentinelReleaseVersion} {
 		if !strings.Contains(source, sentinel) {
 			fatalf("scripts/install-wuying.sh 缺少占位符 %s", sentinel)
 		}
 	}
 	source = strings.ReplaceAll(source, sentinelBaseURL, installBaseURL)
 	source = strings.ReplaceAll(source, sentinelRendered, "1")
+	source = strings.ReplaceAll(source, sentinelReleaseVersion, version)
 	source = strings.ReplaceAll(source, rawWuyingInstallerURL, installBaseURL+"/install-wuying.sh")
 	return []byte(source)
 }
@@ -409,7 +411,7 @@ func main() {
 		u.put(liveKey, rendered, contentTypeFor("install.sh"), "install.sh")
 		u.put(archiveKey, rendered, contentTypeFor("install.sh"), "v"+version+"/installer/install.sh")
 
-		renderedWuying := renderWuyingInstaller(root, installBaseURL)
+		renderedWuying := renderWuyingInstaller(root, installBaseURL, version)
 		wuyingLiveKey := joinKey(prefix, "install-wuying.sh")
 		wuyingArchiveKey := joinKey(prefix, "v"+version, "installer", "install-wuying.sh")
 		u.put(wuyingLiveKey, renderedWuying, contentTypeFor("install-wuying.sh"), "install-wuying.sh")
