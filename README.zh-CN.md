@@ -83,6 +83,22 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
 
 直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。Windows Go binary 目前随 npm 平台子包发布。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 
+### 无影云电脑无人值守安装
+
+专用脚本会安装 CLI、写入 account API key、初始化默认配置、为指定 Agent 宿主安装 Skills，并启动 daemon（优先启用登录自启；用户级服务管理器不可用时降级为 detached daemon）。`--api-key` 与 `--skill` 为必填参数：
+
+```bash
+export YOOOCLAW_API_KEY='ock-xxxx'
+curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
+  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude
+
+# Codex 宿主；重装/升级时覆盖 binary 与已安装 Skills
+curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
+  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill codex --force
+```
+
+当前 CLI 的 `--skill` 支持 `claude`、`codex`；该参数直接传给 CLI 的 Skill adapter，未来加入 DeepSeek Harness 等宿主后安装脚本无需改变。还可传 `--version`、`--beta`、`--dir`、`--profile` 与 `--modify-path`。脚本不会打印 API key，并通过 stdin 写入权限为 `0600` 的共享凭据文件；建议像示例一样引用环境变量，避免在 shell 历史中留下明文。
+
 > `yoooclaw update self` 会按当前安装来源给出对应升级命令（npm 走 `npm update -g`，二进制走 install.sh）。
 
 ### 快速开始（人类用户）
