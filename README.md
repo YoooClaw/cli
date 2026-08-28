@@ -83,6 +83,22 @@ The installer does not modify shell startup files by default. It only updates PA
 
 Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`. The Windows Go binary currently ships only via the npm platform subpackage. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
 
+### Unattended WUYING cloud desktop installation
+
+The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. Both `--api-key` and `--skill` are required:
+
+```bash
+export YOOOCLAW_API_KEY='ock-xxxx'
+curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
+  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude
+
+# Codex host; replace the binary and refresh installed Skills on reinstall/upgrade
+curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
+  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill codex --force
+```
+
+Current CLI releases accept `claude` and `codex` for `--skill`. The value is passed directly to the CLI Skill adapter, so the installer will not need a workflow change when a DeepSeek Harness adapter is added. The script also accepts `--version`, `--beta`, `--dir`, `--profile`, and `--modify-path`. It never prints the API key and writes it through stdin to the shared `0600` credentials file; reference an environment variable as above to keep the plaintext value out of shell history.
+
 > `yoooclaw update self` gives you the right upgrade command for how you installed (npm → `npm update -g`, binary → install.sh).
 
 ### Quickstart (Human Users)
