@@ -9,6 +9,13 @@
 # The installer downloads the native Go executable. Node.js and npm are not
 # required, and installation is per-user by default (no administrator rights).
 
+# A script-level param block cannot be parsed by `Invoke-Expression` in Windows
+# PowerShell 5.1. Capture the automatic argument list and forward it into an
+# advanced child script block instead, which supports both `irm ... | iex` and
+# `& ([scriptblock]::Create((irm ...))) -Version ...`.
+$yoooclawInstallerArguments = @($args)
+try {
+& {
 [CmdletBinding()]
 param(
     [string] $Version = "",
@@ -22,20 +29,6 @@ param(
     # Primarily useful for mirrors and installer integration tests. The layout
     # must be <BaseUrl>/v<version>/{asset,checksums.txt} with latest/beta markers.
     [string] $BaseUrl = ""
-)
-
-& {
-[CmdletBinding()]
-param(
-    [string] $Version,
-    [switch] $Beta,
-    [string] $InstallDir,
-    [switch] $Force,
-    [switch] $Activate,
-    [string] $HermesProfile,
-    [switch] $NoModifyPath,
-    [switch] $KeepNpm,
-    [string] $BaseUrl
 )
 
 Set-StrictMode -Version 2.0
@@ -528,4 +521,8 @@ finally {
 
 Write-Host ""
 Write-Host "Installation complete. Try: yoooclaw --help" -ForegroundColor Green
-} -Version $Version -Beta:$Beta -InstallDir $InstallDir -Force:$Force -Activate:$Activate -HermesProfile $HermesProfile -NoModifyPath:$NoModifyPath -KeepNpm:$KeepNpm -BaseUrl $BaseUrl
+} @yoooclawInstallerArguments
+}
+finally {
+    Remove-Variable -Name yoooclawInstallerArguments -ErrorAction SilentlyContinue
+}

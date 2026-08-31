@@ -171,6 +171,24 @@ func TestWindowsInstallScriptIsNativeAndSelfContained(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallerCanRunThroughPowerShell51InvokeExpression(t *testing.T) {
+	t.Parallel()
+
+	text, err := os.ReadFile(mustAbs(t, "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(text)
+	childBlockAt := strings.Index(script, "& {")
+	cmdletBindingAt := strings.Index(script, "[CmdletBinding()]")
+	if childBlockAt < 0 || cmdletBindingAt < 0 || cmdletBindingAt < childBlockAt {
+		t.Fatal("install.ps1 must keep CmdletBinding inside a child script block for Windows PowerShell 5.1 Invoke-Expression")
+	}
+	if !strings.Contains(script, "} @yoooclawInstallerArguments") {
+		t.Fatal("install.ps1 must forward script-block arguments to the child installer")
+	}
+}
+
 func TestWindowsInstallerMigratesNpmAfterNativeVerification(t *testing.T) {
 	t.Parallel()
 
