@@ -147,6 +147,8 @@ func TestWindowsInstallScriptIsNativeAndSelfContained(t *testing.T) {
 	for _, want := range []string{
 		"yoooclaw-win32-x64.exe",
 		"Get-FileHash -Algorithm SHA256",
+		"$response.Content -is [byte[]]",
+		"[Text.Encoding]::UTF8.GetString",
 		"YoooClaw\\bin",
 		"yoooclaw.exe",
 		"yc.exe",

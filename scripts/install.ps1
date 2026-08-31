@@ -69,6 +69,12 @@ function Assert-SupportedPlatform {
 function Get-WebText([string] $Uri) {
     $headers = @{ "User-Agent" = "yoooclaw-installer" }
     $response = Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $Uri
+    # Windows PowerShell 5.1 may expose text responses as byte[] depending on
+    # the server/CDN content type. Casting byte[] directly to string produces a
+    # space-separated list of decimal byte values instead of the response text.
+    if ($response.Content -is [byte[]]) {
+        return [Text.Encoding]::UTF8.GetString($response.Content)
+    }
     return [string] $response.Content
 }
 
