@@ -136,6 +136,60 @@ func TestInstallScriptRequiresExplicitOwnerActivation(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallScriptIsNativeAndSelfContained(t *testing.T) {
+	t.Parallel()
+
+	text, err := os.ReadFile(mustAbs(t, "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(text)
+	for _, want := range []string{
+		"yoooclaw-win32-x64.exe",
+		"Get-FileHash -Algorithm SHA256",
+		"YoooClaw\\bin",
+		"yoooclaw.exe",
+		"yc.exe",
+		"SetEnvironmentVariable(\"Path\"",
+		"Stop-ExistingDaemons",
+		"Restore-Daemons",
+		"Find-NpmCommand",
+		"npm uninstall -g @yoooclaw/cli",
+		"KeepNpm",
+		"YOOOCLAW_ACTIVATE_OWNER",
+		"__YOOOCLAW_CLI_OSS_BASE_URL__",
+		"__YOOOCLAW_CLI_TEMPLATE_RENDERED__",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("install.ps1 missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{"npm install -g", "npm i -g", "node.exe"} {
+		if strings.Contains(strings.ToLower(script), unwanted) {
+			t.Errorf("install.ps1 unexpectedly depends on %q", unwanted)
+		}
+	}
+}
+
+func TestWindowsInstallerMigratesNpmAfterNativeVerification(t *testing.T) {
+	t.Parallel()
+
+	text, err := os.ReadFile(mustAbs(t, "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(text)
+	verifiedAt := strings.Index(script, `if ($installedVersion -ne $resolvedVersion)`)
+	committedAt := strings.Index(script, `$installationCommitted = $true`)
+	removeAt := strings.Index(script, `$npmRemoved = Remove-NpmCli $npmCommand`)
+	if verifiedAt < 0 || committedAt < 0 || removeAt < 0 {
+		t.Fatalf("install.ps1 is missing npm migration ordering markers")
+	}
+	if !(verifiedAt < committedAt && committedAt < removeAt) {
+		t.Fatalf("npm cleanup must happen after native verification and commit: verify=%d commit=%d remove=%d", verifiedAt, committedAt, removeAt)
+	}
+}
+
 func TestInstallScriptUpdateRestoresRunningCLIOwner(t *testing.T) {
 	t.Parallel()
 

@@ -19,11 +19,12 @@
 //
 // OSS 布局（与 hermes-plugin 一致的组织方式）：
 //
-//	<prefix>/install.sh                     渲染后的通用安装脚本（live，始终指向 OSS）
-//	<prefix>/install-wuying.sh              渲染后的无影一键安装脚本（live）
-//	<prefix>/v<ver>/yoooclaw-<os>-<arch>    原生二进制
-//	<prefix>/v<ver>/checksums.txt           sha256 清单
-//	<prefix>/v<ver>/installer/install.sh    安装脚本归档
+//	<prefix>/install.sh                         渲染后的 Unix 安装脚本（live，始终指向 OSS）
+//	<prefix>/install.ps1                        渲染后的 Windows 安装脚本（live）
+//	<prefix>/install-wuying.sh                  渲染后的无影一键安装脚本（live）
+//	<prefix>/v<ver>/yoooclaw-<os>-<arch>        原生二进制
+//	<prefix>/v<ver>/checksums.txt               sha256 清单
+//	<prefix>/v<ver>/installer/install.*         通用安装脚本归档
 //	<prefix>/v<ver>/installer/install-wuying.sh 无影安装脚本归档
 //	<prefix>/v<ver>/oss-manifest.json       本次发布清单
 //	<prefix>/latest | <prefix>/beta         渠道版本标记（纯版本号文本）
@@ -53,6 +54,7 @@ const (
 	sentinelReleaseVersion = "__YOOOCLAW_CLI_RELEASE_VERSION__"
 	rawInstallerURL        = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh"
 	rawWuyingInstallerURL  = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install-wuying.sh"
+	rawInstallerPS1URL     = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.ps1"
 
 	defaultBucket       = "yoooclaw-artifacts"
 	defaultPublicURL    = "https://artifact.yoooclaw.com"
@@ -181,6 +183,8 @@ func contentTypeFor(name string) string {
 		return "text/plain; charset=utf-8"
 	case strings.HasSuffix(name, ".sh"):
 		return "text/x-shellscript; charset=utf-8"
+	case strings.HasSuffix(name, ".ps1"):
+		return "text/plain; charset=utf-8"
 	case strings.HasSuffix(name, ".json"):
 		return "application/json; charset=utf-8"
 	default:
@@ -309,21 +313,22 @@ func collectArtifacts(distDir, prefix, publicURL, version string) []artifact {
 	return artifacts
 }
 
-func renderInstaller(root, installBaseURL string) []byte {
-	path := filepath.Join(root, "scripts", "install.sh")
+func renderInstaller(root, filename, installBaseURL string) []byte {
+	path := filepath.Join(root, "scripts", filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fatalf("读取安装脚本: %v", err)
+		fatalf("读取安装脚本 %s: %v", filename, err)
 	}
 	source := string(data)
 	for _, sentinel := range []string{sentinelBaseURL, sentinelRendered} {
 		if !strings.Contains(source, sentinel) {
-			fatalf("scripts/install.sh 缺少占位符 %s", sentinel)
+			fatalf("scripts/%s 缺少占位符 %s", filename, sentinel)
 		}
 	}
 	source = strings.ReplaceAll(source, sentinelBaseURL, installBaseURL)
 	source = strings.ReplaceAll(source, sentinelRendered, "1")
 	source = strings.ReplaceAll(source, rawInstallerURL, installBaseURL+"/install.sh")
+	source = strings.ReplaceAll(source, rawInstallerPS1URL, installBaseURL+"/install.ps1")
 	return []byte(source)
 }
 
@@ -405,11 +410,13 @@ func main() {
 	fmt.Println()
 
 	if *only == "" || *only == "install" {
-		rendered := renderInstaller(root, installBaseURL)
-		liveKey := joinKey(prefix, "install.sh")
-		archiveKey := joinKey(prefix, "v"+version, "installer", "install.sh")
-		u.put(liveKey, rendered, contentTypeFor("install.sh"), "install.sh")
-		u.put(archiveKey, rendered, contentTypeFor("install.sh"), "v"+version+"/installer/install.sh")
+		for _, filename := range []string{"install.sh", "install.ps1"} {
+			rendered := renderInstaller(root, filename, installBaseURL)
+			liveKey := joinKey(prefix, filename)
+			archiveKey := joinKey(prefix, "v"+version, "installer", filename)
+			u.put(liveKey, rendered, contentTypeFor(filename), filename)
+			u.put(archiveKey, rendered, contentTypeFor(filename), "v"+version+"/installer/"+filename)
+		}
 
 		renderedWuying := renderWuyingInstaller(root, installBaseURL, version)
 		wuyingLiveKey := joinKey(prefix, "install-wuying.sh")
@@ -435,16 +442,18 @@ func main() {
 			}
 		}
 		manifest := map[string]any{
-			"package":                   "@yoooclaw/cli",
-			"version":                   version,
-			"channel":                   channel,
-			"installScriptUrl":          urlForKey(publicURL, joinKey(prefix, "install.sh")),
-			"wuyingInstallScriptUrl":    urlForKey(publicURL, joinKey(prefix, "install-wuying.sh")),
-			"installerArchiveUrl":       urlForKey(publicURL, joinKey(prefix, "v"+version, "installer", "install.sh")),
-			"wuyingInstallerArchiveUrl": urlForKey(publicURL, joinKey(prefix, "v"+version, "installer", "install-wuying.sh")),
-			"artifactBaseUrl":           urlForKey(publicURL, joinKey(prefix, "v"+version)),
-			"checksumsUrl":              checksumsURL,
-			"artifacts":                 artifacts,
+			"package":                    "@yoooclaw/cli",
+			"version":                    version,
+			"channel":                    channel,
+			"installScriptUrl":           urlForKey(publicURL, joinKey(prefix, "install.sh")),
+			"wuyingInstallScriptUrl":     urlForKey(publicURL, joinKey(prefix, "install-wuying.sh")),
+			"installerArchiveUrl":        urlForKey(publicURL, joinKey(prefix, "v"+version, "installer", "install.sh")),
+			"wuyingInstallerArchiveUrl":  urlForKey(publicURL, joinKey(prefix, "v"+version, "installer", "install-wuying.sh")),
+			"windowsInstallScriptUrl":    urlForKey(publicURL, joinKey(prefix, "install.ps1")),
+			"windowsInstallerArchiveUrl": urlForKey(publicURL, joinKey(prefix, "v"+version, "installer", "install.ps1")),
+			"artifactBaseUrl":            urlForKey(publicURL, joinKey(prefix, "v"+version)),
+			"checksumsUrl":               checksumsURL,
+			"artifacts":                  artifacts,
 		}
 		manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
@@ -462,6 +471,7 @@ func main() {
 	fmt.Println()
 	okf("installer: %s", urlForKey(publicURL, joinKey(prefix, "install.sh")))
 	okf("wuying installer: %s", urlForKey(publicURL, joinKey(prefix, "install-wuying.sh")))
+	okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
 	okf("artifacts: %s/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
 	okf("%s marker: %s", channel, urlForKey(publicURL, joinKey(prefix, channel)))
 	okf("OSS upload complete")

@@ -47,7 +47,7 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 
 Two distribution channels with **identical functionality** — pick whichever fits. The npm package is now a very thin Node launcher; the actual work is done by the native Go binary installed via optionalDependencies. The direct-install channel skips Node entirely and downloads the same Go binary.
 
-**Platform support**: the npm channel supports `darwin/linux` `x64+arm64` and `win32-x64` (the launcher needs Node ≥ 18); `install.sh` / GitHub Release direct install supports `darwin/linux` `x64+arm64`. On Windows, credentials are stored in plaintext at `~/.yoooclaw/credentials.json` (no OS keychain hardening — `yoooclaw doctor` will warn about this), and the daemon shuts down gracefully over HTTP.
+**Platform support**: the npm channel supports `darwin/linux` `x64+arm64` and `win32-x64` (the launcher needs Node ≥ 18); native direct install supports `darwin/linux` `x64+arm64` and Windows x64 (Windows on ARM uses the OS x64 compatibility layer). On Windows, credentials are stored in plaintext at `~/.yoooclaw/credentials.json` (no OS keychain hardening — `yoooclaw doctor` will warn about this), and the daemon shuts down gracefully over HTTP.
 
 ### Channel A — npm (thin Node launcher + platform Go binary)
 
@@ -65,6 +65,22 @@ yc --help
 
 A single-file Go executable — lighter cold-start and resource footprint than the older TS/Bun implementation.
 
+One-command install on Windows PowerShell 5.1+, with no Node/npm or administrator rights required:
+
+```powershell
+irm https://artifact.yoooclaw.com/cli/install.ps1 | iex
+```
+
+It installs `yoooclaw.exe` / `yc.exe` under `%LOCALAPPDATA%\YoooClaw\bin` and adds that directory to the current user's PATH. To pin a version or overwrite an existing installation:
+
+```powershell
+& ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.9.1 -Force
+```
+
+If an older `npm i -g @yoooclaw/cli` installation is detected, the installer first verifies the new native CLI and then runs `npm uninstall -g @yoooclaw/cli`. Pass `-KeepNpm` to retain it. An npm cleanup failure never rolls back a verified native installation.
+
+macOS / Linux:
+
 ```bash
 # Auto-detect platform, download, verify sha256, install to ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh | sh
@@ -78,10 +94,10 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
   | sh -s -- --version 0.2.0-beta.2 --dir ~/bin --force
 ```
 
-The installer does not modify shell startup files by default. It only updates PATH when
-`--modify-path` is explicitly supplied; `--no-modify-path` remains accepted for compatibility.
+The Unix installer does not modify shell startup files by default; pass `--modify-path` to opt in.
+The Windows installer updates the user PATH by default; pass `-NoModifyPath` to opt out.
 
-Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`. The Windows Go binary currently ships only via the npm platform subpackage. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
+Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
 
 ### Unattended WUYING cloud desktop installation
 
@@ -99,7 +115,7 @@ curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
 
 Current CLI releases accept `claude` and `codex` for `--skill`. The value is passed directly to the CLI Skill adapter, so the installer will not need a workflow change when a DeepSeek Harness adapter is added. `--env` accepts `development`, `test`, or `production`; it defaults to `PHONE_NOTIFICATIONS_ENV`, then `production`, and is persisted in the profile for systemd-launched daemons. The live script installs the CLI release that shipped it by default and also accepts `--version`, `--beta`, `--dir`, `--profile`, and `--modify-path`. It never prints the API key and writes it through stdin to the shared `0600` credentials file; reference an environment variable as above to keep the plaintext value out of shell history.
 
-> `yoooclaw update self` gives you the right upgrade command for how you installed (npm → `npm update -g`, binary → install.sh).
+> `yoooclaw update self` gives you the right upgrade command for your installation source and OS (npm → `npm update -g`, native → `install.sh` / `install.ps1`).
 
 ### Quickstart (Human Users)
 
@@ -248,10 +264,10 @@ yoooclaw owner activate cli                          # hand ownership from the H
 yoooclaw owner activate cli --hermes-profile work --no-start
 ```
 
-`install.sh` **preserves ownership as it was before the upgrade** by default —
-an upgrade never silently hands it off. Only passing `--activate` explicitly
-(or setting `YOOOCLAW_ACTIVATE_OWNER=cli`) makes it actively hand ownership to
-the standalone CLI after install.
+`install.sh` / `install.ps1` **preserve ownership as it was before the upgrade**
+by default—an upgrade never silently hands it off. Only passing `--activate` /
+`-Activate` explicitly (or setting `YOOOCLAW_ACTIVATE_OWNER=cli`) makes it
+actively hand ownership to the standalone CLI after install.
 
 ## Daemon lifecycle protocol
 

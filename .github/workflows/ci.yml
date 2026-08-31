@@ -69,3 +69,112 @@ jobs:
             exit 0
           fi
           echo "::notice::Feishu 构建通知已送达"
+
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Smoke test one-command Windows installer
+        # Use inbox Windows PowerShell 5.1; PowerShell 7 is backward-compatible
+        # with the syntax exercised here.
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '0.0.0-test.1'
+          $asset = 'yoooclaw-win32-x64.exe'
+          $serverRoot = Join-Path $env:RUNNER_TEMP 'yoooclaw-installer-server'
+          $versionRoot = Join-Path $serverRoot "v$version"
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'yoooclaw-local-app-data'
+          $env:YOOOCLAW_HOME = Join-Path $env:RUNNER_TEMP 'yoooclaw-runtime-home'
+          New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
+
+          # Simulate an older global npm installation and verify that the native
+          # installer migrates it only after the new executable is usable.
+          $mockNpmBin = Join-Path $env:RUNNER_TEMP 'mock-npm-bin'
+          $env:MOCK_NPM_ROOT = Join-Path $env:RUNNER_TEMP 'mock-npm-root'
+          $env:MOCK_NPM_LOG = Join-Path $env:RUNNER_TEMP 'mock-npm.log'
+          New-Item -ItemType Directory -Path $mockNpmBin -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $env:MOCK_NPM_ROOT '@yoooclaw\cli') -Force | Out-Null
+          '{}' | Set-Content -Encoding ascii (Join-Path $env:MOCK_NPM_ROOT '@yoooclaw\cli\package.json')
+          $mockNpmSource = @'
+          @echo off
+          if "%1"=="root" (
+            echo %MOCK_NPM_ROOT%
+            exit /b 0
+          )
+          if "%1"=="uninstall" (
+            echo %*>>"%MOCK_NPM_LOG%"
+            exit /b 0
+          )
+          exit /b 2
+          '@
+          $mockNpmSource | Set-Content -Encoding ascii (Join-Path $mockNpmBin 'npm.cmd')
+          $env:Path = "$mockNpmBin;$($env:Path)"
+
+          go build -trimpath -ldflags "-s -w -X github.com/YoooClaw/cli/internal/version.Version=$version" -o (Join-Path $versionRoot $asset) ./cmd/yc
+          $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $versionRoot $asset)).Hash.ToLowerInvariant()
+          "$hash  $asset" | Set-Content -Encoding ascii (Join-Path $versionRoot 'checksums.txt')
+          $version | Set-Content -Encoding ascii (Join-Path $serverRoot 'latest')
+
+          $baseUrl = 'http://127.0.0.1:18765'
+          $installer = Get-Content -Raw scripts/install.ps1
+          $installer = $installer.Replace('__YOOOCLAW_CLI_OSS_BASE_URL__', $baseUrl)
+          $installer = $installer.Replace('__YOOOCLAW_CLI_TEMPLATE_RENDERED__', '1')
+          $installer | Set-Content -Encoding utf8 (Join-Path $serverRoot 'install.ps1')
+
+          # Python does not know the .ps1 MIME type by default. Match the OSS
+          # text/plain response so Invoke-RestMethod returns script text.
+          $serverSource = @'
+          import http.server
+          import os
+          import sys
+
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              extensions_map = dict(http.server.SimpleHTTPRequestHandler.extensions_map, **{".ps1": "text/plain; charset=utf-8"})
+
+              def guess_type(self, path):
+                  if path.endswith("/latest") or path.endswith("/beta"):
+                      return "text/plain; charset=utf-8"
+                  return super().guess_type(path)
+
+          os.chdir(sys.argv[1])
+          http.server.ThreadingHTTPServer(("127.0.0.1", 18765), Handler).serve_forever()
+          '@
+          $serverScript = Join-Path $env:RUNNER_TEMP 'serve-yoooclaw-installer.py'
+          $serverSource | Set-Content -Encoding utf8 $serverScript
+          $server = Start-Process python -ArgumentList $serverScript, $serverRoot -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(15)
+            do {
+              try {
+                Invoke-WebRequest -UseBasicParsing "$baseUrl/latest" | Out-Null
+                $ready = $true
+              }
+              catch {
+                Start-Sleep -Milliseconds 250
+              }
+            } until ($ready -or (Get-Date) -ge $deadline)
+            if (-not $ready) { throw 'local installer server did not start' }
+
+            Invoke-RestMethod "$baseUrl/install.ps1" | Invoke-Expression
+
+            $installDir = Join-Path $env:LOCALAPPDATA 'YoooClaw\bin'
+            $yoooclawVersion = & (Join-Path $installDir 'yoooclaw.exe') --version
+            $ycVersion = & (Join-Path $installDir 'yc.exe') --version
+            if ($yoooclawVersion -ne $version -or $ycVersion -ne $version) {
+              throw "installed command versions do not match: yoooclaw=$yoooclawVersion yc=$ycVersion"
+            }
+            $npmLog = Get-Content -Raw $env:MOCK_NPM_LOG
+            if ($npmLog -notmatch 'uninstall --global @yoooclaw/cli') {
+              throw "old npm package was not removed: $npmLog"
+            }
+          }
+          finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }

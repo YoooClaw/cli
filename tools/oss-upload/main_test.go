@@ -41,3 +41,41 @@ func TestRenderWuyingInstallerUsesOSSBase(t *testing.T) {
 		}
 	}
 }
+
+func TestPowerShellInstallerContentType(t *testing.T) {
+	t.Parallel()
+	if got := contentTypeFor("install.ps1"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("contentTypeFor(install.ps1) = %q", got)
+	}
+}
+
+func TestRenderPowerShellInstaller(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	scriptsDir := filepath.Join(root, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Join([]string{
+		`$Base = "` + sentinelBaseURL + `"`,
+		`$Rendered = "` + sentinelRendered + `"`,
+		`$Source = "` + rawInstallerPS1URL + `"`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(scriptsDir, "install.ps1"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL := "https://example.test/cli"
+	rendered := string(renderInstaller(root, "install.ps1", baseURL))
+	for _, want := range []string{`$Base = "` + baseURL + `"`, `$Rendered = "1"`, baseURL + "/install.ps1"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered installer missing %q:\n%s", want, rendered)
+		}
+	}
+	for _, unwanted := range []string{sentinelBaseURL, sentinelRendered, rawInstallerPS1URL} {
+		if strings.Contains(rendered, unwanted) {
+			t.Errorf("rendered installer still contains %q:\n%s", unwanted, rendered)
+		}
+	}
+}

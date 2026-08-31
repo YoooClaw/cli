@@ -47,7 +47,7 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 
 两种分发渠道，二者**功能一致**，按需选择。npm 包现在是极薄 Node launcher，真正执行的是 optionalDependencies 安装的 Go 原生二进制；直接安装渠道则跳过 Node，直接下载同一套 Go binary。
 
-**平台支持**：npm 渠道支持 `darwin/linux` 的 `x64+arm64` 与 `win32-x64`（launcher 需 Node ≥ 18）；`install.sh` / GitHub Release 直装支持 `darwin/linux` 的 `x64+arm64`。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
+**平台支持**：npm 渠道支持 `darwin/linux` 的 `x64+arm64` 与 `win32-x64`（launcher 需 Node ≥ 18）；原生直装支持 `darwin/linux` 的 `x64+arm64` 与 Windows x64（Windows on ARM 通过系统 x64 兼容层运行）。Windows 上凭据以明文落 `~/.yoooclaw/credentials.json`（无系统 keychain 加固，`yoooclaw doctor` 会提示），daemon 停止经 HTTP 优雅退出。
 
 ### 渠道 A — npm（薄 Node launcher + 平台 Go 二进制）
 
@@ -65,6 +65,24 @@ yc --help
 
 单文件 Go 可执行，冷启动和资源占用都比旧 TS/Bun 形态更轻。
 
+Windows PowerShell 5.1+ 一条命令安装，无需 Node/npm、无需管理员权限：
+
+```powershell
+irm https://artifact.yoooclaw.com/cli/install.ps1 | iex
+```
+
+默认写入 `%LOCALAPPDATA%\YoooClaw\bin`，安装 `yoooclaw.exe` / `yc.exe`，并自动加入当前用户 PATH。指定版本或覆盖升级：
+
+```powershell
+& ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.9.1 -Force
+```
+
+如果检测到此前通过 `npm i -g @yoooclaw/cli` 安装的旧版本，安装器会先确认新的原生
+CLI 可执行，再自动运行 `npm uninstall -g @yoooclaw/cli` 清理旧包；传 `-KeepNpm`
+可选择保留。npm 清理异常不会撤销已经验证可用的新版本。
+
+macOS / Linux：
+
 ```bash
 # 自动检测平台、下载、校验 sha256、写到 ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh | sh
@@ -78,10 +96,10 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
   | sh -s -- --version 0.2.0-beta.2 --dir ~/bin --force
 ```
 
-安装器默认不会修改 shell 启动文件；只有显式传入 `--modify-path` 才会写入 PATH。
-`--no-modify-path` 仍保留，用于兼容已有调用。
+Unix 安装器默认不会修改 shell 启动文件；只有显式传入 `--modify-path` 才会写入 PATH。
+Windows 安装器默认写入用户 PATH；传 `-NoModifyPath` 可关闭。
 
-直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。Windows Go binary 目前随 npm 平台子包发布。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
+直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 
 ### 无影云电脑无人值守安装
 
@@ -99,7 +117,7 @@ curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
 
 当前 CLI 的 `--skill` 支持 `claude`、`codex`；该参数直接传给 CLI 的 Skill adapter，未来加入 DeepSeek Harness 等宿主后安装脚本无需改变。`--env` 支持 `development`、`test`、`production`，默认读取 `PHONE_NOTIFICATIONS_ENV`，未设置时使用 `production`，并持久化到 profile 配置供 systemd 服务使用。live 脚本默认安装发布它的同版本 CLI，也可显式传 `--version`、`--beta`、`--dir`、`--profile` 与 `--modify-path`。脚本不会打印 API key，并通过 stdin 写入权限为 `0600` 的共享凭据文件；建议像示例一样引用环境变量，避免在 shell 历史中留下明文。
 
-> `yoooclaw update self` 会按当前安装来源给出对应升级命令（npm 走 `npm update -g`，二进制走 install.sh）。
+> `yoooclaw update self` 会按当前安装来源和系统给出对应升级命令（npm 走 `npm update -g`，原生安装走 `install.sh` / `install.ps1`）。
 
 ### 快速开始（人类用户）
 
@@ -242,9 +260,9 @@ yoooclaw owner activate cli                          # 把所有权从 Hermes �
 yoooclaw owner activate cli --hermes-profile work --no-start
 ```
 
-`install.sh` 升级时默认**保留升级前的所有权归属**，不会因为一次升级悄悄换手；只有
-显式传 `--activate`（或 `YOOOCLAW_ACTIVATE_OWNER=cli`）才会在装完后主动把所有权转
-交给独立 CLI。
+`install.sh` / `install.ps1` 升级时默认**保留升级前的所有权归属**，不会因为一次升级
+悄悄换手；只有显式传 `--activate` / `-Activate`（或
+`YOOOCLAW_ACTIVATE_OWNER=cli`）才会在装完后主动把所有权转交给独立 CLI。
 
 ## Daemon lifecycle protocol
 
