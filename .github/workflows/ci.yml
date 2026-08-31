@@ -126,7 +126,12 @@ jobs:
           $installer = Get-Content -Raw scripts/install.ps1
           $installer = $installer.Replace('__YOOOCLAW_CLI_OSS_BASE_URL__', $baseUrl)
           $installer = $installer.Replace('__YOOOCLAW_CLI_TEMPLATE_RENDERED__', '1')
-          $installer | Set-Content -Encoding utf8 (Join-Path $serverRoot 'install.ps1')
+          # Windows PowerShell 5.1's `Set-Content -Encoding utf8` adds a BOM.
+          # OSS publishes the repository bytes without one, so mirror that
+          # behavior: a BOM at the start of text piped to Invoke-Expression is
+          # interpreted as part of the first token.
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path $serverRoot 'install.ps1'), $installer, $utf8NoBom)
 
           # Python does not know the .ps1 MIME type by default. Match the OSS
           # text/plain response so Invoke-RestMethod returns script text.
