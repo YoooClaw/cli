@@ -17,14 +17,15 @@ import (
 )
 
 const (
-	updatePackage   = "@yoooclaw/cli"
-	updateRegistry  = "https://registry.npmjs.org"
-	updateInstallSh = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh"
+	updatePackage    = "@yoooclaw/cli"
+	updateRegistry   = "https://registry.npmjs.org"
+	updateInstallSh  = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh"
+	updateInstallPS1 = "https://artifact.yoooclaw.com/cli/install.ps1"
 )
 
 func newUpdateCmd() *cobra.Command {
 	c := &cobra.Command{Use: "update", Short: "版本检查 🟢"}
-	self := &cobra.Command{Use: "self", Short: "检查 npm 最新版本并提示（不自动更新）", Args: cobra.NoArgs, RunE: run(updateSelf)}
+	self := &cobra.Command{Use: "self", Short: "检查最新版本并提示（不自动更新）", Args: cobra.NoArgs, RunE: run(updateSelf)}
 	self.Flags().Bool("beta", false, "检查 beta channel")
 	self.Flags().Bool("json", false, "只输出版本信息 JSON")
 	c.AddCommand(self)
@@ -32,22 +33,35 @@ func newUpdateCmd() *cobra.Command {
 }
 
 func nativeTargetName() string {
-	os, arch := runtime.GOOS, runtime.GOARCH
+	return nativeTargetNameFor(runtime.GOOS, runtime.GOARCH)
+}
+
+func nativeTargetNameFor(os, arch string) string {
 	if arch == "amd64" {
 		arch = "x64"
 	}
 	if (os == "darwin" || os == "linux") && (arch == "arm64" || arch == "x64") {
 		return "yoooclaw-" + os + "-" + arch
 	}
+	if os == "windows" && arch == "x64" {
+		return "yoooclaw-win32-x64.exe"
+	}
 	return ""
 }
 
 func upgradeCommand(channel, latest string) string {
-	if version.Dist() == "native" {
-		if nativeTargetName() == "" {
+	return upgradeCommandFor(version.Dist(), runtime.GOOS, runtime.GOARCH, channel, latest)
+}
+
+func upgradeCommandFor(dist, goos, goarch, channel, latest string) string {
+	if dist == "native" {
+		if goos == "windows" {
+			return "& ([scriptblock]::Create((irm '" + updateInstallPS1 + "'))) -Version " + latest + " -Force"
+		}
+		if nativeTargetNameFor(goos, goarch) == "" {
 			return "curl -fsSL " + updateInstallSh + " | sh"
 		}
-		return "curl -fsSL " + updateInstallSh + " | sh -s -- --version " + latest
+		return "curl -fsSL " + updateInstallSh + " | sh -s -- --version " + latest + " --force"
 	}
 	if channel == "beta" {
 		return "npm i -g " + updatePackage + "@beta"
