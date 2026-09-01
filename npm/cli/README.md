@@ -12,7 +12,16 @@ npm i -g @yoooclaw/cli
 yc --version
 ```
 
-也可不经 npm，直接下载原生二进制（见 GitHub Release / install.sh）。
+也可不经 npm，直接下载原生二进制（见 GitHub Release / `install.sh` / `install.ps1`）。
+
+Windows PowerShell 5.1+ 可一条命令安装原生版本，无需 Node/npm 或管理员权限：
+
+```powershell
+irm https://artifact.yoooclaw.com/cli/install.ps1 | iex
+```
+
+安装器会在新的原生 CLI 验证通过后，自动卸载检测到的旧版全局 npm 包；传
+`-KeepNpm` 可保留 npm 版本。
 
 ## 支持平台
 

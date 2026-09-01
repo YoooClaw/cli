@@ -493,10 +493,18 @@ jobs:
           INSTALL_FLAGS=""
           [ "$PRERELEASE" = "1" ] && INSTALL_FLAGS=" -s -- --beta"
 
+          WINDOWS_INSTALL_COMMAND="irm ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1 | iex"
+          if [ "$PRERELEASE" = "1" ]; then
+            WINDOWS_INSTALL_COMMAND="& ([scriptblock]::Create((irm '${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1'))) -Beta"
+          fi
+
           TEXT="🚀 @yoooclaw/cli ${CURRENT_TAG}（${CHANNEL}）已发布
 
-          📥 安装（阿里云 OSS）：
+          📥 macOS / Linux 安装（阿里云 OSS）：
           curl -fsSL ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.sh | sh${INSTALL_FLAGS}
+
+          📥 Windows PowerShell 安装（无需 Node/npm）：
+          ${WINDOWS_INSTALL_COMMAND}
 
           📝 改动（${RANGE}）：
           ${CHANGES}

@@ -6,7 +6,7 @@
 #   scripts/build-go.sh --current        # 只构当前平台（本地快速验证）
 #
 # 产物:
-#   dist-native/yoooclaw-<os>-<arch>{,.exe}   原始二进制（GitHub Release / install.sh 用）
+#   dist-native/yoooclaw-<os>-<arch>{,.exe}   原始二进制（GitHub Release / install.* 用）
 #   dist-npm/cli/                             主 launcher 包 @yoooclaw/cli
 #   dist-npm/cli-<os>-<arch>/                 各平台子包 @yoooclaw/cli-<os>-<arch>
 set -euo pipefail

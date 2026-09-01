@@ -24,6 +24,8 @@ var (
 	runExecutable  = func(name string, args ...string) ([]byte, error) {
 		return exec.Command(name, args...).CombinedOutput()
 	}
+	writerLockStatus      = daemon.WriterLockStatus
+	relayConsumerLockHeld = daemon.RelayConsumerLockHeld
 )
 
 func newOwnerCmd() *cobra.Command {
@@ -53,15 +55,21 @@ func activateCLIOwner(ctx *clictx.Context, hermesProfile string, start bool) (ma
 		return nil, err
 	}
 
-	heldBefore, ownerBefore, err := daemon.WriterLockStatus(ctx.Paths)
+	heldBefore, ownerBefore, err := writerLockStatus(ctx.Paths)
 	if err != nil {
 		return nil, errs.New(errs.CodeStorageUnavailable, "无法检查当前 writer owner："+err.Error())
 	}
-	relayHeldBefore, err := daemon.RelayConsumerLockHeld(ctx.Paths)
+	relayHeldBefore, err := relayConsumerLockHeld(ctx.Paths)
 	if err != nil {
 		return nil, errs.New(errs.CodeStorageUnavailable, "无法检查当前 Relay owner："+err.Error())
 	}
 	runtimeHeldBefore := heldBefore || relayHeldBefore
+	if relayHeldBefore && !heldBefore {
+		return nil, errs.New(errs.CodeDaemonAlreadyRunning,
+			"账号 Relay 仍由另一个 standalone daemon 占用",
+			map[string]any{"scope": "account-relay", "profile": ctx.Profile}).
+			WithHint("先停止持有 standalone-relay.flock 的 yoooclaw 进程或用户服务，再重试 owner activate")
+	}
 
 	hermesBin, _ := findHermesExecutable()
 	disabled := []string{}
@@ -202,8 +210,8 @@ func waitForOwnerRelease(p paths.Paths, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastOwner string
 	for {
-		writerHeld, owner, writerErr := daemon.WriterLockStatus(p)
-		relayHeld, relayErr := daemon.RelayConsumerLockHeld(p)
+		writerHeld, owner, writerErr := writerLockStatus(p)
+		relayHeld, relayErr := relayConsumerLockHeld(p)
 		if writerErr != nil {
 			return errs.New(errs.CodeStorageUnavailable, "无法检查 writer lock："+writerErr.Error())
 		}

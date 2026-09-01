@@ -39,7 +39,7 @@ type rgb struct{ r, g, b float64 }
 
 // modeToIndex 把 mode 映射到线协议的 M 值。color_flow 编码到 M=v4。
 var modeToIndex = map[string]int{
-	"wave": 0, "breath": 1, "strobe": 2, "steady": 3, "color_flow": 4, "pixel_frame": 5,
+	"wave": 0, "breath": 1, "strobe": 2, "steady": 3, "color_flow": 4,
 }
 
 // BuildLightEffectApnsBody 把 segments 编码成 APNs 可见文本 + 分隔符 + 线协议负载。
@@ -150,8 +150,6 @@ func encodeSegment(seg map[string]any) string {
 			quantizeBrightnessValue(numOr(seg, "brightness", 0)),
 			quantize(color.r, colorSteps), quantize(color.g, colorSteps), quantize(color.b, colorSteps),
 		)
-	case "pixel_frame":
-		values = encodePixelFrameValues(values, seg)
 	}
 
 	var b strings.Builder
@@ -159,23 +157,6 @@ func encodeSegment(seg map[string]any) string {
 		b.WriteRune(protocolDigits[v])
 	}
 	return b.String()
-}
-
-func encodePixelFrameValues(common []int, seg map[string]any) []int {
-	pixels := sliceField(seg, "pixels")
-	values := append(common, len(pixels)-1)
-	for _, p := range pixels {
-		pm, _ := p.(map[string]any)
-		color := normalizeProtocolColor(mapField(pm, "color"))
-		idx, _ := numField(pm, "index")
-		br, _ := numField(pm, "brightness")
-		values = append(values,
-			int(idx),
-			quantize(color.r, colorSteps), quantize(color.g, colorSteps), quantize(color.b, colorSteps),
-			quantizeBrightnessValue(br),
-		)
-	}
-	return values
 }
 
 func directionValue(seg map[string]any) int {
@@ -287,13 +268,6 @@ func mapField(m map[string]any, key string) map[string]any {
 		return nil
 	}
 	if v, ok := m[key].(map[string]any); ok {
-		return v
-	}
-	return nil
-}
-
-func sliceField(m map[string]any, key string) []any {
-	if v, ok := m[key].([]any); ok {
 		return v
 	}
 	return nil

@@ -78,8 +78,3 @@ func (l *LightClient) Send(ctx context.Context, opts LightSendOpts) (LightSendRe
 	l.c.logf("yclib light.send ok=%v status=%d", res.OK, res.Status)
 	return res, nil
 }
-
-// Blink 发送内置连通性测试灯效（red-strobe-3）。等价于 CLI `light +blink`。
-func (l *LightClient) Blink(ctx context.Context) (LightSendResult, error) {
-	return l.Send(ctx, LightSendOpts{Preset: "red-strobe-3"})
-}
