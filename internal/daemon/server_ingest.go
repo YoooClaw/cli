@@ -320,6 +320,7 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"oss_srt_url":        nilIfEmptyStr(entry.Metadata.OssSrtURL),
 		"markers":            entry.Metadata.Markers,
 		"transfer_status":    entry.Status,
+		"audio_status":       entry.AudioStatus,
 		"audioFile":          nilIfEmptyStr(entry.AudioFile),
 		"srtFile":            nilIfEmptyStr(entry.SrtFile),
 		"transcriptDataFile": nilIfEmptyStr(entry.TranscriptDataFile),
