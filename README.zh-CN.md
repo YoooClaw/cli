@@ -115,7 +115,7 @@ curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
   | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill codex --env development --force
 ```
 
-当前 CLI 的 `--skill` 支持 `claude`、`codex`；该参数直接传给 CLI 的 Skill adapter，未来加入 DeepSeek Harness 等宿主后安装脚本无需改变。`--env` 支持 `development`、`test`、`production`，默认读取 `PHONE_NOTIFICATIONS_ENV`，未设置时使用 `production`，并持久化到 profile 配置供 systemd 服务使用。live 脚本默认安装发布它的同版本 CLI，也可显式传 `--version`、`--beta`、`--dir`、`--profile` 与 `--modify-path`。脚本不会打印 API key，并通过 stdin 写入权限为 `0600` 的共享凭据文件；建议像示例一样引用环境变量，避免在 shell 历史中留下明文。
+当前 CLI 的 `--skill` 支持 `claude`、`codex`；该参数直接传给 CLI 的 Skill adapter，未来加入 DeepSeek Harness 等宿主后安装脚本无需改变。`--env` 支持 `development`、`test`、`production`，默认读取 `PHONE_NOTIFICATIONS_ENV`，未设置时使用 `production`，并持久化到 profile 配置供 systemd 服务使用。live 脚本默认安装发布它的同版本 CLI——由于预发布版不会覆盖 live 脚本和 `latest` 标记，默认装到的一定是正式版；也可显式传 `--version`（安装 beta 的唯一途径）、`--dir`、`--profile` 与 `--modify-path`。脚本不会打印 API key，并通过 stdin 写入权限为 `0600` 的共享凭据文件；建议像示例一样引用环境变量，避免在 shell 历史中留下明文。
 
 > `yoooclaw update self` 会按当前安装来源和系统给出对应升级命令（npm 走 `npm update -g`，原生安装走 `install.sh` / `install.ps1`）。
 

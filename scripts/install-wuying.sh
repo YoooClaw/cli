@@ -12,8 +12,9 @@
 #                    (for example DeepSeek Harness) work without changing this script.
 #
 # Optional options:
-#   --version <v>    Install a specific CLI version (default: this script's release).
-#   --beta           Override the default and install the latest prerelease.
+#   --version <v>    Install a specific CLI version (default: this script's release,
+#                    which is always a stable one). Prereleases are only
+#                    installable by naming them here explicitly.
 #   --dir <path>     Binary directory (same default as install.sh).
 #   --force          Replace an existing binary and refresh installed Skills.
 #   --modify-path    Add the binary directory to the shell profile.
@@ -40,7 +41,6 @@ VERSION=""
 INSTALL_DIR=""
 PROFILE="default"
 CLOUD_ENV="${PHONE_NOTIFICATIONS_ENV:-production}"
-BETA=0
 FORCE=0
 MODIFY_PATH=0
 
@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
     --api-key) API_KEY="${2:?--api-key 需要值}"; shift 2 ;;
     --skill) SKILL_AGENT="${2:?--skill 需要值}"; shift 2 ;;
     --version) VERSION="${2:?--version 需要值}"; shift 2 ;;
-    --beta) BETA=1; shift ;;
+    --beta) err "beta 版必须显式指定版本号，例如 --version 0.10.0-beta.3" ;;
     --dir) INSTALL_DIR="${2:?--dir 需要值}"; shift 2 ;;
     --force) FORCE=1; shift ;;
     --modify-path) MODIFY_PATH=1; shift ;;
@@ -137,7 +137,7 @@ trap cleanup EXIT
 
 if [ "$OSS_RENDERED" = "1" ]; then
   BASE_INSTALLER_URL="${OSS_BASE_URL}/install.sh"
-  if [ -z "$VERSION" ] && [ "$BETA" -eq 0 ]; then
+  if [ -z "$VERSION" ]; then
     VERSION="$RELEASE_VERSION"
   fi
 else
@@ -149,7 +149,6 @@ curl -fsSL -o "$TMP/install.sh" "$BASE_INSTALLER_URL"
 
 set -- "$TMP/install.sh"
 [ -n "$VERSION" ] && set -- "$@" --version "$VERSION"
-[ "$BETA" -eq 1 ] && set -- "$@" --beta
 [ -n "$INSTALL_DIR" ] && set -- "$@" --dir "$INSTALL_DIR"
 [ "$FORCE" -eq 1 ] && set -- "$@" --force
 if [ "$MODIFY_PATH" -eq 1 ]; then

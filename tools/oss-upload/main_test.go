@@ -79,3 +79,65 @@ func TestRenderPowerShellInstaller(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallerUploadKeysSkipLiveOnPrerelease(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		version  string
+		filename string
+		want     []string
+	}{
+		{
+			name:     "stable refreshes live and archive",
+			version:  "0.10.0",
+			filename: "install-wuying.sh",
+			want: []string{
+				"cli/v0.10.0/installer/install-wuying.sh",
+				"cli/install-wuying.sh",
+			},
+		},
+		{
+			name:     "prerelease archives only",
+			version:  "0.11.0-beta.1",
+			filename: "install-wuying.sh",
+			want:     []string{"cli/v0.11.0-beta.1/installer/install-wuying.sh"},
+		},
+		{
+			name:     "prerelease leaves the unix installer alone",
+			version:  "0.11.0-beta.1",
+			filename: "install.sh",
+			want:     []string{"cli/v0.11.0-beta.1/installer/install.sh"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := installerUploadKeys("cli", tc.version, tc.filename)
+			if len(got) != len(tc.want) {
+				t.Fatalf("installerUploadKeys() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("installerUploadKeys()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestIsPrerelease(t *testing.T) {
+	t.Parallel()
+
+	for version, want := range map[string]bool{
+		"0.10.0":        false,
+		"1.0.0":         false,
+		"0.10.0-beta.3": true,
+		"0.10.0-rc.1":   true,
+	} {
+		if got := isPrerelease(version); got != want {
+			t.Errorf("isPrerelease(%q) = %v, want %v", version, got, want)
+		}
+	}
+}

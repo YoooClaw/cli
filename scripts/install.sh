@@ -7,8 +7,7 @@
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/bin
 #
 # 选项：
-#   --version <v>   指定版本（默认最新 stable）
-#   --beta          未指定 --version 时安装最新预发布版
+#   --version <v>   指定版本（默认最新正式版；预发布版只能由此显式指定）
 #   --dir <path>    安装目录（默认优先 ~/.local/bin，其次为可写的 /usr/local/bin）
 #   --force         覆盖已存在二进制
 #   --activate      安装后明确将 Relay owner 切换到 CLI（默认保留当前 owner）
@@ -17,6 +16,7 @@
 #   --no-modify-path 不修改 shell 配置（默认行为，兼容旧调用）
 #
 # 行为：
+#   - 不带 --version 时只解析正式版；beta/alpha/rc 必须显式 --version 才能安装
 #   - 检测 OS/Arch，下载 yoooclaw-<os>-<arch>（OSS 渲染版从 OSS 下载，源码版从 GitHub Release）
 #   - 校验 sha256（从同目录 checksums.txt 取）
 #   - 写入 <dir>/yoooclaw，并 symlink yc -> yoooclaw
@@ -35,7 +35,6 @@ REPO="YoooClaw/cli"
 VERSION=""
 INSTALL_DIR=""
 FORCE=0
-BETA=0
 MODIFY_PATH=0
 ACTIVATE_OWNER=0
 HERMES_PROFILE=""
@@ -54,7 +53,7 @@ warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:?--version 需要值}"; shift 2 ;;
-    --beta)    BETA=1; shift ;;
+    --beta)    err "beta 版必须显式指定版本号，例如 --version 0.10.0-beta.3" ;;
     --dir)     INSTALL_DIR="${2:?--dir 需要值}"; shift 2 ;;
     --force)   FORCE=1; shift ;;
     --activate) ACTIVATE_OWNER=1; shift ;;
@@ -62,7 +61,7 @@ while [ $# -gt 0 ]; do
     --modify-path) MODIFY_PATH=1; shift ;;
     --no-modify-path) MODIFY_PATH=0; shift ;;
     -h|--help)
-      sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) err "未知参数: $1" ;;
@@ -92,13 +91,11 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || err "缺少依赖: $1"; }
 need_cmd curl
 
 if [ "$OSS_RENDERED" = "1" ]; then
-  # OSS 渲染版：latest / beta 标记文件里存的是纯版本号
+  # OSS 渲染版：latest 标记文件里存的是纯版本号（只发布正式版）
   if [ -z "$VERSION" ]; then
-    CHANNEL="latest"
-    [ "$BETA" -eq 1 ] && CHANNEL="beta"
-    info "查询 ${CHANNEL} 版本…"
-    VERSION=$(curl -fsSL "${OSS_BASE_URL}/${CHANNEL}" 2>/dev/null | tr -d '[:space:]' || true)
-    [ -z "$VERSION" ] && err "无法从 ${OSS_BASE_URL}/${CHANNEL} 解析版本（请用 --version 显式指定）"
+    info "查询 latest 版本…"
+    VERSION=$(curl -fsSL "${OSS_BASE_URL}/latest" 2>/dev/null | tr -d '[:space:]' || true)
+    [ -z "$VERSION" ] && err "无法从 ${OSS_BASE_URL}/latest 解析版本（请用 --version 显式指定）"
   fi
   BASE="${OSS_BASE_URL}/v${VERSION}"
 else
@@ -112,16 +109,11 @@ else
     release_tags=$(curl -fsSL "$api_url" \
       | grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"cli-v[^"]+"' \
       | cut -d '"' -f 4 || true)
-    if [ "$BETA" -eq 1 ]; then
-      latest_tag=$(printf '%s\n' "$release_tags" \
-        | grep -E -- '-(beta|alpha|rc)([.-]|$)' \
-        | head -1 || true)
-    else
-      latest_tag=$(printf '%s\n' "$release_tags" \
-        | grep -Ev -- '-(beta|alpha|rc)([.-]|$)' \
-        | head -1 || true)
-    fi
-    [ -z "$latest_tag" ] && err "无法解析最新 tag（API 限流？请用 --version 显式指定）"
+    # 只认正式版 tag：预发布版必须由调用方显式 --version 指定
+    latest_tag=$(printf '%s\n' "$release_tags" \
+      | grep -Ev -- '-(beta|alpha|rc)([.-]|$)' \
+      | head -1 || true)
+    [ -z "$latest_tag" ] && err "无法解析最新正式版 tag（API 限流？请用 --version 显式指定）"
     VERSION="${latest_tag#cli-v}"
   fi
   BASE="https://github.com/${REPO}/releases/download/cli-v${VERSION}"

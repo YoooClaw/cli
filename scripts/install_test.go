@@ -19,8 +19,11 @@ func TestInstallScriptResolvesGitHubVersionPortably(t *testing.T) {
 		wantPathModified bool
 		wantActivated    bool
 	}{
+		// The mocked GitHub API lists the prerelease first: resolving without
+		// --version must still skip it and land on the newest stable tag.
 		{name: "stable", wantVersion: "0.7.2"},
-		{name: "prerelease with legacy opt-out", args: []string{"--beta", "--no-modify-path"}, wantVersion: "0.8.0-beta.1"},
+		{name: "stable with legacy opt-out", args: []string{"--no-modify-path"}, wantVersion: "0.7.2"},
+		{name: "explicit prerelease", args: []string{"--version", "0.8.0-beta.1"}, wantVersion: "0.8.0-beta.1"},
 		{name: "explicit path opt-in", args: []string{"--modify-path"}, wantVersion: "0.7.2", wantPathModified: true},
 		{name: "explicit owner activation", args: []string{"--activate"}, wantVersion: "0.7.2", wantActivated: true},
 	} {
@@ -119,6 +122,43 @@ esac
 				t.Fatalf("default/--no-modify-path unexpectedly touched .zshrc: %v", err)
 			}
 		})
+	}
+}
+
+func TestInstallersRejectBetaChannelFlag(t *testing.T) {
+	t.Parallel()
+
+	// Prereleases are reachable only through an explicit version: no channel
+	// flag may resolve one, so the default install path stays on stable.
+	for _, script := range []string{"install.sh", "install-wuying.sh"} {
+		t.Run(script, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := exec.Command("sh", mustAbs(t, script), "--beta")
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("%s unexpectedly accepted --beta:\n%s", script, output)
+			}
+			if !strings.Contains(string(output), "beta 版必须显式指定版本号") {
+				t.Fatalf("%s did not explain how to install a prerelease:\n%s", script, output)
+			}
+		})
+	}
+}
+
+func TestWindowsInstallerRejectsBetaChannelSwitch(t *testing.T) {
+	t.Parallel()
+
+	text, err := os.ReadFile(mustAbs(t, "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(text)
+	if !strings.Contains(script, `throw "beta 版必须显式指定版本号`) {
+		t.Error("install.ps1 must reject -Beta instead of resolving a prerelease channel")
+	}
+	if strings.Contains(script, `$channel = "beta"`) {
+		t.Error("install.ps1 must not resolve a beta channel marker")
 	}
 }
 
