@@ -2,7 +2,6 @@ package cli
 
 import (
 	"os"
-	"path/filepath"
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/daemon"
@@ -65,18 +64,24 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	}
 	removed = append(autostartRemoved, removed...)
 
-	// 3. 删二进制（npm 安装无法自删，给提示）。
-	binRemoved, hint := removeSelfBinary()
+	// 3. 删二进制（npm 安装无法自删，给提示；Windows 在当前进程退出后删除）。
+	binaryRemoval, err := removeSelfBinary()
+	if err != nil {
+		return nil, errs.New(errs.CodeStorageUnavailable, "删除 CLI 二进制失败："+err.Error())
+	}
 
 	result := map[string]any{
 		"ok":             true,
 		"daemonsStopped": stopped,
 		"removed":        removed,
-		"binaryRemoved":  binRemoved,
+		"binaryRemoved":  binaryRemoval.Removed,
 		"dataKept":       !withData,
 	}
-	if hint != "" {
-		result["hint"] = hint
+	if len(binaryRemoval.Scheduled) > 0 {
+		result["binaryRemovalScheduled"] = binaryRemoval.Scheduled
+	}
+	if binaryRemoval.Hint != "" {
+		result["hint"] = binaryRemoval.Hint
 	}
 	return result, nil
 }
@@ -125,40 +130,28 @@ func removeConfigKeepData() []string {
 	return removed
 }
 
-// removeSelfBinary 删除当前可执行文件及同目录下的 yc / yoooclaw 软链。
-// npm 安装由 node_modules 托管，不自删，返回卸载提示。
-func removeSelfBinary() (removed []string, hint string) {
-	removed = []string{}
+type binaryRemovalResult struct {
+	Removed   []string
+	Scheduled []string
+	Hint      string
+}
+
+// removeSelfBinary 删除当前可执行文件及同目录下的命令别名。
+// npm 安装由 node_modules 托管，不自删；Windows 原生安装则安排在当前
+// 进程退出后删除，避免删除正在运行的 .exe 被系统拒绝。
+func removeSelfBinary() (binaryRemovalResult, error) {
 	if version.Dist() == "npm" {
-		return removed, "npm 安装：请运行 `npm uninstall -g @yoooclaw/cli` 移除二进制"
+		return binaryRemovalResult{
+			Removed: []string{},
+			Hint:    "npm 安装：请运行 `npm uninstall -g @yoooclaw/cli` 移除二进制",
+		}, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return removed, "无法定位可执行文件，请手动删除二进制"
+		return binaryRemovalResult{
+			Removed: []string{},
+			Hint:    "无法定位可执行文件，请手动删除二进制",
+		}, nil
 	}
-	real := exe
-	if r, e := filepath.EvalSymlinks(exe); e == nil {
-		real = r
-	}
-	dir := filepath.Dir(real)
-	candidates := []string{real, exe, filepath.Join(dir, "yc"), filepath.Join(dir, "yoooclaw")}
-	seen := map[string]bool{}
-	for _, c := range candidates {
-		if c == "" || seen[c] {
-			continue
-		}
-		seen[c] = true
-		// 只删我们认得的文件名（native 安装为 yoooclaw + yc 软链），
-		// 避免可执行文件被改名/嵌套时误删无关文件。
-		if base := filepath.Base(c); base != "yc" && base != "yoooclaw" {
-			continue
-		}
-		if _, e := os.Lstat(c); e != nil {
-			continue
-		}
-		if os.Remove(c) == nil {
-			removed = append(removed, c)
-		}
-	}
-	return removed, ""
+	return removeNativeSelfBinary(exe)
 }
