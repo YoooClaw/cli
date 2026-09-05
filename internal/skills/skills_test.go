@@ -94,6 +94,52 @@ func TestContextQueryDescriptionRoutesLiveNews(t *testing.T) {
 	t.Fatal("yoooclaw-context-query not found")
 }
 
+func TestLightSkillRoutesScreenDisplay(t *testing.T) {
+	t.Parallel()
+	bundled, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var description string
+	for _, skill := range bundled {
+		if skill.Name == "yoooclaw-light" {
+			description = skill.Description
+			break
+		}
+	}
+	if !strings.Contains(description, "硬件屏幕显示") {
+		t.Fatalf("yoooclaw-light description does not route screen display: %q", description)
+	}
+
+	skill, err := fs.ReadFile(assets.SkillsFS, "skills/yoooclaw-light/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "硬件屏幕显示") ||
+		!strings.Contains(string(skill), "references/one-shot.md") {
+		t.Fatal("yoooclaw-light must route screen display to the one-shot reference")
+	}
+
+	oneShot, err := fs.ReadFile(
+		assets.SkillsFS,
+		"skills/yoooclaw-light/references/one-shot.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"`--title`",
+		"`--reason`",
+		"30 个字符以内",
+		"展示请求已下发",
+		"`green-steady`",
+	} {
+		if !strings.Contains(string(oneShot), required) {
+			t.Errorf("screen display instructions missing %q", required)
+		}
+	}
+}
+
 func TestContextQueryHidesNestedNotificationStatisticsRoute(t *testing.T) {
 	t.Parallel()
 	skill, err := fs.ReadFile(
