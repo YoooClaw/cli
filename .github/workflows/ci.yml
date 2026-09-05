@@ -94,6 +94,10 @@ jobs:
           $env:YOOOCLAW_HOME = Join-Path $env:RUNNER_TEMP 'yoooclaw-runtime-home'
           New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
 
+          # Run the Windows-only syscall coverage on a real Windows runner.
+          go test ./internal/cli -run '^(TestWindows|TestRemoveWindows|TestRemoveEmptyWindows)'
+          go test ./internal/autostart ./internal/daemon -run '^TestWindows'
+
           # Simulate an older global npm installation and verify that the native
           # installer migrates it only after the new executable is usable.
           $mockNpmBin = Join-Path $env:RUNNER_TEMP 'mock-npm-bin'
@@ -178,6 +182,44 @@ jobs:
             $npmLog = Get-Content -Raw $env:MOCK_NPM_LOG
             if ($npmLog -notmatch 'uninstall --global @yoooclaw/cli') {
               throw "old npm package was not removed: $npmLog"
+            }
+
+            $persistedPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            $installDirInPath = @($persistedPath -split ';' | Where-Object {
+              -not [string]::IsNullOrWhiteSpace($_) -and
+              [IO.Path]::GetFullPath($_.Trim()).TrimEnd('\') -ieq $installDir.TrimEnd('\')
+            })
+            if ($installDirInPath.Count -eq 0) {
+              throw "native installer did not persist its directory in the user PATH"
+            }
+
+            # Windows native uninstall must not report ok until both command
+            # paths have actually disappeared. This exercises deletion of the
+            # currently running executable, not only an ordinary temp file.
+            $uninstallOutput = & (Join-Path $installDir 'yoooclaw.exe') uninstall --yes --format json | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or -not $uninstallOutput.ok -or -not $uninstallOutput.userPathRemoved) {
+              throw "native uninstall did not report a verified success: $($uninstallOutput | ConvertTo-Json -Compress)"
+            }
+            foreach ($name in @('yoooclaw.exe', 'yc.exe')) {
+              $path = Join-Path $installDir $name
+              if (Test-Path -LiteralPath $path) {
+                throw "native uninstall reported ok but path still exists: $path"
+              }
+            }
+            $persistedPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            $installDirInPath = @($persistedPath -split ';' | Where-Object {
+              -not [string]::IsNullOrWhiteSpace($_) -and
+              [IO.Path]::GetFullPath($_.Trim()).TrimEnd('\') -ieq $installDir.TrimEnd('\')
+            })
+            if ($installDirInPath.Count -ne 0) {
+              throw "native uninstall left its directory in the persisted user PATH"
+            }
+            if (Test-Path -LiteralPath $installDir) {
+              throw "native uninstall left an empty install directory: $installDir"
+            }
+            $installRoot = Split-Path -Parent $installDir
+            if (Test-Path -LiteralPath $installRoot) {
+              throw "native uninstall left an empty install root: $installRoot"
             }
           }
           finally {

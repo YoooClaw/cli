@@ -203,7 +203,11 @@ const (
 // synchronous lifecycle command returns. launchd in particular can report a
 // service as loaded briefly after bootout has already accepted the request.
 func waitForServiceState(status func() (Status, error), done func(Status) bool) (Status, error) {
-	deadline := time.Now().Add(serviceStatePollTimeout)
+	return waitForServiceStateWithin(status, done, serviceStatePollTimeout)
+}
+
+func waitForServiceStateWithin(status func() (Status, error), done func(Status) bool, timeout time.Duration) (Status, error) {
+	deadline := time.Now().Add(timeout)
 	var current Status
 	var err error
 	for {

@@ -5,71 +5,141 @@ package autostart
 import (
 	"errors"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 type fakeTaskScheduler struct {
 	installed    bool
 	running      bool
-	endChanges   bool
-	endErr       error
-	endCalls     int
+	availableErr error
+	stopChanges  bool
+	stopErr      error
+	stopCalls    int
 	deleteCalls  int
-	taskFilePath string
+	installCalls int
+	installXML   string
 }
 
-func stubSchtasks(t *testing.T, fake *fakeTaskScheduler) {
+func stubTaskSchedulerCOM(t *testing.T, fake *fakeTaskScheduler) {
 	t.Helper()
-	original := schtasks
-	schtasks = func(args ...string) ([]byte, error) {
-		switch args[0] {
-		case "/Query":
+	original := taskSchedulerCOM
+	taskSchedulerCOM = func(action string, args ...string) ([]byte, error) {
+		switch action {
+		case "available":
+			if fake.availableErr != nil {
+				return []byte("blocked by policy"), fake.availableErr
+			}
+			return []byte("ok"), nil
+		case "identity":
+			return []byte("S-1-5-21-test"), nil
+		case "status":
 			if !fake.installed {
-				return []byte("task missing"), errors.New("query failed")
+				return []byte("missing"), nil
 			}
-			status := "Ready"
 			if fake.running {
-				status = "Running"
+				return []byte("4"), nil
 			}
-			return []byte("Status: " + status), nil
-		case "/End":
-			fake.endCalls++
-			if fake.endChanges {
+			return []byte("3"), nil
+		case "install":
+			if len(args) != 3 {
+				return nil, errors.New("invalid install args")
+			}
+			raw, err := os.ReadFile(args[2])
+			if err != nil {
+				return nil, err
+			}
+			fake.installCalls++
+			fake.installXML = strings.ReplaceAll(string(raw), "\x00", "")
+			fake.installed = true
+			return []byte("ok"), nil
+		case "start":
+			fake.installed, fake.running = true, true
+			return []byte("ok"), nil
+		case "stop":
+			fake.stopCalls++
+			if fake.stopChanges {
 				fake.running = false
 			}
-			return []byte("end result"), fake.endErr
-		case "/Delete":
+			return []byte("stop result"), fake.stopErr
+		case "delete":
 			fake.deleteCalls++
-			fake.installed = false
-			_ = os.Remove(fake.taskFilePath)
-			return nil, nil
+			fake.installed, fake.running = false, false
+			return []byte("ok"), nil
 		default:
-			return nil, errors.New("unexpected schtasks command")
+			return nil, errors.New("unexpected Task Scheduler COM operation")
 		}
 	}
-	t.Cleanup(func() { schtasks = original })
+	t.Cleanup(func() { taskSchedulerCOM = original })
 }
 
-func newWindowsTestManager(t *testing.T) (*platformManager, string) {
+func newWindowsTestManager(t *testing.T) *platformManager {
 	t.Helper()
-	systemRoot := t.TempDir()
-	t.Setenv("SystemRoot", systemRoot)
-	m := &platformManager{task: `\YoooClaw\yoooclaw-test`}
-	taskFile := filepath.Join(systemRoot, "System32", "Tasks", "YoooClaw", "yoooclaw-test")
-	if err := os.MkdirAll(filepath.Dir(taskFile), 0o700); err != nil {
+	t.Setenv("SystemRoot", `C:\Windows`)
+	return &platformManager{task: `\YoooClaw\yoooclaw-test`}
+}
+
+func TestWindowsAvailableUsesTaskSchedulerCOM(t *testing.T) {
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{availableErr: errors.New("access denied")}
+	stubTaskSchedulerCOM(t, fake)
+
+	if err := m.Available(); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Available error = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestWindowsStatusUsesLanguageIndependentNumericState(t *testing.T) {
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{installed: true, running: true}
+	stubTaskSchedulerCOM(t, fake)
+
+	status, err := m.Status()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(taskFile, []byte("task"), 0o600); err != nil {
+	if !status.Installed || !status.Running {
+		t.Fatalf("running task status = %+v", status)
+	}
+}
+
+func TestWindowsTaskUsesHiddenPowerShellHost(t *testing.T) {
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{}
+	stubTaskSchedulerCOM(t, fake)
+	spec := Spec{
+		RootDir:    `C:\Users\O'Brien\.yoooclaw`,
+		Executable: `C:\Program Files\YoooClaw\yoooclaw.exe`,
+		Arguments:  []string{"daemon", "run-service", "--root", `C:\Users\O'Brien\.yoooclaw`},
+	}
+	if err := m.Install(spec); err != nil {
 		t.Fatal(err)
 	}
-	return m, taskFile
+	if fake.installCalls != 1 {
+		t.Fatalf("install calls = %d", fake.installCalls)
+	}
+	for _, want := range []string{
+		`<Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Command>`,
+		`-WindowStyle Hidden`,
+		`<Hidden>true</Hidden>`,
+		`&amp;`,
+		`O&#39;&#39;Brien`,
+		`yoooclaw.exe`,
+	} {
+		if !strings.Contains(fake.installXML, want) {
+			t.Fatalf("task XML does not contain %q", want)
+		}
+	}
+	if strings.Contains(fake.installXML, `<Command>`+spec.Executable+`</Command>`) {
+		t.Fatal("console executable is still registered as the visible task host")
+	}
 }
 
 func TestWindowsStopAcceptsCommandErrorWhenTaskStopped(t *testing.T) {
-	m, taskFile := newWindowsTestManager(t)
-	fake := &fakeTaskScheduler{installed: true, running: true, endChanges: true, endErr: errors.New("end failed"), taskFilePath: taskFile}
-	stubSchtasks(t, fake)
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{installed: true, running: true, stopChanges: true, stopErr: errors.New("stop failed")}
+	stubTaskSchedulerCOM(t, fake)
 
 	if err := m.Stop(); err != nil {
 		t.Fatal(err)
@@ -77,15 +147,18 @@ func TestWindowsStopAcceptsCommandErrorWhenTaskStopped(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("second stop failed: %v", err)
 	}
-	if fake.endCalls != 1 {
-		t.Fatalf("end calls = %d", fake.endCalls)
+	if fake.stopCalls != 1 {
+		t.Fatalf("stop calls = %d", fake.stopCalls)
 	}
 }
 
 func TestWindowsStopReturnsErrorWhenTaskStillRunning(t *testing.T) {
-	m, taskFile := newWindowsTestManager(t)
-	fake := &fakeTaskScheduler{installed: true, running: true, endErr: errors.New("end failed"), taskFilePath: taskFile}
-	stubSchtasks(t, fake)
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{installed: true, running: true, stopErr: errors.New("stop failed")}
+	stubTaskSchedulerCOM(t, fake)
+	originalTimeout := windowsTaskStopTimeout
+	windowsTaskStopTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { windowsTaskStopTimeout = originalTimeout })
 
 	if err := m.Stop(); err == nil {
 		t.Fatal("expected stop error while task remains running")
@@ -93,9 +166,9 @@ func TestWindowsStopReturnsErrorWhenTaskStillRunning(t *testing.T) {
 }
 
 func TestWindowsUninstallStopsAndDeletesTask(t *testing.T) {
-	m, taskFile := newWindowsTestManager(t)
-	fake := &fakeTaskScheduler{installed: true, running: true, endChanges: true, taskFilePath: taskFile}
-	stubSchtasks(t, fake)
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{installed: true, running: true, stopChanges: true}
+	stubTaskSchedulerCOM(t, fake)
 
 	if err := m.Uninstall(); err != nil {
 		t.Fatal(err)
@@ -103,10 +176,7 @@ func TestWindowsUninstallStopsAndDeletesTask(t *testing.T) {
 	if err := m.Uninstall(); err != nil {
 		t.Fatalf("second uninstall failed: %v", err)
 	}
-	if fake.endCalls != 1 || fake.deleteCalls != 1 {
-		t.Fatalf("end calls = %d, delete calls = %d", fake.endCalls, fake.deleteCalls)
-	}
-	if _, err := os.Stat(taskFile); !os.IsNotExist(err) {
-		t.Fatalf("task file still exists or stat failed unexpectedly: %v", err)
+	if fake.stopCalls != 1 || fake.deleteCalls != 1 {
+		t.Fatalf("stop calls = %d, delete calls = %d", fake.stopCalls, fake.deleteCalls)
 	}
 }
