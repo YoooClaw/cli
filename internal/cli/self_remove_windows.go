@@ -61,7 +61,7 @@ func removeNativeSelfBinary(exe string) (binaryRemovalResult, error) {
 		result.Hint = "当前可执行文件不是 yoooclaw.exe 或 yc.exe，请手动删除二进制"
 		return result, nil
 	}
-	result.Warnings = append(result.Warnings, cleanupStaleWindowsUninstallFiles()...)
+	result.Warnings = append(result.Warnings, cleanupStaleWindowsUninstallFiles(exe)...)
 
 	installDir := filepath.Dir(filepath.Clean(exe))
 	pathBefore, pathRemoved, err := removeWindowsInstallDirFromUserPath(installDir)
@@ -427,17 +427,15 @@ func removeWindowsExecutablePath(path string) (bool, string, error) {
 		return false, "", fmt.Errorf("POSIX 删除失败：%v；移出安装目录重试失败：%w", posixErr, err)
 	}
 	rebootErr := scheduleWindowsDeleteOnReboot(pending)
-	if err := startWindowsRemovalHelper(pending, true); err != nil {
-		if fallbackErr := startWindowsRemovalHelper(pending, false); fallbackErr != nil {
-			if rebootErr == nil {
-				return true, "退出后清理助手无法启动；临时文件已安排在下次重启时删除", nil
-			}
-			restoreErr := os.Rename(pending, path)
-			if restoreErr != nil {
-				return false, "", fmt.Errorf("启动退出后清理任务失败：%v；回退重试失败：%v；重启清理安排失败：%v；恢复原路径失败：%w", err, fallbackErr, rebootErr, restoreErr)
-			}
-			return false, "", fmt.Errorf("启动退出后清理任务失败：%v；回退重试失败：%v；重启清理安排失败：%w", err, fallbackErr, rebootErr)
+	if helperErr := startWindowsRemovalHelper(pending); helperErr != nil {
+		if rebootErr == nil {
+			return true, "退出后清理助手无法启动；临时文件已安排在下次重启时删除", nil
 		}
+		restoreErr := os.Rename(pending, path)
+		if restoreErr != nil {
+			return false, "", fmt.Errorf("启动退出后清理任务失败：%v；重启清理安排失败：%v；恢复原路径失败：%w", helperErr, rebootErr, restoreErr)
+		}
+		return false, "", fmt.Errorf("启动退出后清理任务失败：%v；重启清理安排失败：%w", helperErr, rebootErr)
 	}
 	// The detached helper is the primary cleanup path. MOVEFILE_DELAY_UNTIL_REBOOT
 	// commonly requires elevated registry access, so its failure is not a user-
@@ -445,12 +443,42 @@ func removeWindowsExecutablePath(path string) (bool, string, error) {
 	return true, "", nil
 }
 
-func windowsUninstallTempRoot() string {
+func legacyWindowsUninstallTempRoot() string {
 	return filepath.Join(os.TempDir(), "yoooclaw-uninstall")
 }
 
-func cleanupStaleWindowsUninstallFiles() []string {
-	return cleanupStaleWindowsUninstallFilesIn(windowsUninstallTempRoot())
+// windowsUninstallTempRoot returns a writable sibling of the installation
+// root. os.Rename cannot move a mapped executable across Windows volumes, so
+// the deferred path must be on the same volume as the executable. Keeping the
+// directory outside YoooClaw also allows the public installation root to be
+// removed synchronously.
+func windowsUninstallTempRoot(path string) string {
+	installDir := filepath.Dir(filepath.Clean(path))
+	installRoot := installDir
+	parent := filepath.Dir(installDir)
+	if strings.EqualFold(filepath.Base(installDir), "bin") &&
+		strings.EqualFold(filepath.Base(parent), "YoooClaw") {
+		installRoot = parent
+	}
+	return filepath.Join(filepath.Dir(installRoot), "yoooclaw-uninstall")
+}
+
+func cleanupStaleWindowsUninstallFiles(path string) []string {
+	roots := []string{
+		legacyWindowsUninstallTempRoot(),
+		windowsUninstallTempRoot(path),
+	}
+	seen := map[string]struct{}{}
+	warnings := []string{}
+	for _, root := range roots {
+		key := strings.ToLower(filepath.Clean(root))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		warnings = append(warnings, cleanupStaleWindowsUninstallFilesIn(root)...)
+	}
+	return warnings
 }
 
 func cleanupStaleWindowsUninstallFilesIn(root string) []string {
@@ -477,7 +505,7 @@ func cleanupStaleWindowsUninstallFilesIn(root string) []string {
 }
 
 func moveWindowsExecutableForDeferredRemoval(path string) (string, error) {
-	root := windowsUninstallTempRoot()
+	root := windowsUninstallTempRoot(path)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
@@ -564,12 +592,30 @@ func newWindowsRemovalHelperCommand(path string, breakaway bool) *exec.Cmd {
 	return cmd
 }
 
-func startWindowsRemovalHelper(path string, breakaway bool) error {
+func startWindowsRemovalHelperMode(path string, breakaway bool) error {
 	cmd := newWindowsRemovalHelperCommand(path, breakaway)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	return cmd.Process.Release()
+}
+
+func startWindowsRemovalHelperWith(path string, start func(string, bool) error) error {
+	breakawayErr := start(path, true)
+	if breakawayErr == nil {
+		return nil
+	}
+	if fallbackErr := start(path, false); fallbackErr != nil {
+		return fmt.Errorf("breakaway 模式失败：%v；普通脱离模式失败：%w", breakawayErr, fallbackErr)
+	}
+	return nil
+}
+
+// startWindowsRemovalHelper prefers a process outside the caller's Job Object
+// so managed shells cannot reap it with the CLI. Some hosts, including GitHub
+// Actions, prohibit CREATE_BREAKAWAY_FROM_JOB; retry without that flag there.
+func startWindowsRemovalHelper(path string) error {
+	return startWindowsRemovalHelperWith(path, startWindowsRemovalHelperMode)
 }
 
 func verifyWindowsPathRemoved(path string) error {

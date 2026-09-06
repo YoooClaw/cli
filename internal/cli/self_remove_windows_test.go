@@ -76,13 +76,26 @@ func TestWindowsDeferredRemovalCommandUsesEnvironmentPath(t *testing.T) {
 	}
 }
 
+func TestWindowsUninstallTempRootUsesExecutableVolumeOutsideInstallRoot(t *testing.T) {
+	t.Parallel()
+	exe := `D:\a\_temp\yoooclaw-local-app-data\YoooClaw\bin\yoooclaw.exe`
+	want := `D:\a\_temp\yoooclaw-local-app-data\yoooclaw-uninstall`
+	got := windowsUninstallTempRoot(exe)
+	if !strings.EqualFold(got, want) {
+		t.Fatalf("windowsUninstallTempRoot() = %q, want %q", got, want)
+	}
+	if !strings.EqualFold(filepath.VolumeName(got), filepath.VolumeName(exe)) {
+		t.Fatalf("pending root volume = %q, executable volume = %q", filepath.VolumeName(got), filepath.VolumeName(exe))
+	}
+}
+
 func TestWindowsRemovalHelperDeletesPendingFile(t *testing.T) {
 	dir := t.TempDir()
 	pending := filepath.Join(dir, "yoooclaw-test.exe.pending")
 	if err := os.WriteFile(pending, []byte("pending"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := startWindowsRemovalHelper(pending, false); err != nil {
+	if err := startWindowsRemovalHelperMode(pending, false); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -95,10 +108,27 @@ func TestWindowsRemovalHelperDeletesPendingFile(t *testing.T) {
 	t.Fatalf("cleanup helper left pending file %s", pending)
 }
 
+func TestWindowsRemovalHelperFallsBackWhenBreakawayIsDenied(t *testing.T) {
+	modes := []bool{}
+	err := startWindowsRemovalHelperWith(`D:\pending.exe`, func(_ string, breakaway bool) error {
+		modes = append(modes, breakaway)
+		if breakaway {
+			return os.ErrPermission
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modes) != 2 || !modes[0] || modes[1] {
+		t.Fatalf("helper modes = %v, want [true false]", modes)
+	}
+}
+
 func TestWindowsRemovalHelperDeletesRunningExecutable(t *testing.T) {
 	const childEnv = "YOOOCLAW_TEST_RUNNING_SELF_DELETE"
 	if os.Getenv(childEnv) == "1" {
-		if err := startWindowsRemovalHelper(os.Args[0], true); err != nil {
+		if err := startWindowsRemovalHelper(os.Args[0]); err != nil {
 			t.Fatalf("startWindowsRemovalHelper() error = %v", err)
 		}
 		// Keep the image mapped long enough to force the helper through its

@@ -140,22 +140,36 @@ function Get-DefaultInstallDir {
 	return Join-Path $HOME ".yoooclaw\bin"
 }
 
-function Remove-StaleYoooClawUninstallFiles {
-	$pendingRoot = Join-Path ([IO.Path]::GetTempPath()) "yoooclaw-uninstall"
-	if (-not (Test-Path -LiteralPath $pendingRoot -PathType Container)) {
-		return
-	}
-	Get-ChildItem -LiteralPath $pendingRoot -File -Filter "yoooclaw-*.exe.pending" -ErrorAction SilentlyContinue | ForEach-Object {
-		try {
-			Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
-		}
-		catch {
-			Write-WarningMessage "Could not remove stale uninstall file '$($_.Name)'. It may still be in use."
-		}
-	}
-	if (@(Get-ChildItem -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue).Count -eq 0) {
-		Remove-Item -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue
-	}
+function Remove-StaleYoooClawUninstallFiles([string] $ResolvedInstallDir) {
+    $legacyRoot = Join-Path ([IO.Path]::GetTempPath()) "yoooclaw-uninstall"
+    $cleanInstallDir = $ResolvedInstallDir.TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $installRoot = $cleanInstallDir
+    $installParent = Split-Path -Parent $cleanInstallDir
+    if ((Split-Path -Leaf $cleanInstallDir) -ieq "bin" -and (Split-Path -Leaf $installParent) -ieq "YoooClaw") {
+        $installRoot = $installParent
+    }
+    # The CLI renames its running executable to a sibling of the installation
+    # root. That keeps the rename on one volume while allowing YoooClaw itself
+    # to disappear synchronously. Continue cleaning the legacy TEMP location.
+    $sameVolumeRoot = Join-Path (Split-Path -Parent $installRoot) "yoooclaw-uninstall"
+    $pendingRoots = @($legacyRoot, $sameVolumeRoot) | Select-Object -Unique
+
+    foreach ($pendingRoot in $pendingRoots) {
+        if (-not (Test-Path -LiteralPath $pendingRoot -PathType Container)) {
+            continue
+        }
+        Get-ChildItem -LiteralPath $pendingRoot -File -Filter "yoooclaw-*.exe.pending" -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+            }
+            catch {
+                Write-WarningMessage "Could not remove stale uninstall file '$($_.Name)'. It may still be in use."
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Test-PathEntry([string] $PathValue, [string] $Entry) {
@@ -362,7 +376,6 @@ function Restore-Daemons([string] $Cli, [string[]] $Profiles) {
 }
 
 Assert-SupportedPlatform
-Remove-StaleYoooClawUninstallFiles
 
 # PowerShell 5.1 may otherwise negotiate TLS 1.0 on older Windows installs.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -375,6 +388,7 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Get-DefaultInstallDir
 }
 $InstallDir = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($InstallDir))
+Remove-StaleYoooClawUninstallFiles -ResolvedInstallDir $InstallDir
 $target = Join-Path $InstallDir "yoooclaw.exe"
 $alias = Join-Path $InstallDir "yc.exe"
 
