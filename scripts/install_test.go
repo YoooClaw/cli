@@ -195,6 +195,8 @@ func TestWindowsInstallScriptIsNativeAndSelfContained(t *testing.T) {
 		"SetEnvironmentVariable(\"Path\"",
 		"Stop-ExistingDaemons",
 		"Restore-Daemons",
+		"Remove-StaleYoooClawUninstallFiles",
+		"yoooclaw-*.exe.pending",
 		"Find-NpmCommand",
 		"npm uninstall -g @yoooclaw/cli",
 		"KeepNpm",

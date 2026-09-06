@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -26,12 +27,17 @@ const (
 	windowsHWNDBroadcast              = 0xffff
 	windowsWMSettingChange            = 0x001a
 	windowsSMTOAbortIfHung            = 0x0002
+	windowsCreateNewProcessGroup      = 0x00000200
+	windowsCreateNoWindow             = 0x08000000
+	windowsCreateBreakaway            = 0x01000000
+	windowsMoveFileDelayUntilReboot   = 0x00000004
 )
 
 var (
 	windowsKernel32                   = syscall.NewLazyDLL("kernel32.dll")
 	windowsCreateFileW                = windowsKernel32.NewProc("CreateFileW")
 	windowsSetFileInformationByHandle = windowsKernel32.NewProc("SetFileInformationByHandle")
+	windowsMoveFileExW                = windowsKernel32.NewProc("MoveFileExW")
 	windowsAdvapi32                   = syscall.NewLazyDLL("advapi32.dll")
 	windowsRegSetValueExW             = windowsAdvapi32.NewProc("RegSetValueExW")
 	windowsRegDeleteValueW            = windowsAdvapi32.NewProc("RegDeleteValueW")
@@ -55,6 +61,7 @@ func removeNativeSelfBinary(exe string) (binaryRemovalResult, error) {
 		result.Hint = "当前可执行文件不是 yoooclaw.exe 或 yc.exe，请手动删除二进制"
 		return result, nil
 	}
+	result.Warnings = append(result.Warnings, cleanupStaleWindowsUninstallFiles()...)
 
 	installDir := filepath.Dir(filepath.Clean(exe))
 	pathBefore, pathRemoved, err := removeWindowsInstallDirFromUserPath(installDir)
@@ -64,6 +71,7 @@ func removeNativeSelfBinary(exe string) (binaryRemovalResult, error) {
 
 	// 先删除没有在运行的命令副本，最后再移除当前进程对应的路径。若删除
 	// 失败则恢复用户 PATH，让仍在磁盘上的当前命令保持可用。
+	removedAliases := []string{}
 	for _, candidate := range windowsRemovalCandidates(exe) {
 		if _, err := os.Lstat(candidate); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -76,7 +84,15 @@ func removeNativeSelfBinary(exe string) (binaryRemovalResult, error) {
 
 		var removeErr error
 		if strings.EqualFold(filepath.Clean(candidate), filepath.Clean(exe)) {
-			removeErr = removeWindowsPathNow(candidate)
+			var deferred bool
+			var warning string
+			deferred, warning, removeErr = removeWindowsExecutablePath(candidate)
+			if warning != "" {
+				result.Warnings = append(result.Warnings, warning)
+			}
+			if deferred {
+				result.Hint = "Windows 已将运行中的 CLI 移出安装目录；临时文件将在当前命令退出后清理"
+			}
 		} else {
 			removeErr = os.Remove(candidate)
 			if removeErr == nil {
@@ -84,11 +100,17 @@ func removeNativeSelfBinary(exe string) (binaryRemovalResult, error) {
 			}
 		}
 		if removeErr != nil {
+			if rollbackErr := restoreWindowsAliases(exe, removedAliases); rollbackErr != nil {
+				removeErr = fmt.Errorf("%w；同时恢复命令别名失败：%v", removeErr, rollbackErr)
+			}
 			return result, restoreWindowsPathAfterRemovalFailure(
 				pathBefore, pathRemoved, fmt.Errorf("删除 %s 失败：%w", candidate, removeErr),
 			)
 		}
 		result.Removed = append(result.Removed, candidate)
+		if !strings.EqualFold(filepath.Clean(candidate), filepath.Clean(exe)) {
+			removedAliases = append(removedAliases, candidate)
+		}
 	}
 
 	result.UserPathRemoved = pathRemoved
@@ -387,6 +409,167 @@ func removeWindowsPathNow(path string) error {
 		return os.NewSyscallError("CloseHandle", closeErr)
 	}
 	return verifyErr
+}
+
+// removeWindowsExecutablePath first attempts a true POSIX-style unlink. Some
+// endpoint-security drivers deny FileDispositionInfoEx for a mapped image even
+// though Windows still permits that image to be renamed. In that case move the
+// executable out of the install directory, verify the public path disappeared,
+// and let a detached helper delete the private temporary path after this process
+// exits.
+func removeWindowsExecutablePath(path string) (bool, string, error) {
+	posixErr := removeWindowsPathNow(path)
+	if posixErr == nil {
+		return false, "", nil
+	}
+	pending, err := moveWindowsExecutableForDeferredRemoval(path)
+	if err != nil {
+		return false, "", fmt.Errorf("POSIX 删除失败：%v；移出安装目录重试失败：%w", posixErr, err)
+	}
+	rebootErr := scheduleWindowsDeleteOnReboot(pending)
+	if err := startWindowsRemovalHelper(pending, true); err != nil {
+		if fallbackErr := startWindowsRemovalHelper(pending, false); fallbackErr != nil {
+			if rebootErr == nil {
+				return true, "退出后清理助手无法启动；临时文件已安排在下次重启时删除", nil
+			}
+			restoreErr := os.Rename(pending, path)
+			if restoreErr != nil {
+				return false, "", fmt.Errorf("启动退出后清理任务失败：%v；回退重试失败：%v；重启清理安排失败：%v；恢复原路径失败：%w", err, fallbackErr, rebootErr, restoreErr)
+			}
+			return false, "", fmt.Errorf("启动退出后清理任务失败：%v；回退重试失败：%v；重启清理安排失败：%w", err, fallbackErr, rebootErr)
+		}
+	}
+	// The detached helper is the primary cleanup path. MOVEFILE_DELAY_UNTIL_REBOOT
+	// commonly requires elevated registry access, so its failure is not a user-
+	// visible warning when the helper was successfully launched.
+	return true, "", nil
+}
+
+func windowsUninstallTempRoot() string {
+	return filepath.Join(os.TempDir(), "yoooclaw-uninstall")
+}
+
+func cleanupStaleWindowsUninstallFiles() []string {
+	return cleanupStaleWindowsUninstallFilesIn(windowsUninstallTempRoot())
+}
+
+func cleanupStaleWindowsUninstallFilesIn(root string) []string {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return []string{"无法检查历史卸载临时文件：" + err.Error()}
+	}
+	warnings := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "yoooclaw-") || !strings.HasSuffix(entry.Name(), ".exe.pending") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(root, entry.Name())); err != nil {
+			warnings = append(warnings, "无法清理历史卸载临时文件 "+entry.Name()+"："+err.Error())
+		}
+	}
+	if remaining, err := os.ReadDir(root); err == nil && len(remaining) == 0 {
+		_ = os.Remove(root)
+	}
+	return warnings
+}
+
+func moveWindowsExecutableForDeferredRemoval(path string) (string, error) {
+	root := windowsUninstallTempRoot()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	placeholder, err := os.CreateTemp(root, "yoooclaw-*.exe.pending")
+	if err != nil {
+		return "", err
+	}
+	pending := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Remove(pending); err != nil {
+		return "", err
+	}
+	if err := os.Rename(path, pending); err != nil {
+		return "", err
+	}
+	if err := verifyWindowsPathRemoved(path); err != nil {
+		_ = os.Rename(pending, path)
+		return "", err
+	}
+	return pending, nil
+}
+
+func scheduleWindowsDeleteOnReboot(path string) error {
+	pathPtr, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	result, _, callErr := windowsMoveFileExW.Call(
+		uintptr(unsafe.Pointer(pathPtr)),
+		0,
+		windowsMoveFileDelayUntilReboot,
+	)
+	if result == 0 {
+		return windowsSyscallError("MoveFileExW", callErr)
+	}
+	return nil
+}
+
+func restoreWindowsAliases(exe string, aliases []string) error {
+	if len(aliases) == 0 {
+		return nil
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		return err
+	}
+	for _, alias := range aliases {
+		if err := os.WriteFile(alias, data, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func windowsDeferredRemovalCommand() string {
+	return `ping.exe -n 2 127.0.0.1 >nul & for /L %i in (1,1,30) do @(del /F /Q "%YOOOCLAW_UNINSTALL_PENDING_PATH%" >nul 2>&1 & rd /Q "%YOOOCLAW_UNINSTALL_PENDING_ROOT%" >nul 2>&1 & if exist "%YOOOCLAW_UNINSTALL_PENDING_PATH%" ping.exe -n 2 127.0.0.1 >nul)`
+}
+
+func newWindowsRemovalHelperCommand(path string, breakaway bool) *exec.Cmd {
+	flags := uint32(windowsCreateNewProcessGroup | windowsCreateNoWindow)
+	if breakaway {
+		flags |= windowsCreateBreakaway
+	}
+	cmd := exec.Command("cmd.exe")
+	cmd.Env = append(os.Environ(),
+		"YOOOCLAW_UNINSTALL_PENDING_PATH="+path,
+		"YOOOCLAW_UNINSTALL_PENDING_ROOT="+filepath.Dir(path),
+	)
+	// cmd.exe does not use the CommandLineToArgvW parsing convention assumed by
+	// os/exec. Pass its command line verbatim so the quoted environment-variable
+	// paths stay part of the command string instead of becoming separate argv
+	// tokens. The executable name is argv[0] in the CreateProcess command line.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: flags,
+		CmdLine:       `cmd.exe /d /s /c "` + windowsDeferredRemovalCommand() + `"`,
+	}
+	return cmd
+}
+
+func startWindowsRemovalHelper(path string, breakaway bool) error {
+	cmd := newWindowsRemovalHelperCommand(path, breakaway)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
 }
 
 func verifyWindowsPathRemoved(path string) error {

@@ -134,10 +134,28 @@ function Get-ArtifactBaseUrl([string] $ResolvedVersion) {
 }
 
 function Get-DefaultInstallDir {
-    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        return Join-Path $env:LOCALAPPDATA "YoooClaw\bin"
-    }
-    return Join-Path $HOME ".yoooclaw\bin"
+	if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+		return Join-Path $env:LOCALAPPDATA "YoooClaw\bin"
+	}
+	return Join-Path $HOME ".yoooclaw\bin"
+}
+
+function Remove-StaleYoooClawUninstallFiles {
+	$pendingRoot = Join-Path ([IO.Path]::GetTempPath()) "yoooclaw-uninstall"
+	if (-not (Test-Path -LiteralPath $pendingRoot -PathType Container)) {
+		return
+	}
+	Get-ChildItem -LiteralPath $pendingRoot -File -Filter "yoooclaw-*.exe.pending" -ErrorAction SilentlyContinue | ForEach-Object {
+		try {
+			Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+		}
+		catch {
+			Write-WarningMessage "Could not remove stale uninstall file '$($_.Name)'. It may still be in use."
+		}
+	}
+	if (@(Get-ChildItem -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+		Remove-Item -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue
+	}
 }
 
 function Test-PathEntry([string] $PathValue, [string] $Entry) {
@@ -344,6 +362,7 @@ function Restore-Daemons([string] $Cli, [string[]] $Profiles) {
 }
 
 Assert-SupportedPlatform
+Remove-StaleYoooClawUninstallFiles
 
 # PowerShell 5.1 may otherwise negotiate TLS 1.0 on older Windows installs.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12

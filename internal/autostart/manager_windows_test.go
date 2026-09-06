@@ -77,7 +77,7 @@ func stubTaskSchedulerCOM(t *testing.T, fake *fakeTaskScheduler) {
 func newWindowsTestManager(t *testing.T) *platformManager {
 	t.Helper()
 	t.Setenv("SystemRoot", `C:\Windows`)
-	return &platformManager{task: `\YoooClaw\yoooclaw-test`}
+	return &platformManager{root: t.TempDir(), task: `\YoooClaw\yoooclaw-test`}
 }
 
 func TestWindowsAvailableUsesTaskSchedulerCOM(t *testing.T) {
@@ -87,6 +87,21 @@ func TestWindowsAvailableUsesTaskSchedulerCOM(t *testing.T) {
 
 	if err := m.Available(); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Available error = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestWindowsTaskSchedulerScriptsPreserveJSONArgumentArray(t *testing.T) {
+	t.Parallel()
+	for action, script := range taskSchedulerScripts {
+		if action == "available" || action == "identity" {
+			continue
+		}
+		if strings.Contains(script, "@(ConvertFrom-Json") {
+			t.Errorf("%s script wraps ConvertFrom-Json in a nested array", action)
+		}
+		if !strings.Contains(script, "$a=ConvertFrom-Json") {
+			t.Errorf("%s script does not decode the argument array", action)
+		}
 	}
 }
 
@@ -104,7 +119,7 @@ func TestWindowsStatusUsesLanguageIndependentNumericState(t *testing.T) {
 	}
 }
 
-func TestWindowsTaskUsesHiddenPowerShellHost(t *testing.T) {
+func TestWindowsTaskUsesHiddenWScriptHost(t *testing.T) {
 	m := newWindowsTestManager(t)
 	fake := &fakeTaskScheduler{}
 	stubTaskSchedulerCOM(t, fake)
@@ -120,12 +135,14 @@ func TestWindowsTaskUsesHiddenPowerShellHost(t *testing.T) {
 		t.Fatalf("install calls = %d", fake.installCalls)
 	}
 	for _, want := range []string{
-		`<Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Command>`,
-		`-WindowStyle Hidden`,
+		`<LogonTrigger><UserId>S-1-5-21-test</UserId>`,
+		`<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>`,
+		`<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>`,
+		`<StartWhenAvailable>true</StartWhenAvailable>`,
+		`<Command>C:\Windows\System32\wscript.exe</Command>`,
+		`//B //NoLogo`,
+		`yoooclaw-daemon-hidden.vbs`,
 		`<Hidden>true</Hidden>`,
-		`&amp;`,
-		`O&#39;&#39;Brien`,
-		`yoooclaw.exe`,
 	} {
 		if !strings.Contains(fake.installXML, want) {
 			t.Fatalf("task XML does not contain %q", want)
@@ -133,6 +150,25 @@ func TestWindowsTaskUsesHiddenPowerShellHost(t *testing.T) {
 	}
 	if strings.Contains(fake.installXML, `<Command>`+spec.Executable+`</Command>`) {
 		t.Fatal("console executable is still registered as the visible task host")
+	}
+	if strings.Contains(fake.installXML, `powershell.exe`) {
+		t.Fatal("PowerShell is still registered as the task host")
+	}
+	launcher, err := os.ReadFile(m.launcherPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`CreateObject("WScript.Shell")`,
+		`shell.Run(`,
+		`, 0, True)`,
+		`"C:\Program Files\YoooClaw\yoooclaw.exe"`,
+		`C:\Users\O'Brien\.yoooclaw`,
+		`--format json`,
+	} {
+		if !strings.Contains(string(launcher), want) {
+			t.Fatalf("hidden launcher does not contain %q:\n%s", want, launcher)
+		}
 	}
 }
 
@@ -169,6 +205,9 @@ func TestWindowsUninstallStopsAndDeletesTask(t *testing.T) {
 	m := newWindowsTestManager(t)
 	fake := &fakeTaskScheduler{installed: true, running: true, stopChanges: true}
 	stubTaskSchedulerCOM(t, fake)
+	if err := os.WriteFile(m.launcherPath(), []byte("launcher"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := m.Uninstall(); err != nil {
 		t.Fatal(err)
@@ -178,5 +217,8 @@ func TestWindowsUninstallStopsAndDeletesTask(t *testing.T) {
 	}
 	if fake.stopCalls != 1 || fake.deleteCalls != 1 {
 		t.Fatalf("stop calls = %d, delete calls = %d", fake.stopCalls, fake.deleteCalls)
+	}
+	if _, err := os.Stat(m.launcherPath()); !os.IsNotExist(err) {
+		t.Fatalf("hidden launcher still exists or stat failed unexpectedly: %v", err)
 	}
 }
