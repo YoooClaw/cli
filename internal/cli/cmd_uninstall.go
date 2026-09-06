@@ -50,7 +50,16 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	}
 	stopped := stopAllDaemons()
 
-	// 2. 删配置（默认保留数据）或整目录（--data）。
+	// 2. 先删二进制。配置与凭据必须等到安装路径确认移除后再清理，
+	// 避免 Windows 安全软件拒绝自删时留下一个无法使用的半卸载状态。
+	// npm 安装无法自删，给提示；Windows 使用同步可验证的
+	// POSIX 删除语义移除正在运行的原生二进制路径）。
+	binaryRemoval, err := removeSelfBinary()
+	if err != nil {
+		return nil, errs.New(errs.CodeStorageUnavailable, "删除 CLI 二进制失败："+err.Error())
+	}
+
+	// 3. 二进制路径已经移除，再删配置（默认保留数据）或整目录（--data）。
 	var removed []string
 	if withData {
 		if err := os.RemoveAll(root); err != nil {
@@ -64,12 +73,6 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	}
 	removed = append(autostartRemoved, removed...)
 
-	// 3. 删二进制（npm 安装无法自删，给提示；Windows 在当前进程退出后删除）。
-	binaryRemoval, err := removeSelfBinary()
-	if err != nil {
-		return nil, errs.New(errs.CodeStorageUnavailable, "删除 CLI 二进制失败："+err.Error())
-	}
-
 	result := map[string]any{
 		"ok":             true,
 		"daemonsStopped": stopped,
@@ -77,8 +80,14 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 		"binaryRemoved":  binaryRemoval.Removed,
 		"dataKept":       !withData,
 	}
-	if len(binaryRemoval.Scheduled) > 0 {
-		result["binaryRemovalScheduled"] = binaryRemoval.Scheduled
+	if binaryRemoval.UserPathRemoved {
+		result["userPathRemoved"] = true
+	}
+	if len(binaryRemoval.InstallDirsRemoved) > 0 {
+		result["installDirsRemoved"] = binaryRemoval.InstallDirsRemoved
+	}
+	if len(binaryRemoval.Warnings) > 0 {
+		result["warnings"] = binaryRemoval.Warnings
 	}
 	if binaryRemoval.Hint != "" {
 		result["hint"] = binaryRemoval.Hint
@@ -131,14 +140,16 @@ func removeConfigKeepData() []string {
 }
 
 type binaryRemovalResult struct {
-	Removed   []string
-	Scheduled []string
-	Hint      string
+	Removed            []string
+	InstallDirsRemoved []string
+	UserPathRemoved    bool
+	Warnings           []string
+	Hint               string
 }
 
 // removeSelfBinary 删除当前可执行文件及同目录下的命令别名。
-// npm 安装由 node_modules 托管，不自删；Windows 原生安装则安排在当前
-// 进程退出后删除，避免删除正在运行的 .exe 被系统拒绝。
+// npm 安装由 node_modules 托管，不自删；原生安装只有在二进制路径已被
+// 同步移除后才返回成功。
 func removeSelfBinary() (binaryRemovalResult, error) {
 	if version.Dist() == "npm" {
 		return binaryRemovalResult{

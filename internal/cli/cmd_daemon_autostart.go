@@ -168,11 +168,26 @@ func daemonAutostartEnable(ctx *clictx.Context, cmd *cobra.Command, _ []string) 
 	if _, err := config.Require(ctx.Paths); err != nil {
 		return nil, err
 	}
+	start := !flagBool(cmd, "no-start")
 	manager := autostartManager()
-	status, _ := manager.Status()
+	// Do every non-mutating service-manager check before stopping a healthy
+	// daemon. Managed Agent environments can block service operations; finding
+	// that out only after Stop leaves the client offline with no persistent
+	// replacement. Windows performs this probe through Task Scheduler COM.
+	if err := manager.Available(); err != nil {
+		return nil, recoverDaemonAfterAutostartFailure(ctx, start, err)
+	}
+	status, err := manager.Status()
+	if err != nil {
+		return nil, recoverDaemonAfterAutostartFailure(ctx, start, err)
+	}
+	spec, err := autostartSpec()
+	if err != nil {
+		return nil, recoverDaemonAfterAutostartFailure(ctx, start, err)
+	}
 	if status.Running {
 		if err := manager.Stop(); err != nil {
-			return nil, autostartError(err)
+			return nil, recoverDaemonAfterAutostartFailure(ctx, start, err)
 		}
 	}
 	if state := daemon.State(ctx.Paths); state.Running {
@@ -183,22 +198,31 @@ func daemonAutostartEnable(ctx *clictx.Context, cmd *cobra.Command, _ []string) 
 	if err := daemon.PrecheckStart(ctx, daemon.StartOpts{}); err != nil {
 		return nil, err
 	}
-	spec, err := autostartSpec()
-	if err != nil {
-		return nil, autostartError(err)
-	}
-	start := !flagBool(cmd, "no-start")
 	status, err = autostart.Enable(manager, spec, start)
 	if err != nil {
-		return nil, autostartError(err)
+		return nil, recoverDaemonAfterAutostartFailure(ctx, start, err)
 	}
 	if start && status.Manager != "test" {
 		if err := waitForManagedDaemon(ctx); err != nil {
-			return nil, err
+			return nil, recoverDaemonAfterAutostartFailure(ctx, true, err)
 		}
 	}
 	result, _ := autostartSnapshot()
 	return result, nil
+}
+
+func recoverDaemonAfterAutostartFailure(ctx *clictx.Context, start bool, cause error) error {
+	if !start || daemon.State(ctx.Paths).Running {
+		return autostartError(cause)
+	}
+	if _, err := daemon.Spawn(ctx, daemon.StartOpts{}); err != nil {
+		return errs.New(errs.CodeAutostartUnavailable,
+			"无法配置 daemon 自启："+cause.Error()+"；恢复 standalone daemon 也失败："+err.Error()).
+			WithHint("检查 `yoooclaw daemon logs` 后运行 `yoooclaw daemon start`")
+	}
+	return errs.New(errs.CodeAutostartUnavailable,
+		"无法配置 daemon 自启："+cause.Error()+"；已恢复当前 standalone daemon，但尚未配置登录自启").
+		WithHint("当前连接可继续使用；退出受限 Agent 后重试 `yoooclaw daemon autostart enable`")
 }
 
 func daemonAutostartDisable(_ *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
