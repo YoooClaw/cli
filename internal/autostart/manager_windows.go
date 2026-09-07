@@ -3,88 +3,151 @@
 package autostart
 
 import (
-	"bytes"
-	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
 type platformManager struct{ root, id, task string }
+
+// Task Scheduler accepts Stop synchronously but can keep reporting Running
+// while it tears down the task instance. Three seconds was too short on some
+// Windows endpoints with endpoint-security hooks installed.
+var windowsTaskStopTimeout = 15 * time.Second
 
 func newPlatformManager(root string) Manager {
 	id := ServiceID(root)
 	return &platformManager{root: root, id: id, task: `\YoooClaw\` + id}
 }
 func (m *platformManager) Available() error {
-	if _, err := exec.LookPath("schtasks.exe"); err != nil {
-		return fmt.Errorf("%w: schtasks 不可用", ErrUnavailable)
+	out, err := taskSchedulerCOM("available")
+	if err != nil {
+		return fmt.Errorf("%w: Windows Task Scheduler COM 不可用: %s", ErrUnavailable, commandError(out, err))
 	}
 	return nil
 }
 
-var schtasks = func(args ...string) ([]byte, error) {
-	return exec.Command("schtasks.exe", args...).CombinedOutput()
+var taskSchedulerCOM = func(action string, args ...string) ([]byte, error) {
+	script, ok := taskSchedulerScripts[action]
+	if !ok {
+		return nil, fmt.Errorf("未知 Task Scheduler COM 操作: %s", action)
+	}
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return nil, err
+	}
+	script = `$utf8=New-Object Text.UTF8Encoding $false; [Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; ` + script
+	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.Env = append(os.Environ(), "YOOOCLAW_TASK_SCHEDULER_ARGS="+string(payload))
+	return cmd.CombinedOutput()
 }
 
-func (m *platformManager) taskFile() string {
+var taskSchedulerScripts = map[string]string{
+	"available": `$ErrorActionPreference='Stop'; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $null=$s.GetFolder('\'); 'ok'`,
+	"identity":  `$ErrorActionPreference='Stop'; [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
+	// Windows PowerShell 5.1 already returns a JSON array as Object[]. Wrapping
+	// ConvertFrom-Json in @() creates a one-element nested array, so $a[0]
+	// becomes the entire argument list and COM receives an invalid folder path.
+	"status":  `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); try { $f=$s.GetFolder($a[0]); $t=$f.GetTask($a[1]) } catch { 'missing'; exit 0 }; [int]$t.State`,
+	"install": `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); try { $f=$s.GetFolder($a[0]) } catch { $f=$s.GetFolder('\').CreateFolder($a[0].Trim('\')) }; $xml=[IO.File]::ReadAllText($a[2],[Text.Encoding]::Unicode); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $null=$f.RegisterTask($a[1],$xml,6,$sid,$null,3,$null); 'ok'`,
+	"start":   `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $t=$s.GetFolder($a[0]).GetTask($a[1]); $null=$t.Run($null); 'ok'`,
+	"stop":    `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $t=$s.GetFolder($a[0]).GetTask($a[1]); $t.Stop(0); 'ok'`,
+	"delete":  `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $s.GetFolder($a[0]).DeleteTask($a[1],0); 'ok'`,
+}
+
+const windowsTaskStateRunning = 4
+
+func (m *platformManager) folderAndName() (string, string) {
+	trimmed := strings.Trim(m.task, `\`)
+	name := trimmed
+	taskPath := `\`
+	if split := strings.LastIndex(trimmed, `\`); split >= 0 {
+		taskPath = `\` + trimmed[:split]
+		name = trimmed[split+1:]
+	}
+	return taskPath, name
+}
+
+func windowsSystemRoot() string {
 	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
 	if systemRoot == "" {
-		systemRoot = `C:\Windows`
+		return `C:\Windows`
 	}
-	relative := strings.ReplaceAll(strings.TrimPrefix(m.task, `\`), `\`, "/")
-	return filepath.Join(systemRoot, "System32", "Tasks", filepath.FromSlash(relative))
+	return systemRoot
 }
+
+func (m *platformManager) launcherPath() string {
+	return filepath.Join(m.root, "yoooclaw-daemon-hidden.vbs")
+}
+
 func (m *platformManager) Status() (Status, error) {
 	status := Status{Manager: "task-scheduler", Unit: m.task}
-	out, err := schtasks("/Query", "/TN", m.task, "/FO", "LIST", "/V")
+	folder, name := m.folderAndName()
+	out, err := taskSchedulerCOM("status", folder, name)
 	if err != nil {
-		if _, statErr := os.Stat(m.taskFile()); os.IsNotExist(statErr) {
-			return status, nil
-		}
-		return status, fmt.Errorf("查询计划任务失败: %s", strings.TrimSpace(string(out)))
+		return status, fmt.Errorf("查询计划任务失败: %s", commandError(out, err))
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "missing" {
+		return status, nil
+	}
+	state, err := strconv.Atoi(value)
+	if err != nil {
+		return status, fmt.Errorf("解析计划任务状态失败: %q", value)
 	}
 	status.Installed, status.Loaded = true, true
-	text := strings.ToLower(string(out))
-	status.Running = strings.Contains(text, "status:") && strings.Contains(text, "running")
+	status.Running = state == windowsTaskStateRunning
 	return status, nil
 }
-func taskXML(spec Spec, userSID string) string {
-	args := make([]string, 0, len(spec.Arguments)+2)
-	for _, arg := range append(spec.Arguments, "--format", "json") {
-		args = append(args, syscall.EscapeArg(arg))
-	}
+func taskXML(spec Spec, userSID, launcher string) string {
+	wscript := filepath.Join(windowsSystemRoot(), "System32", "wscript.exe")
+	args := "//B //NoLogo " + syscall.EscapeArg(launcher)
 	return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
+  <Triggers><LogonTrigger><UserId>` + html.EscapeString(userSID) + `</UserId><Enabled>true</Enabled></LogonTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>` + html.EscapeString(userSID) + `</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings>
-  <Actions Context="Author"><Exec><Command>` + html.EscapeString(spec.Executable) + `</Command><Arguments>` + html.EscapeString(strings.Join(args, " ")) + `</Arguments><WorkingDirectory>` + html.EscapeString(spec.RootDir) + `</WorkingDirectory></Exec></Actions>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled><Hidden>true</Hidden></Settings>
+  <Actions Context="Author"><Exec><Command>` + html.EscapeString(wscript) + `</Command><Arguments>` + html.EscapeString(args) + `</Arguments><WorkingDirectory>` + html.EscapeString(spec.RootDir) + `</WorkingDirectory></Exec></Actions>
 </Task>`
 }
 
+func vbscriptString(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func hiddenLauncherVBS(spec Spec) string {
+	commandArgs := make([]string, 0, len(spec.Arguments)+3)
+	commandArgs = append(commandArgs, syscall.EscapeArg(spec.Executable))
+	for _, arg := range append(spec.Arguments, "--format", "json") {
+		commandArgs = append(commandArgs, syscall.EscapeArg(arg))
+	}
+	command := strings.Join(commandArgs, " ")
+	return "Option Explicit\r\n" +
+		"Dim shell, exitCode\r\n" +
+		"Set shell = CreateObject(\"WScript.Shell\")\r\n" +
+		"exitCode = shell.Run(" + vbscriptString(command) + ", 0, True)\r\n" +
+		"WScript.Quit exitCode\r\n"
+}
+
 func currentUserSID() (string, error) {
-	out, err := exec.Command("whoami.exe", "/user", "/fo", "csv", "/nh").Output()
+	out, err := taskSchedulerCOM("identity")
 	if err != nil {
-		return "", fmt.Errorf("查询当前用户 SID 失败: %w", err)
+		return "", fmt.Errorf("查询当前用户 SID 失败: %s", commandError(out, err))
 	}
-	records, err := csv.NewReader(bytes.NewReader(out)).ReadAll()
-	if err != nil {
-		return "", fmt.Errorf("解析当前用户 SID 失败: %w", err)
+	sid := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(sid, "S-1-") {
+		return "", fmt.Errorf("WindowsIdentity 未返回当前用户 SID: %q", sid)
 	}
-	for _, record := range records {
-		for _, field := range record {
-			field = strings.TrimSpace(field)
-			if strings.HasPrefix(field, "S-1-") {
-				return field, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("whoami 未返回当前用户 SID")
+	return sid, nil
 }
 
 func (m *platformManager) Install(spec Spec) error {
@@ -92,13 +155,17 @@ func (m *platformManager) Install(spec Spec) error {
 	if err != nil {
 		return err
 	}
+	launcher := m.launcherPath()
+	if err := fsutil.WriteAtomic(launcher, []byte(hiddenLauncherVBS(spec)), fsutil.ConfigFileMode); err != nil {
+		return fmt.Errorf("写入 Windows daemon 隐藏启动器失败: %w", err)
+	}
 	tmp, err := os.CreateTemp("", "yoooclaw-task-*.xml")
 	if err != nil {
 		return err
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	content := []byte("\xff\xfe" + utf16LE(taskXML(spec, userSID)))
+	content := []byte("\xff\xfe" + utf16LE(taskXML(spec, userSID, launcher)))
 	if _, err = tmp.Write(content); err != nil {
 		tmp.Close()
 		return err
@@ -106,9 +173,10 @@ func (m *platformManager) Install(spec Spec) error {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	out, err := schtasks("/Create", "/TN", m.task, "/XML", name, "/F")
+	folder, taskName := m.folderAndName()
+	out, err := taskSchedulerCOM("install", folder, taskName, name)
 	if err != nil {
-		return fmt.Errorf("创建计划任务失败: %s", strings.TrimSpace(string(out)))
+		return fmt.Errorf("创建计划任务失败: %s", commandError(out, err))
 	}
 	return nil
 }
@@ -130,9 +198,10 @@ func utf16LE(s string) string {
 	return b.String()
 }
 func (m *platformManager) Start() error {
-	out, err := schtasks("/Run", "/TN", m.task)
+	folder, name := m.folderAndName()
+	out, err := taskSchedulerCOM("start", folder, name)
 	if err != nil {
-		return fmt.Errorf("启动计划任务失败: %s", strings.TrimSpace(string(out)))
+		return fmt.Errorf("启动计划任务失败: %s", commandError(out, err))
 	}
 	return nil
 }
@@ -144,15 +213,16 @@ func (m *platformManager) Stop() error {
 	if !status.Installed || !status.Running {
 		return nil
 	}
-	out, stopErr := schtasks("/End", "/TN", m.task)
-	after, statusErr := waitForServiceState(m.Status, func(status Status) bool {
+	folder, name := m.folderAndName()
+	out, stopErr := taskSchedulerCOM("stop", folder, name)
+	after, statusErr := waitForServiceStateWithin(m.Status, func(status Status) bool {
 		return !status.Installed || !status.Running
-	})
+	}, windowsTaskStopTimeout)
 	if statusErr == nil && (!after.Installed || !after.Running) {
 		return nil
 	}
 	if stopErr != nil {
-		return fmt.Errorf("停止计划任务失败: %s", strings.TrimSpace(string(out)))
+		return fmt.Errorf("停止计划任务失败: %s", commandError(out, stopErr))
 	}
 	if statusErr != nil {
 		return fmt.Errorf("停止计划任务后无法确认状态: %w", statusErr)
@@ -173,19 +243,33 @@ func (m *platformManager) Uninstall() error {
 	if err != nil {
 		return err
 	}
-	if !status.Installed {
-		return nil
+	if status.Installed {
+		folder, name := m.folderAndName()
+		out, deleteErr := taskSchedulerCOM("delete", folder, name)
+		after, statusErr := m.Status()
+		if statusErr != nil {
+			return fmt.Errorf("删除计划任务后无法确认状态: %w", statusErr)
+		}
+		if after.Installed {
+			if deleteErr != nil {
+				return fmt.Errorf("删除计划任务失败: %s", commandError(out, deleteErr))
+			}
+			return fmt.Errorf("删除计划任务后任务仍存在: %s", m.task)
+		}
 	}
-	out, deleteErr := schtasks("/Delete", "/TN", m.task, "/F")
-	after, statusErr := m.Status()
-	if statusErr == nil && !after.Installed {
-		return nil
+	if err := os.Remove(m.launcherPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除 Windows daemon 隐藏启动器失败: %w", err)
 	}
-	if deleteErr != nil {
-		return fmt.Errorf("删除计划任务失败: %s", strings.TrimSpace(string(out)))
+	return nil
+}
+
+func commandError(out []byte, err error) string {
+	message := strings.TrimSpace(string(out))
+	if message != "" {
+		return message
 	}
-	if statusErr != nil {
-		return fmt.Errorf("删除计划任务后无法确认状态: %w", statusErr)
+	if err != nil {
+		return err.Error()
 	}
-	return fmt.Errorf("删除计划任务后任务仍存在: %s", m.task)
+	return "unknown error"
 }
