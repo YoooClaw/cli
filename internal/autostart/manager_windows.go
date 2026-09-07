@@ -47,6 +47,12 @@ var taskSchedulerCOM = func(action string, args ...string) ([]byte, error) {
 	}
 	script = `$utf8=New-Object Text.UTF8Encoding $false; [Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; ` + script
 	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
+	// Agent hosts may have no console. Prevent Windows from creating one for
+	// each short-lived helper, while preserving CombinedOutput's output pipes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windowsCreateNoWindow,
+	}
 	cmd.Env = append(os.Environ(), "YOOOCLAW_TASK_SCHEDULER_ARGS="+string(payload))
 	return cmd.CombinedOutput()
 }
@@ -64,7 +70,10 @@ var taskSchedulerScripts = map[string]string{
 	"delete":  `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $s.GetFolder($a[0]).DeleteTask($a[1],0); 'ok'`,
 }
 
-const windowsTaskStateRunning = 4
+const (
+	windowsTaskStateRunning = 4
+	windowsCreateNoWindow   = 0x08000000 // CREATE_NO_WINDOW
+)
 
 func (m *platformManager) folderAndName() (string, string) {
 	trimmed := strings.Trim(m.task, `\`)
