@@ -6,6 +6,9 @@
 # Install with options:
 #   & ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.9.1 -Force
 #
+# Without -Version the installer only ever resolves a stable release.
+# Prereleases must be named explicitly, e.g. -Version 0.10.0-beta.3.
+#
 # The installer downloads the native Go executable. Node.js and npm are not
 # required, and installation is per-user by default (no administrator rights).
 
@@ -19,6 +22,8 @@ try {
 [CmdletBinding()]
 param(
     [string] $Version = "",
+    # Retained only to fail loudly for callers still passing it: prereleases are
+    # installable by explicit -Version alone.
     [switch] $Beta,
     [string] $InstallDir = "",
     [switch] $Force,
@@ -27,16 +32,20 @@ param(
     [switch] $NoModifyPath,
     [switch] $KeepNpm,
     # Primarily useful for mirrors and installer integration tests. The layout
-    # must be <BaseUrl>/v<version>/{asset,checksums.txt} with latest/beta markers.
+    # must be <BaseUrl>/v<version>/{asset,checksums.txt} with a latest marker.
     [string] $BaseUrl = ""
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
+if ($Beta) {
+    throw "beta 版必须显式指定版本号，例如 -Version 0.10.0-beta.3"
+}
+
 # These placeholders are rendered by tools/oss-upload during a release. The
 # source version falls back to GitHub Releases, while the rendered version uses
-# the OSS mirror and its latest/beta marker files.
+# the OSS mirror and its latest marker file.
 $OssBaseUrl = "__YOOOCLAW_CLI_OSS_BASE_URL__"
 $OssRendered = "__YOOOCLAW_CLI_TEMPLATE_RENDERED__"
 $Repository = "YoooClaw/cli"
@@ -89,10 +98,6 @@ function Resolve-Version {
     }
 
     $channel = "latest"
-    if ($Beta) {
-        $channel = "beta"
-    }
-
     $markerBaseUrl = ""
     if (-not [string]::IsNullOrWhiteSpace($BaseUrl)) {
         $markerBaseUrl = $BaseUrl.TrimEnd("/")
@@ -110,12 +115,8 @@ function Resolve-Version {
     $headers = @{ "Accept" = "application/vnd.github+json"; "User-Agent" = "yoooclaw-installer" }
     $releases = @(Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repository/releases?per_page=100")
     $tags = @($releases | ForEach-Object { [string] $_.tag_name } | Where-Object { $_ -match '^cli-v' })
-    if ($Beta) {
-        $tag = $tags | Where-Object { $_ -match '-(beta|alpha|rc)([.-]|$)' } | Select-Object -First 1
-    }
-    else {
-        $tag = $tags | Where-Object { $_ -notmatch '-(beta|alpha|rc)([.-]|$)' } | Select-Object -First 1
-    }
+    # Stable tags only: a prerelease is installable by explicit -Version alone.
+    $tag = $tags | Where-Object { $_ -notmatch '-(beta|alpha|rc)([.-]|$)' } | Select-Object -First 1
     if ([string]::IsNullOrWhiteSpace($tag)) {
         throw "Unable to resolve the $channel release. Specify -Version explicitly."
     }
@@ -133,10 +134,42 @@ function Get-ArtifactBaseUrl([string] $ResolvedVersion) {
 }
 
 function Get-DefaultInstallDir {
-    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        return Join-Path $env:LOCALAPPDATA "YoooClaw\bin"
+	if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+		return Join-Path $env:LOCALAPPDATA "YoooClaw\bin"
+	}
+	return Join-Path $HOME ".yoooclaw\bin"
+}
+
+function Remove-StaleYoooClawUninstallFiles([string] $ResolvedInstallDir) {
+    $legacyRoot = Join-Path ([IO.Path]::GetTempPath()) "yoooclaw-uninstall"
+    $cleanInstallDir = $ResolvedInstallDir.TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $installRoot = $cleanInstallDir
+    $installParent = Split-Path -Parent $cleanInstallDir
+    if ((Split-Path -Leaf $cleanInstallDir) -ieq "bin" -and (Split-Path -Leaf $installParent) -ieq "YoooClaw") {
+        $installRoot = $installParent
     }
-    return Join-Path $HOME ".yoooclaw\bin"
+    # The CLI renames its running executable to a sibling of the installation
+    # root. That keeps the rename on one volume while allowing YoooClaw itself
+    # to disappear synchronously. Continue cleaning the legacy TEMP location.
+    $sameVolumeRoot = Join-Path (Split-Path -Parent $installRoot) "yoooclaw-uninstall"
+    $pendingRoots = @($legacyRoot, $sameVolumeRoot) | Select-Object -Unique
+
+    foreach ($pendingRoot in $pendingRoots) {
+        if (-not (Test-Path -LiteralPath $pendingRoot -PathType Container)) {
+            continue
+        }
+        Get-ChildItem -LiteralPath $pendingRoot -File -Filter "yoooclaw-*.exe.pending" -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+            }
+            catch {
+                Write-WarningMessage "Could not remove stale uninstall file '$($_.Name)'. It may still be in use."
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item -LiteralPath $pendingRoot -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Test-PathEntry([string] $PathValue, [string] $Entry) {
@@ -355,6 +388,7 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Get-DefaultInstallDir
 }
 $InstallDir = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($InstallDir))
+Remove-StaleYoooClawUninstallFiles -ResolvedInstallDir $InstallDir
 $target = Join-Path $InstallDir "yoooclaw.exe"
 $alias = Join-Path $InstallDir "yc.exe"
 

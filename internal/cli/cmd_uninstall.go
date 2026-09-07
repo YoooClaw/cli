@@ -2,7 +2,6 @@ package cli
 
 import (
 	"os"
-	"path/filepath"
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/daemon"
@@ -51,7 +50,16 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	}
 	stopped := stopAllDaemons()
 
-	// 2. 删配置（默认保留数据）或整目录（--data）。
+	// 2. 先删二进制。配置与凭据必须等到安装路径确认移除后再清理，
+	// 避免 Windows 安全软件拒绝自删时留下一个无法使用的半卸载状态。
+	// npm 安装无法自删，给提示；Windows 使用同步可验证的
+	// POSIX 删除语义移除正在运行的原生二进制路径）。
+	binaryRemoval, err := removeSelfBinary()
+	if err != nil {
+		return nil, errs.New(errs.CodeStorageUnavailable, "删除 CLI 二进制失败："+err.Error())
+	}
+
+	// 3. 二进制路径已经移除，再删配置（默认保留数据）或整目录（--data）。
 	var removed []string
 	if withData {
 		if err := os.RemoveAll(root); err != nil {
@@ -65,18 +73,24 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	}
 	removed = append(autostartRemoved, removed...)
 
-	// 3. 删二进制（npm 安装无法自删，给提示）。
-	binRemoved, hint := removeSelfBinary()
-
 	result := map[string]any{
 		"ok":             true,
 		"daemonsStopped": stopped,
 		"removed":        removed,
-		"binaryRemoved":  binRemoved,
+		"binaryRemoved":  binaryRemoval.Removed,
 		"dataKept":       !withData,
 	}
-	if hint != "" {
-		result["hint"] = hint
+	if binaryRemoval.UserPathRemoved {
+		result["userPathRemoved"] = true
+	}
+	if len(binaryRemoval.InstallDirsRemoved) > 0 {
+		result["installDirsRemoved"] = binaryRemoval.InstallDirsRemoved
+	}
+	if len(binaryRemoval.Warnings) > 0 {
+		result["warnings"] = binaryRemoval.Warnings
+	}
+	if binaryRemoval.Hint != "" {
+		result["hint"] = binaryRemoval.Hint
 	}
 	return result, nil
 }
@@ -125,40 +139,30 @@ func removeConfigKeepData() []string {
 	return removed
 }
 
-// removeSelfBinary 删除当前可执行文件及同目录下的 yc / yoooclaw 软链。
-// npm 安装由 node_modules 托管，不自删，返回卸载提示。
-func removeSelfBinary() (removed []string, hint string) {
-	removed = []string{}
+type binaryRemovalResult struct {
+	Removed            []string
+	InstallDirsRemoved []string
+	UserPathRemoved    bool
+	Warnings           []string
+	Hint               string
+}
+
+// removeSelfBinary 删除当前可执行文件及同目录下的命令别名。
+// npm 安装由 node_modules 托管，不自删；原生安装只有在二进制路径已被
+// 同步移除后才返回成功。
+func removeSelfBinary() (binaryRemovalResult, error) {
 	if version.Dist() == "npm" {
-		return removed, "npm 安装：请运行 `npm uninstall -g @yoooclaw/cli` 移除二进制"
+		return binaryRemovalResult{
+			Removed: []string{},
+			Hint:    "npm 安装：请运行 `npm uninstall -g @yoooclaw/cli` 移除二进制",
+		}, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return removed, "无法定位可执行文件，请手动删除二进制"
+		return binaryRemovalResult{
+			Removed: []string{},
+			Hint:    "无法定位可执行文件，请手动删除二进制",
+		}, nil
 	}
-	real := exe
-	if r, e := filepath.EvalSymlinks(exe); e == nil {
-		real = r
-	}
-	dir := filepath.Dir(real)
-	candidates := []string{real, exe, filepath.Join(dir, "yc"), filepath.Join(dir, "yoooclaw")}
-	seen := map[string]bool{}
-	for _, c := range candidates {
-		if c == "" || seen[c] {
-			continue
-		}
-		seen[c] = true
-		// 只删我们认得的文件名（native 安装为 yoooclaw + yc 软链），
-		// 避免可执行文件被改名/嵌套时误删无关文件。
-		if base := filepath.Base(c); base != "yc" && base != "yoooclaw" {
-			continue
-		}
-		if _, e := os.Lstat(c); e != nil {
-			continue
-		}
-		if os.Remove(c) == nil {
-			removed = append(removed, c)
-		}
-	}
-	return removed, ""
+	return removeNativeSelfBinary(exe)
 }

@@ -27,7 +27,10 @@
 //	<prefix>/v<ver>/installer/install.*         通用安装脚本归档
 //	<prefix>/v<ver>/installer/install-wuying.sh 无影安装脚本归档
 //	<prefix>/v<ver>/oss-manifest.json       本次发布清单
-//	<prefix>/latest | <prefix>/beta         渠道版本标记（纯版本号文本）
+//	<prefix>/latest                         正式版版本标记（纯版本号文本）
+//
+// 预发布版本只写 <prefix>/v<ver>/** 归档，不碰任何 live key、也不写渠道标记：
+// 默认安装路径永远解析到最新正式版，装 beta 必须显式指定版本号。
 package main
 
 import (
@@ -351,6 +354,23 @@ func renderWuyingInstaller(root, installBaseURL, version string) []byte {
 	return []byte(source)
 }
 
+// isPrerelease 判断版本号是否带 SemVer 预发布后缀（0.10.0-beta.1）。预发布版本
+// 不允许出现在任何默认安装路径上。
+func isPrerelease(version string) bool {
+	return strings.Contains(version, "-")
+}
+
+// installerUploadKeys 返回一个安装脚本本次要写入的 OSS key。正式版同时刷新
+// live 与版本归档；预发布版只写归档，避免 beta 顶掉 live 脚本，让不带版本号的
+// curl 一键安装意外装到预发布版。
+func installerUploadKeys(prefix, version, filename string) []string {
+	keys := []string{joinKey(prefix, "v"+version, "installer", filename)}
+	if !isPrerelease(version) {
+		keys = append(keys, joinKey(prefix, filename))
+	}
+	return keys
+}
+
 func main() {
 	versionFlag := flag.String("version", "", "发布版本（默认读 package.json）")
 	only := flag.String("only", "", "只上传某类内容: install | artifacts")
@@ -377,8 +397,9 @@ func main() {
 	publicURL := strings.TrimRight(envOr("OSS_PUBLIC_URL", defaultPublicURL), "/")
 	installBaseURL := publicURL + "/" + strings.Trim(prefix, "/")
 	distDir := envOr("DIST_DIR", filepath.Join(root, "dist-native"))
+	prerelease := isPrerelease(version)
 	channel := "latest"
-	if strings.Contains(version, "-") {
+	if prerelease {
 		channel = "beta"
 	}
 
@@ -410,19 +431,20 @@ func main() {
 	fmt.Println()
 
 	if *only == "" || *only == "install" {
-		for _, filename := range []string{"install.sh", "install.ps1"} {
-			rendered := renderInstaller(root, filename, installBaseURL)
-			liveKey := joinKey(prefix, filename)
-			archiveKey := joinKey(prefix, "v"+version, "installer", filename)
-			u.put(liveKey, rendered, contentTypeFor(filename), filename)
-			u.put(archiveKey, rendered, contentTypeFor(filename), "v"+version+"/installer/"+filename)
+		if prerelease {
+			logf("预发布版本：只写 v%s 归档，跳过 live 安装脚本与渠道标记", version)
 		}
-
-		renderedWuying := renderWuyingInstaller(root, installBaseURL, version)
-		wuyingLiveKey := joinKey(prefix, "install-wuying.sh")
-		wuyingArchiveKey := joinKey(prefix, "v"+version, "installer", "install-wuying.sh")
-		u.put(wuyingLiveKey, renderedWuying, contentTypeFor("install-wuying.sh"), "install-wuying.sh")
-		u.put(wuyingArchiveKey, renderedWuying, contentTypeFor("install-wuying.sh"), "v"+version+"/installer/install-wuying.sh")
+		for _, filename := range []string{"install.sh", "install.ps1", "install-wuying.sh"} {
+			var rendered []byte
+			if filename == "install-wuying.sh" {
+				rendered = renderWuyingInstaller(root, installBaseURL, version)
+			} else {
+				rendered = renderInstaller(root, filename, installBaseURL)
+			}
+			for _, key := range installerUploadKeys(prefix, version, filename) {
+				u.put(key, rendered, contentTypeFor(filename), strings.TrimPrefix(key, prefix+"/"))
+			}
+		}
 	}
 
 	if *only == "" || *only == "artifacts" {
@@ -465,15 +487,24 @@ func main() {
 			contentTypeFor("oss-manifest.json"),
 			"oss-manifest.json",
 		)
-		u.put(joinKey(prefix, channel), []byte(version+"\n"), "text/plain; charset=utf-8", channel)
+		if !prerelease {
+			u.put(joinKey(prefix, channel), []byte(version+"\n"), "text/plain; charset=utf-8", channel)
+		}
 	}
 
 	fmt.Println()
-	okf("installer: %s", urlForKey(publicURL, joinKey(prefix, "install.sh")))
-	okf("wuying installer: %s", urlForKey(publicURL, joinKey(prefix, "install-wuying.sh")))
-	okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
+	if prerelease {
+		okf("installer 归档: %s/installer/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
+		okf("预发布版本未改动 live 安装脚本与 latest 标记；安装需显式 --version %s", version)
+	} else {
+		okf("installer: %s", urlForKey(publicURL, joinKey(prefix, "install.sh")))
+		okf("wuying installer: %s", urlForKey(publicURL, joinKey(prefix, "install-wuying.sh")))
+		okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
+	}
 	okf("artifacts: %s/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
-	okf("%s marker: %s", channel, urlForKey(publicURL, joinKey(prefix, channel)))
+	if !prerelease {
+		okf("%s marker: %s", channel, urlForKey(publicURL, joinKey(prefix, channel)))
+	}
 	okf("OSS upload complete")
 	fmt.Println()
 }

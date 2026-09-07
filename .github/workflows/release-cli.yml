@@ -490,12 +490,13 @@ jobs:
           CHANNEL="稳定版"
           [ "$PRERELEASE" = "1" ] && CHANNEL="预发布"
 
+          # 预发布版只能按版本号装：live 安装脚本与 latest 标记不会被 beta 覆盖。
           INSTALL_FLAGS=""
-          [ "$PRERELEASE" = "1" ] && INSTALL_FLAGS=" -s -- --beta"
+          [ "$PRERELEASE" = "1" ] && INSTALL_FLAGS=" -s -- --version ${VERSION}"
 
           WINDOWS_INSTALL_COMMAND="irm ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1 | iex"
           if [ "$PRERELEASE" = "1" ]; then
-            WINDOWS_INSTALL_COMMAND="& ([scriptblock]::Create((irm '${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1'))) -Beta"
+            WINDOWS_INSTALL_COMMAND="& ([scriptblock]::Create((irm '${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1'))) -Version ${VERSION}"
           fi
 
           TEXT="🚀 @yoooclaw/cli ${CURRENT_TAG}（${CHANNEL}）已发布
