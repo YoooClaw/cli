@@ -22,7 +22,7 @@ func isDaemonCommandLine(cmdline []byte) bool {
 		if string(arg) == "--yclib-daemon-bootstrap" {
 			return true
 		}
-		if string(arg) == "daemon" && i+1 < len(args) && string(args[i+1]) == "run-foreground" {
+		if string(arg) == "daemon" && i+1 < len(args) && (string(args[i+1]) == "run-foreground" || string(args[i+1]) == "run-service") {
 			return true
 		}
 	}

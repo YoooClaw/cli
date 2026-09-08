@@ -241,3 +241,8 @@ info "CLI: $CLI"
 info "profile: $PROFILE"
 info "Skill host: $SKILL_AGENT"
 info "Cloud environment: $CLOUD_ENV"
+
+case ":${PATH:-}:" in
+  *:"${CLI%/*}":*) ;;
+  *) warn "当前 PATH 不含 ${CLI%/*}；请使用完整路径 $CLI，或安装时传 --modify-path 并重新打开终端" ;;
+esac

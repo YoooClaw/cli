@@ -158,6 +158,12 @@ func (c *Client) connectOnce() error {
 		status := ""
 		if result.resp != nil {
 			status = result.resp.Status
+			if result.resp.Body != nil {
+				_ = result.resp.Body.Close()
+			}
+			if result.resp.StatusCode == 401 || result.resp.StatusCode == 403 {
+				c.opts.Logger.Warn(fmt.Sprintf("Relay authentication rejected: status=%d; daemon is running; verify the credential source/fingerprint in credentials.reload_applied and server authorization", result.resp.StatusCode))
+			}
 		}
 		if status != "" {
 			return fmt.Errorf("websocket dial failed: %s (%s)", result.err.Error(), status)

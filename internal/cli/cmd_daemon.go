@@ -1,10 +1,16 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
@@ -44,6 +50,7 @@ func newDaemonCmd() *cobra.Command {
 	logs.Flags().String("lines", "100", "初始展示行数")
 	logs.Flags().String("level", "", "过滤日志级别")
 	logs.Flags().Bool("supervisor", false, "查看系统用户服务启动日志")
+	logs.Flags().Bool("diagnostics", false, "汇总 daemon/自启日志、进程状态和 Linux 本次启动的系统服务记录")
 
 	runFg := &cobra.Command{Use: "run-foreground", Short: "（内部）前台运行 daemon 主循环", Args: cobra.NoArgs, RunE: run(daemonRunForeground)}
 	runFg.Flags().String("bind", "", "监听地址")
@@ -190,23 +197,50 @@ func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 	return map[string]any{"ok": true, "pid": newLock.PID, "bind": newLock.Bind, "port": newLock.Port, "detached": true}, nil
 }
 
+func logDaemonObservation(ctx *clictx.Context, event string, state daemon.RunningState) {
+	fields := map[string]any{"profile": ctx.Profile, "root": paths.RootDir(), "lockPath": ctx.Paths.DaemonLock, "running": state.Running, "stale": state.Stale, "reason": state.Reason, "lockReadError": state.ReadError, "actualExecutable": state.ActualExecutable}
+	if state.Lock != nil {
+		fields["lockPID"] = state.Lock.PID
+		fields["expectedExecutable"] = state.Lock.Executable
+		fields["lockProfile"] = state.Lock.Profile
+		fields["lockVersion"] = state.Lock.Version
+		fields["port"] = state.Lock.Port
+	}
+	status, err := autostartManager().Status()
+	fields["service"] = status
+	if err != nil {
+		fields["serviceError"] = diagnostics.SafeError(err)
+	}
+	level := "info"
+	if !state.Running {
+		level = "warn"
+	}
+	diagnostics.Write(paths.RootDir(), level, event, fields)
+}
+
 func daemonReload(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
 	state := daemon.State(ctx.Paths)
+	logDaemonObservation(ctx, "reload.request", state)
 	if !state.Running {
-		return map[string]any{"ok": true, "running": false, "reloaded": false}, nil
+		return map[string]any{"ok": true, "running": false, "reloaded": false, "stale": state.Stale,
+			"reason": "未发现可识别的 daemon 进程，未执行配置重载",
+			"hint":   "运行 yoooclaw daemon start；若系统服务显示运行中，请检查 daemon.lock 与进程身份是否一致"}, nil
 	}
 	_, body, err := daemon.NewClient(ctx.Paths).Request("POST", "/daemon/reload", nil)
 	if err != nil {
+		diagnostics.Write(paths.RootDir(), "error", "reload.request_failed", map[string]any{"profile": ctx.Profile, "error": diagnostics.SafeError(err)})
 		return nil, err
 	}
+	diagnostics.Write(paths.RootDir(), "info", "reload.response_received", map[string]any{"profile": ctx.Profile})
 	return body, nil
 }
 
 func daemonStatus(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
 	state := daemon.State(ctx.Paths)
+	logDaemonObservation(ctx, "status.observed", state)
 	if !state.Running {
 		return nil, errs.New(errs.CodeDaemonNotRunning, "daemon 未运行",
-			map[string]any{"stale": state.Stale, "hint": "yoooclaw daemon start"})
+			map[string]any{"stale": state.Stale, "reason": state.Reason, "hint": "yoooclaw daemon start"})
 	}
 	_, body, err := daemon.NewClient(ctx.Paths).Request("GET", "/daemon/status", nil)
 	if err != nil {
@@ -222,6 +256,9 @@ func daemonStatus(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error
 
 func daemonLogs(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	n := atoiDefault(flagStr(cmd, "lines"), 100)
+	if n < 1 || n > 1000 {
+		return nil, errs.New(errs.CodeInvalidArgument, "--lines 必须在 1 到 1000 之间")
+	}
 	file := ctx.Paths.DaemonLog
 	if flagBool(cmd, "supervisor") {
 		file = filepath.Join(paths.RootDir(), "logs", "daemon-supervisor.log")
@@ -238,7 +275,44 @@ func daemonLogs(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error
 		lines = filtered
 	}
 	// --follow 的实时 tail 暂不实现（Phase 2 标准输出即可）；返回当前快照。
-	return map[string]any{"ok": true, "file": file, "total": len(lines), "lines": lines}, nil
+	result := map[string]any{"ok": true, "file": file, "total": len(lines), "lines": lines}
+	if flagBool(cmd, "diagnostics") {
+		supervisorFile := filepath.Join(paths.RootDir(), "logs", "daemon-supervisor.log")
+		result["supervisor"] = map[string]any{"file": supervisorFile, "lines": tailLines(supervisorFile, n)}
+		result["process"] = daemon.State(ctx.Paths)
+		result["root"] = paths.RootDir()
+		result["profile"] = ctx.Profile
+		result["configPath"] = ctx.Paths.Config
+		status, err := autostartSnapshot()
+		result["autostart"] = status
+		if err != nil {
+			result["autostartError"] = diagnostics.SafeError(err)
+		}
+		native, _ := autostartManager().Status()
+		if runtime.GOOS == "linux" && native.Manager == "systemd" && native.Unit != "" {
+			result["systemd"] = readServiceDiagnostic("systemctl", "--user", "show", native.Unit, "--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,ExecMainStartTimestamp,UnitFileState,InvocationID")
+			result["userManager"] = readServiceDiagnostic("systemctl", "show", fmt.Sprintf("user@%d.service", os.Getuid()), "--property=ActiveState,SubState,Result,ExecMainStartTimestamp")
+			result["userManagerJournal"] = readServiceDiagnostic("journalctl", "-b", "-u", fmt.Sprintf("user@%d.service", os.Getuid()), "--no-pager", "-n", strconv.Itoa(n))
+			result["journal"] = readServiceDiagnostic("journalctl", "--user", "-b", "-u", native.Unit, "--no-pager", "-n", strconv.Itoa(n))
+		}
+	}
+	return result, nil
+}
+
+// Bound external diagnostics so an unavailable user bus cannot hang logs.
+func readServiceDiagnostic(command string, args ...string) map[string]any {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, command, args...).CombinedOutput()
+	lines := strings.Split(string(out), "\n")
+	for i, line := range lines {
+		lines[i] = diagnostics.SafeError(fmt.Errorf("%s", line))
+	}
+	result := map[string]any{"output": strings.Join(lines, "\n"), "ok": err == nil}
+	if err != nil {
+		result["error"] = diagnostics.SafeError(err)
+	}
+	return result
 }
 
 func tailLines(file string, n int) []string {

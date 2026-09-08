@@ -104,7 +104,7 @@ func doctor(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	case state.Running:
 		checks = append(checks, check{"daemon", "ok", "运行中（pid " + strconv.Itoa(state.Lock.PID) + "）"})
 	case state.Stale:
-		checks = append(checks, check{"daemon", "warn", "锁文件存在但进程已死（陈旧锁）"})
+		checks = append(checks, check{"daemon", "warn", "锁文件存在但进程不存在或身份校验不匹配"})
 	default:
 		checks = append(checks, check{"daemon", "skip", "未运行"})
 	}
@@ -115,7 +115,7 @@ func doctor(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	storedState, storedExists, _ := autostart.ReadState(paths.RootDir())
 	currentSpec, specErr := autostartSpec()
 	executableDrift := storedExists && specErr == nil && storedState.Executable != "" && storedState.Executable != currentSpec.Executable
-	needsEnableRepair := desired == autostart.DesiredEnabled && (!serviceStatus.Installed || executableDrift)
+	needsEnableRepair := desired == autostart.DesiredEnabled && (!serviceStatus.Installed || executableDrift || (serviceStatus.UnitEnabled != nil && !*serviceStatus.UnitEnabled))
 	switch {
 	case desiredErr != nil:
 		checks = append(checks, check{"daemon-autostart", "fail", desiredErr.Error()})
@@ -131,11 +131,13 @@ func doctor(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 			checks = append(checks, check{"daemon-autostart", "ok", "已重新注册用户级自启服务"})
 		}
 	case needsEnableRepair:
-		detail := "期望启用但系统服务缺失（doctor --fix 可修复）"
+		detail := "期望启用但系统服务缺失或未 enable（doctor --fix 可修复）"
 		if executableDrift {
 			detail = "系统服务仍指向旧版本二进制（doctor --fix 可修复）"
 		}
 		checks = append(checks, check{"daemon-autostart", "warn", detail})
+	case desired == autostart.DesiredEnabled && serviceStatus.BootWarning != "":
+		checks = append(checks, check{"daemon-autostart", "warn", serviceStatus.BootWarning})
 	case desired == autostart.DesiredEnabled && serviceStatus.Installed:
 		checks = append(checks, check{"daemon-autostart", "ok", serviceStatus.Manager + " 已启用"})
 	case desired == autostart.DesiredDisabled && serviceStatus.Installed && fix:

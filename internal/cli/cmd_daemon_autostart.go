@@ -11,9 +11,11 @@ import (
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/daemon"
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/paths"
+	"github.com/YoooClaw/cli/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +24,7 @@ const managedDaemonReadyTimeout = 15 * time.Second
 func newDaemonAutostartCmd() *cobra.Command {
 	c := &cobra.Command{Use: "autostart", Short: "管理用户登录时自动启动"}
 	enable := &cobra.Command{Use: "enable", Short: "启用自启并立即启动 daemon", Args: cobra.NoArgs, RunE: run(daemonAutostartEnable)}
+	enable.Flags().Bool("boot", false, "Linux：开启当前用户 linger，支持无人登录时开机启动")
 	enable.Flags().Bool("no-start", false, "只启用自启，当前不启动")
 	disable := &cobra.Command{Use: "disable", Short: "停止 daemon 并关闭自启", Args: cobra.NoArgs, RunE: run(daemonAutostartDisable)}
 	status := &cobra.Command{Use: "status", Short: "显示自启期望与系统服务状态", Args: cobra.NoArgs, RunE: run(daemonAutostartStatus)}
@@ -67,6 +70,21 @@ func autostartSnapshot() (map[string]any, error) {
 		"installed": status.Installed, "loaded": status.Loaded,
 		"running": status.Running, "drift": drift,
 		"profile": persistentActiveProfile(),
+	}
+	if status.Linger != nil {
+		result["linger"] = *status.Linger
+	}
+	if status.UnitEnabled != nil {
+		result["unitEnabled"] = *status.UnitEnabled
+		if desired == autostart.DesiredEnabled && !*status.UnitEnabled {
+			result["drift"] = true
+		}
+	}
+	if status.Linger != nil && status.UnitEnabled != nil {
+		result["bootEnabled"] = *status.Linger && *status.UnitEnabled
+	}
+	if status.BootWarning != "" {
+		result["bootWarning"] = status.BootWarning
 	}
 	if desired == "" {
 		result["desired"] = "unknown"
@@ -185,6 +203,12 @@ func daemonAutostartEnable(ctx *clictx.Context, cmd *cobra.Command, _ []string) 
 	if err != nil {
 		return nil, recoverDaemonAfterAutostartFailure(ctx, start, err)
 	}
+	// Do this before stopping a healthy service: policy may reject linger.
+	if flagBool(cmd, "boot") {
+		if err := autostart.EnableBoot(manager); err != nil {
+			return nil, autostartError(err)
+		}
+	}
 	if status.Running {
 		if err := manager.Stop(); err != nil {
 			return nil, recoverDaemonAfterAutostartFailure(ctx, start, err)
@@ -212,6 +236,8 @@ func daemonAutostartEnable(ctx *clictx.Context, cmd *cobra.Command, _ []string) 
 }
 
 func recoverDaemonAfterAutostartFailure(ctx *clictx.Context, start bool, cause error) error {
+	diagnostics.Write(paths.RootDir(), "warn", "autostart.recovery_requested", map[string]any{"profile": ctx.Profile, "startRequested": start, "error": diagnostics.SafeError(cause)})
+	defer func() { logDaemonObservation(ctx, "autostart.recovery_result", daemon.State(ctx.Paths)) }()
 	if !start || daemon.State(ctx.Paths).Running {
 		return autostartError(cause)
 	}
@@ -291,6 +317,7 @@ func waitForManagedDaemon(ctx *clictx.Context) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	logDaemonObservation(ctx, "service.ready_timeout", daemon.State(ctx.Paths))
 	return errs.New(errs.CodeDaemonNotRunning, "系统服务已启动，但 daemon 未在 "+managedDaemonReadyTimeout.String()+" 内就绪").
 		WithHint("查看 `yoooclaw daemon logs` 和 `yoooclaw daemon logs --supervisor`")
 }
@@ -370,12 +397,26 @@ func daemonRunServiceWithRoot(ctx *clictx.Context, cmd *cobra.Command) (*clictx.
 	}, nil
 }
 
-func daemonRunService(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	ctx, err := daemonRunServiceWithRoot(ctx, cmd)
+func daemonRunService(ctx *clictx.Context, cmd *cobra.Command, _ []string) (result any, runErr error) {
+	began := time.Now()
+	defer func() {
+		fields := map[string]any{"profile": ctx.Profile, "elapsedMs": time.Since(began).Milliseconds()}
+		level := "info"
+		if runErr != nil {
+			level = "error"
+			fields["error"] = diagnostics.SafeError(runErr)
+		}
+		diagnostics.Write(paths.RootDir(), level, "service.run_returned", fields)
+	}()
+	serviceCtx, err := daemonRunServiceWithRoot(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
+	ctx = serviceCtx
+	exe, _ := os.Executable()
+	diagnostics.Write(paths.RootDir(), "info", "service.entry", map[string]any{"root": paths.RootDir(), "profile": ctx.Profile, "configPath": ctx.Paths.Config, "lockPath": ctx.Paths.DaemonLock, "daemonLog": ctx.Paths.DaemonLog, "executable": exe, "version": version.Version, "parentPID": os.Getppid(), "uid": os.Getuid(), "invocationID": os.Getenv("INVOCATION_ID"), "runtimeDir": os.Getenv("XDG_RUNTIME_DIR"), "sessionBusPresent": os.Getenv("DBUS_SESSION_BUS_ADDRESS") != ""})
 	if !config.Exists(ctx.Paths) {
+		diagnostics.Write(paths.RootDir(), "warn", "service.skipped", map[string]any{"reason": "config_missing", "configPath": ctx.Paths.Config})
 		return map[string]any{"ok": true, "running": false, "skipped": "active profile 尚未初始化", "profile": ctx.Profile}, nil
 	}
 	err = daemon.RunForeground(ctx, daemon.StartOpts{})
@@ -384,10 +425,10 @@ func daemonRunService(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any,
 	}
 	var structured *errs.Error
 	if errors.As(err, &structured) && (structured.Code == errs.CodeDaemonDisabledByPlugin || structured.Code == errs.CodeDaemonAlreadyRunning) {
-		appendSupervisorLog("INFO", structured.Message)
+		diagnostics.Write(paths.RootDir(), "warn", "service.skipped", map[string]any{"reasonCode": structured.Code, "reason": diagnostics.SafeError(structured)})
 		return map[string]any{"ok": true, "running": false, "skipped": structured.Message, "profile": ctx.Profile}, nil
 	}
-	appendSupervisorLog("ERROR", err.Error())
+	appendSupervisorLog("ERROR", diagnostics.SafeError(err))
 	return nil, err
 }
 

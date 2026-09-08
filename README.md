@@ -238,7 +238,10 @@ yoooclaw config init --no-autostart  # start now without enabling autostart
 Autostart always follows the active profile. `profile use` transfers a running
 daemon to the new profile while preserving a manually stopped state. On Linux,
 autostart begins with the user service manager; enabling pre-login boot via
-`loginctl enable-linger` remains an explicit system-administration choice.
+`yoooclaw daemon autostart enable --boot` explicitly enables linger for the current OS user.
+`daemon autostart status` reports `linger`, `unitEnabled`, `bootEnabled` and any
+`bootWarning`; `doctor` warns when pre-login startup is unavailable. Disabling
+autostart does not disable linger, which may be used by other user services.
 Upgrades from releases without an autostart preference register the initialized
 active profile even if its daemon was stopped during the upgrade. An explicit
 `autostart disable` preference and a live Hermes owner are always preserved.
@@ -501,3 +504,16 @@ All release artifacts are generated from the Go source via `scripts/build-go.sh`
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Linux startup and credential reload diagnostics
+
+Run `yoooclaw daemon logs --diagnostics --lines 100` to collect daemon and supervisor
+logs, lock/process identity, autostart state, and the Linux service journal for this
+boot. Use the installed executable's absolute path if it is absent from PATH.
+`service.entry` / `daemon.ready` identify the version, PID, profile and paths;
+`status.observed` / `reload.request` explain stale locks and compare systemd state.
+`credentials.reload_applied` records credential sources, labels, short SHA-256
+fingerprints and tunnel changes without logging keys or tokens. Applying credentials
+does not confirm a connection: look for the subsequent `connected` or 401/403 logs.
+If no `service.entry` exists, inspect the collected systemd/journal records: an
+application cannot log before the OS has launched it.

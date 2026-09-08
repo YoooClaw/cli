@@ -354,3 +354,24 @@ func TestRecordingCommandsRenderTableFromResultEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestDaemonDiagnosticLogBundle(t *testing.T) {
+	sandbox(t)
+	out, code := execCLI(t, "daemon", "reload")
+	if code != 0 {
+		t.Fatalf("reload: %s", out)
+	}
+	out, code = execCLI(t, "daemon", "logs", "--diagnostics")
+	if code != 0 {
+		t.Fatalf("logs: %s", out)
+	}
+	result := decode(t, out)
+	for _, key := range []string{"process", "autostart", "supervisor", "configPath", "root", "profile"} {
+		if _, ok := result[key]; !ok {
+			t.Fatalf("missing %s: %s", key, out)
+		}
+	}
+	if !strings.Contains(out, "reload.request") || !strings.Contains(out, "lock_missing") {
+		t.Fatalf("missing reason in bundle: %s", out)
+	}
+}

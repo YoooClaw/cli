@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"io"
 	"net"
 	"net/http"
@@ -60,7 +62,14 @@ type runtimeState struct {
 }
 
 // RunForeground 前台运行 daemon 主循环（detach 子进程入口）。永不正常返回。
-func RunForeground(ctx *clictx.Context, opts StartOpts) error {
+func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
+	root := filepath.Dir(filepath.Dir(ctx.Paths.Dir))
+	diagnostics.Write(root, "info", "daemon.start_requested", map[string]any{"profile": ctx.Profile, "configPath": ctx.Paths.Config, "lockPath": ctx.Paths.DaemonLock})
+	defer func() {
+		if runErr != nil {
+			diagnostics.Write(root, "error", "daemon.start_or_run_failed", map[string]any{"profile": ctx.Profile, "error": diagnostics.SafeError(runErr)})
+		}
+	}()
 	if State(ctx.Paths).Running {
 		return errs.New(errs.CodeDaemonAlreadyRunning, "daemon 已在运行")
 	}
@@ -100,6 +109,10 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	}
 	ctx.Paths.MigrateLogs()
 	logger := NewLogger(ctx.Paths.DaemonLog, logLevel, false)
+	logger.Info(diagnostics.Message("daemon.start_context", map[string]any{"profile": ctx.Profile, "version": version.Version, "executable": executable, "configPath": ctx.Paths.Config, "lockPath": ctx.Paths.DaemonLock, "ingress": mode, "relayEnabled": cfg.Relay.Enabled, "credentials": credentialSummary(credentialSet), "gatewayTokenSource": tokenRef.Source, "gatewayTokenPresent": token != ""}))
+	if lockErr != nil {
+		logger.Warn(diagnostics.Message("daemon.singleton_lock_unavailable", map[string]any{"error": diagnostics.SafeError(lockErr)}))
+	}
 	st := &runtimeState{startedAt: time.Now().UTC().Format(time.RFC3339)}
 	// Validate all prerequisites before publishing daemon.lock. Previously a
 	// proxied start without an api-key wrote the lock and then exited, leaving
@@ -178,6 +191,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	// a lingering old daemon must never delete a newer daemon's lock.
 	selfPID := os.Getpid()
 	defer RemoveLockIfOwnedBy(ctx.Paths, selfPID)
+	diagnostics.Write(root, "info", "daemon.ready", map[string]any{"profile": ctx.Profile, "bind": bind, "port": actualPort, "lockPath": ctx.Paths.DaemonLock, "version": version.Version})
 	logger.Info(fmt.Sprintf("yoooclaw daemon 启动：%s:%d（profile=%s, pid=%d）", bind, actualPort, ctx.Profile, os.Getpid()))
 	switch mode {
 	case config.IngressProxied:
@@ -216,6 +230,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	srv.shutdown = func(reason string) {
 		srv.shutdownOnce.Do(func() {
 			logger.Info("daemon 退出（" + reason + "）")
+			diagnostics.Write(root, "info", "daemon.shutdown", map[string]any{"profile": ctx.Profile, "reason": reason})
 			if sup := srv.supervisor(); sup != nil {
 				sup.StopAll(reason)
 			}
@@ -232,8 +247,8 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) error {
 	}
 
 	go func() {
-		<-stop
-		srv.shutdown("signal")
+		sig := <-stop
+		srv.shutdown("signal:" + sig.String())
 	}()
 
 	if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -386,11 +401,38 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // reloadCredentials 重读凭据并增量刷新隧道。持 shareMu 写锁做整体替换；
 // supervisor.Apply 里的网络操作是非阻塞的（隧道在各自 goroutine 建连），
 // 不会长时间占住写锁。
+// credentialSummary deliberately selects metadata rather than serializing the
+// credential set. Short SHA-256 fingerprints correlate rotations without key text.
+func credentialSummary(set creds.CredentialSet) map[string]any {
+	entries := make([]map[string]any, 0, len(set.Entries))
+	for _, entry := range set.Entries {
+		sum := sha256.Sum256([]byte(entry.Key))
+		entries = append(entries, map[string]any{"label": entry.Label, "source": entry.Source, "default": entry.Default, "fingerprint": fmt.Sprintf("sha256:%x", sum[:6])})
+	}
+	summary := map[string]any{"mode": set.Mode, "path": set.Location, "count": len(entries), "entries": entries, "legacyPresent": set.LegacyAPIKeyPresent, "shadowedKeychainPresent": set.ShadowedKeychainPresent, "warningCount": len(set.Warnings)}
+	if set.Location != "" {
+		raw, err := os.ReadFile(set.Location)
+		summary["fileReadable"] = err == nil
+		if err != nil {
+			summary["fileError"] = diagnostics.SafeError(err)
+		} else {
+			summary["fileValidJSON"] = json.Valid(raw)
+		}
+		if info, err := os.Stat(set.Location); err == nil {
+			summary["fileModifiedAt"] = info.ModTime().UTC().Format(time.RFC3339Nano)
+		}
+	}
+	return summary
+}
+
 func (s *server) reloadCredentials() (creds.CredentialSet, relay.ApplyResult) {
+	began := time.Now()
+	s.logger.Info(diagnostics.Message("credentials.reload_begin", map[string]any{"profile": s.ctx.Profile}))
 	set := creds.ResolveAPIKeyEntries()
 	relayResult := relay.ApplyResult{}
 	s.shareMu.Lock()
 	defer s.shareMu.Unlock()
+	before := credentialSummary(s.credentialSet)
 	s.credentialSet = set
 	if s.ingressMode == config.IngressStandalone && s.cfg.Relay.Enabled {
 		if s.tunnelSupervisor == nil && len(set.Entries) > 0 {
@@ -410,6 +452,10 @@ func (s *server) reloadCredentials() (creds.CredentialSet, relay.ApplyResult) {
 		if s.tunnelSupervisor != nil {
 			relayResult = s.tunnelSupervisor.Apply(set)
 		}
+	}
+	s.logger.Info(diagnostics.Message("credentials.reload_applied", map[string]any{"profile": s.ctx.Profile, "elapsedMs": time.Since(began).Milliseconds(), "before": before, "after": credentialSummary(set), "relayEnabled": s.cfg.Relay.Enabled, "ingress": s.ingressMode, "started": relayResult.Started, "stopped": relayResult.Stopped, "restarted": relayResult.Restarted, "unchanged": relayResult.Unchanged, "connectionConfirmed": false}))
+	if len(set.Entries) == 0 {
+		s.logger.Warn("credentials.reload: no usable API keys; Relay cannot connect")
 	}
 	return set, relayResult
 }
