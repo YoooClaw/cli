@@ -19,11 +19,11 @@ func TestIsFeishuApp(t *testing.T) {
 func TestExtractColonSender(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
-		"Alice: hi":   "Alice",
-		"Bob：你好":      "Bob",
-		"no colon":    "",
-		"":            "",
-		":leading":    "",
+		"Alice: hi": "Alice",
+		"Bob：你好":    "Bob",
+		"no colon":  "",
+		"":          "",
+		":leading":  "",
 	}
 	for in, want := range tests {
 		if got := extractColonSender(in); got != want {

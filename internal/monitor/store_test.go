@@ -46,10 +46,10 @@ func TestCreateGetList(t *testing.T) {
 func TestCreateValidation(t *testing.T) {
 	p := testutil.Sandbox(t)
 	bad := []CreateInput{
-		{Description: "d", MatchRules: 1, Schedule: "s"},          // 无 name
-		{Name: "n", MatchRules: 1, Schedule: "s"},                 // 无 description
-		{Name: "n", Description: "d", Schedule: "s"},              // 无 matchRules
-		{Name: "n", Description: "d", MatchRules: 1},              // 无 schedule
+		{Description: "d", MatchRules: 1, Schedule: "s"}, // 无 name
+		{Name: "n", MatchRules: 1, Schedule: "s"},        // 无 description
+		{Name: "n", Description: "d", Schedule: "s"},     // 无 matchRules
+		{Name: "n", Description: "d", MatchRules: 1},     // 无 schedule
 	}
 	for i, in := range bad {
 		if _, err := Create(p, in); err == nil {
