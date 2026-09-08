@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
@@ -30,13 +31,16 @@ type Spec struct {
 
 // Status is the normalized state returned by every platform manager.
 type Status struct {
-	Manager    string `json:"manager"`
-	Unit       string `json:"unit"`
-	Installed  bool   `json:"installed"`
-	Loaded     bool   `json:"loaded"`
-	Running    bool   `json:"running"`
-	PID        int    `json:"pid,omitempty"`
-	Executable string `json:"executable,omitempty"`
+	Manager     string `json:"manager"`
+	Unit        string `json:"unit"`
+	Installed   bool   `json:"installed"`
+	Loaded      bool   `json:"loaded"`
+	Running     bool   `json:"running"`
+	PID         int    `json:"pid,omitempty"`
+	Linger      *bool  `json:"linger,omitempty"`
+	UnitEnabled *bool  `json:"unitEnabled,omitempty"`
+	BootWarning string `json:"bootWarning,omitempty"`
+	Executable  string `json:"executable,omitempty"`
 }
 
 // State records user intent independently of transient OS service state.
@@ -77,7 +81,15 @@ func writeState(root string, state State) error {
 }
 
 // Enable installs the service, persists intent, and optionally starts it now.
-func Enable(m Manager, spec Spec, start bool) (Status, error) {
+func Enable(m Manager, spec Spec, start bool) (result Status, enableErr error) {
+	began := time.Now()
+	defer func() {
+		level := "info"
+		if enableErr != nil {
+			level = "error"
+		}
+		diagnostics.Write(spec.RootDir, level, "autostart.enable_result", map[string]any{"startRequested": start, "status": result, "error": diagnostics.SafeError(enableErr), "elapsedMs": time.Since(began).Milliseconds()})
+	}()
 	if err := m.Available(); err != nil {
 		return Status{}, err
 	}
@@ -103,7 +115,14 @@ func Enable(m Manager, spec Spec, start bool) (Status, error) {
 }
 
 // Disable removes the service, then persists the explicit opt-out.
-func Disable(m Manager, root string) (Status, error) {
+func Disable(m Manager, root string) (result Status, disableErr error) {
+	defer func() {
+		level := "info"
+		if disableErr != nil {
+			level = "error"
+		}
+		diagnostics.Write(root, level, "autostart.disable_result", map[string]any{"status": result, "error": diagnostics.SafeError(disableErr)})
+	}()
 	if err := m.Available(); err != nil {
 		status, _ := m.Status()
 		if status.Installed || status.Loaded {
@@ -220,4 +239,15 @@ func waitForServiceStateWithin(status func() (Status, error), done func(Status) 
 		}
 		time.Sleep(serviceStatePollInterval)
 	}
+}
+
+// EnableBoot explicitly opts the current OS user into pre-login startup.
+// Linger belongs to the user, so disabling this application's service must not
+// undo it and disrupt other user services.
+func EnableBoot(m Manager) error {
+	boot, ok := m.(interface{ EnableBoot() error })
+	if !ok {
+		return errors.New("--boot 仅支持 Linux systemd 用户服务")
+	}
+	return boot.EnableBoot()
 }

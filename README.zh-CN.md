@@ -238,7 +238,9 @@ yoooclaw config init --no-autostart  # 当前启动，但不开启自启
 
 自启服务始终跟随 active profile；`profile use` 会在 profile 间转移正在运行的
 daemon，但会保留用户手动 stop 后的停止状态。Linux 默认随用户服务管理器启动；是否
-通过 `loginctl enable-linger` 扩展为登录前启动，仍由系统管理员显式决定。
+通过 `yoooclaw daemon autostart enable --boot` 显式开启当前系统用户的 linger，支持无人登录时开机启动。
+`daemon autostart status` 会显示 `linger`、`unitEnabled`、`bootEnabled` 和 `bootWarning`，
+`doctor` 会提示未具备开机自启条件。关闭本应用自启不会关闭 linger，以免影响其他用户服务。
 从尚无自启偏好的旧版本升级时，即使 daemon 当时处于停止状态，也会为已初始化的
 active profile 注册自启；用户明确执行过 `autostart disable` 或 Hermes 正在持有
 owner 时不会被覆盖。
@@ -496,3 +498,17 @@ dist-native/yoooclaw-darwin-arm64 --help
 ## License
 
 MIT —— 见 [LICENSE](LICENSE)。
+
+### Linux 自启与凭据重载诊断
+
+运行 `yoooclaw daemon logs --diagnostics --lines 100` 一次汇总 daemon 日志、
+`daemon-supervisor.log`、锁文件/进程身份、自启状态及 Linux 本次启动的服务 journal。
+CLI 不在 PATH 时使用 `/usr/local/bin/yoooclaw` 等实际安装路径。
+
+`service.entry` / `daemon.ready` 标明版本、PID、profile、配置路径及实际监听端口；
+`status.observed` / `reload.request` 对照系统服务状态，并区分锁不存在、无法读取、
+进程死亡、可执行文件不匹配和命令行不匹配；`systemd.command_begin/end` 记录服务操作及失败原因。
+`credentials.reload_applied` 记录重载前后的来源、label、脱敏 SHA-256 指纹和隧道增删重启结果。
+它只代表本地配置已应用，连接成功需随后出现 `connected`；401/403 会单独提示服务端鉴权拒绝。
+日志不输出完整 key、gateway token 或凭据文件内容。若连 `service.entry` 都没有，优先检查汇总中的
+systemd/journal；应用进程尚未运行时无法自行写启动日志。

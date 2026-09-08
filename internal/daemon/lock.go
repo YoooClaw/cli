@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/paths"
 )
@@ -37,8 +38,11 @@ type Lock struct {
 type RunningState struct {
 	Running bool
 	Lock    *Lock
-	// Stale 锁存在但进程已死。
-	Stale bool
+	// Stale means the recorded process is dead or its identity no longer matches.
+	Stale            bool
+	ReadError        string `json:"readError,omitempty"`
+	Reason           string `json:"reason"`
+	ActualExecutable string `json:"actualExecutable,omitempty"`
 }
 
 // ReadLock 读取锁文件；不存在返回 nil。
@@ -53,16 +57,24 @@ func ReadLock(p paths.Paths) *Lock {
 
 // State 返回 daemon 运行态（signal 0 + Linux/WSL /proc 身份校验；陈旧锁视为未运行）。
 func State(p paths.Paths) RunningState {
-	lock := ReadLock(p)
-	if lock == nil {
-		return RunningState{}
+	var record Lock
+	exists, err := fsutil.ReadJSON(p.DaemonLock, &record)
+	if err != nil {
+		return RunningState{Reason: "lock_unreadable", ReadError: diagnostics.SafeError(err)}
 	}
+	if !exists {
+		return RunningState{Reason: "lock_missing"}
+	}
+	lock := &record
 	// signal 0 alone is not enough on Linux/WSL: it also succeeds for zombies,
 	// and a persisted lock can point at an unrelated process after PID reuse.
 	// When /proc metadata is available, verify that the PID still belongs to the
 	// daemon executable and command line recorded by the lock.
-	alive := isProcessAlive(lock.PID) && isExpectedDaemonProcess(lock)
-	return RunningState{Running: alive, Lock: lock, Stale: !alive}
+	if !isProcessAlive(lock.PID) {
+		return RunningState{Lock: lock, Stale: true, Reason: "process_not_alive"}
+	}
+	reason, actual := daemonProcessIdentity(lock)
+	return RunningState{Running: reason == "", Lock: lock, Stale: reason != "", Reason: reason, ActualExecutable: actual}
 }
 
 // WriteLock 写锁文件。

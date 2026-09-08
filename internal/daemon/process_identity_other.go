@@ -6,3 +6,5 @@ package daemon
 // reuse. Their existing platform-specific process liveness check remains the
 // best available signal.
 func isExpectedDaemonProcess(_ *Lock) bool { return true }
+
+func daemonProcessIdentity(_ *Lock) (string, string) { return "", "" }
