@@ -42,12 +42,12 @@ func TestBuildQueryOptions(t *testing.T) {
 func TestBuildQueryOptionsErrors(t *testing.T) {
 	t.Parallel()
 	cases := []RawQueryOpts{
-		{ConversationType: "channel"},                                            // 非法 type
-		{From: "bad-date"},                                                       // 非法 from
-		{To: "bad-date"},                                                         // 非法 to
-		{From: "2026-06-30T00:00:00Z", To: "2026-06-01T00:00:00Z"},               // from > to
-		{Limit: "0"},                                                             // limit <= 0
-		{Limit: "abc"},                                                           // limit 非数字
+		{ConversationType: "channel"}, // 非法 type
+		{From: "bad-date"},            // 非法 from
+		{To: "bad-date"},              // 非法 to
+		{From: "2026-06-30T00:00:00Z", To: "2026-06-01T00:00:00Z"}, // from > to
+		{Limit: "0"},   // limit <= 0
+		{Limit: "abc"}, // limit 非数字
 	}
 	for i, c := range cases {
 		if _, err := BuildQueryOptions(c, 20); err == nil {

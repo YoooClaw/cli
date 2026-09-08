@@ -66,9 +66,9 @@ func TestIsValidAPIKeyLabel(t *testing.T) {
 func TestMaskSecret(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"":                 "",
-		"short":            "***",
-		"12345678":         "***",
+		"":                  "",
+		"short":             "***",
+		"12345678":          "***",
 		"sk-1234567890abcd": "sk-1***abcd",
 	}
 	for in, want := range cases {
