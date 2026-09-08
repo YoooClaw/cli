@@ -14,6 +14,8 @@ type fakeTaskScheduler struct {
 	installed    bool
 	running      bool
 	availableErr error
+	statusErr    error
+	installErr   error
 	stopChanges  bool
 	stopErr      error
 	stopCalls    int
@@ -35,6 +37,9 @@ func stubTaskSchedulerCOM(t *testing.T, fake *fakeTaskScheduler) {
 		case "identity":
 			return []byte("S-1-5-21-test"), nil
 		case "status":
+			if fake.statusErr != nil {
+				return nil, fake.statusErr
+			}
 			if !fake.installed {
 				return []byte("missing"), nil
 			}
@@ -43,15 +48,14 @@ func stubTaskSchedulerCOM(t *testing.T, fake *fakeTaskScheduler) {
 			}
 			return []byte("3"), nil
 		case "install":
-			if len(args) != 3 {
+			if len(args) != 4 {
 				return nil, errors.New("invalid install args")
 			}
-			raw, err := os.ReadFile(args[2])
-			if err != nil {
-				return nil, err
-			}
 			fake.installCalls++
-			fake.installXML = strings.ReplaceAll(string(raw), "\x00", "")
+			fake.installXML = args[2]
+			if fake.installErr != nil {
+				return nil, fake.installErr
+			}
 			fake.installed = true
 			return []byte("ok"), nil
 		case "start":
@@ -90,18 +94,47 @@ func TestWindowsAvailableUsesTaskSchedulerCOM(t *testing.T) {
 	}
 }
 
-func TestWindowsTaskSchedulerScriptsPreserveJSONArgumentArray(t *testing.T) {
-	t.Parallel()
-	for action, script := range taskSchedulerScripts {
-		if action == "available" || action == "identity" {
-			continue
-		}
-		if strings.Contains(script, "@(ConvertFrom-Json") {
-			t.Errorf("%s script wraps ConvertFrom-Json in a nested array", action)
-		}
-		if !strings.Contains(script, "$a=ConvertFrom-Json") {
-			t.Errorf("%s script does not decode the argument array", action)
-		}
+func TestWindowsStatusPreservesAccessDenied(t *testing.T) {
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{statusErr: &taskSchedulerError{
+		operation: "GetTask", hresult: 0x80070005, cause: errors.New("access denied"),
+	}}
+	stubTaskSchedulerCOM(t, fake)
+	status, err := m.Status()
+	if err == nil || !strings.Contains(err.Error(), "GetTask") || !strings.Contains(err.Error(), "0x80070005") {
+		t.Fatalf("status = %+v, err = %v; want original operation and HRESULT", status, err)
+	}
+}
+
+func TestWindowsInstallPreservesNativeFailureDetails(t *testing.T) {
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{installErr: &taskSchedulerError{
+		operation: "RegisterTask", hresult: 0x80070005, cause: errors.New("access denied"),
+	}}
+	stubTaskSchedulerCOM(t, fake)
+	err := m.Install(Spec{RootDir: m.root, Executable: `C:\YoooClaw\yoooclaw.exe`})
+	if err == nil || !strings.Contains(err.Error(), "RegisterTask") || !strings.Contains(err.Error(), "0x80070005") {
+		t.Fatalf("install error lost native details: %v", err)
+	}
+	if fake.installed {
+		t.Fatal("failed registration was reported as installed")
+	}
+}
+
+func TestWindowsUninstallDoesNotDeleteLauncherWhenTaskAccessDenied(t *testing.T) {
+	m := newWindowsTestManager(t)
+	fake := &fakeTaskScheduler{statusErr: &taskSchedulerError{
+		operation: "GetTask", hresult: 0x80070005, cause: errors.New("access denied"),
+	}}
+	stubTaskSchedulerCOM(t, fake)
+	if err := os.WriteFile(m.launcherPath(), []byte("keep launcher"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Uninstall(); err == nil {
+		t.Fatal("uninstall reported success despite denied task access")
+	}
+	if _, err := os.Stat(m.launcherPath()); err != nil || fake.deleteCalls != 0 {
+		t.Fatalf("uninstall removed assets without confirming task state: %v", err)
 	}
 }
 

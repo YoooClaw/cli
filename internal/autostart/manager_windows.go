@@ -3,11 +3,9 @@
 package autostart
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,43 +34,12 @@ func (m *platformManager) Available() error {
 	return nil
 }
 
-var taskSchedulerCOM = func(action string, args ...string) ([]byte, error) {
-	script, ok := taskSchedulerScripts[action]
-	if !ok {
-		return nil, fmt.Errorf("未知 Task Scheduler COM 操作: %s", action)
-	}
-	payload, err := json.Marshal(args)
-	if err != nil {
-		return nil, err
-	}
-	script = `$utf8=New-Object Text.UTF8Encoding $false; [Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; ` + script
-	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
-	// Agent hosts may have no console. Prevent Windows from creating one for
-	// each short-lived helper, while preserving CombinedOutput's output pipes.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: windowsCreateNoWindow,
-	}
-	cmd.Env = append(os.Environ(), "YOOOCLAW_TASK_SCHEDULER_ARGS="+string(payload))
-	return cmd.CombinedOutput()
-}
-
-var taskSchedulerScripts = map[string]string{
-	"available": `$ErrorActionPreference='Stop'; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $null=$s.GetFolder('\'); 'ok'`,
-	"identity":  `$ErrorActionPreference='Stop'; [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
-	// Windows PowerShell 5.1 already returns a JSON array as Object[]. Wrapping
-	// ConvertFrom-Json in @() creates a one-element nested array, so $a[0]
-	// becomes the entire argument list and COM receives an invalid folder path.
-	"status":  `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); try { $f=$s.GetFolder($a[0]); $t=$f.GetTask($a[1]) } catch { 'missing'; exit 0 }; [int]$t.State`,
-	"install": `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); try { $f=$s.GetFolder($a[0]) } catch { $f=$s.GetFolder('\').CreateFolder($a[0].Trim('\')) }; $xml=[IO.File]::ReadAllText($a[2],[Text.Encoding]::Unicode); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $null=$f.RegisterTask($a[1],$xml,6,$sid,$null,3,$null); 'ok'`,
-	"start":   `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $t=$s.GetFolder($a[0]).GetTask($a[1]); $null=$t.Run($null); 'ok'`,
-	"stop":    `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $t=$s.GetFolder($a[0]).GetTask($a[1]); $t.Stop(0); 'ok'`,
-	"delete":  `$ErrorActionPreference='Stop'; $a=ConvertFrom-Json $env:YOOOCLAW_TASK_SCHEDULER_ARGS; $s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $s.GetFolder($a[0]).DeleteTask($a[1],0); 'ok'`,
-}
+// Query and manage tasks in-process; no PowerShell helper is launched.
+// Existing task identity and VBS hidden-launch behavior remain unchanged.
+var taskSchedulerCOM = nativeTaskSchedulerCOM
 
 const (
 	windowsTaskStateRunning = 4
-	windowsCreateNoWindow   = 0x08000000 // CREATE_NO_WINDOW
 )
 
 func (m *platformManager) folderAndName() (string, string) {
@@ -168,43 +135,13 @@ func (m *platformManager) Install(spec Spec) error {
 	if err := fsutil.WriteAtomic(launcher, []byte(hiddenLauncherVBS(spec)), fsutil.ConfigFileMode); err != nil {
 		return fmt.Errorf("写入 Windows daemon 隐藏启动器失败: %w", err)
 	}
-	tmp, err := os.CreateTemp("", "yoooclaw-task-*.xml")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	content := []byte("\xff\xfe" + utf16LE(taskXML(spec, userSID, launcher)))
-	if _, err = tmp.Write(content); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
 	folder, taskName := m.folderAndName()
-	out, err := taskSchedulerCOM("install", folder, taskName, name)
+	// Pass Unicode XML directly through COM instead of a PowerShell temp file.
+	out, err := taskSchedulerCOM("install", folder, taskName, taskXML(spec, userSID, launcher), userSID)
 	if err != nil {
 		return fmt.Errorf("创建计划任务失败: %s", commandError(out, err))
 	}
 	return nil
-}
-func utf16LE(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r <= 0xffff {
-			b.WriteByte(byte(r))
-			b.WriteByte(byte(r >> 8))
-		} else {
-			r -= 0x10000
-			hi, lo := 0xd800+(r>>10), 0xdc00+(r&0x3ff)
-			b.WriteByte(byte(hi))
-			b.WriteByte(byte(hi >> 8))
-			b.WriteByte(byte(lo))
-			b.WriteByte(byte(lo >> 8))
-		}
-	}
-	return b.String()
 }
 func (m *platformManager) Start() error {
 	folder, name := m.folderAndName()

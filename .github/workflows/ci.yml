@@ -96,7 +96,11 @@ jobs:
 
           # Run the Windows-only syscall coverage on a real Windows runner.
           go test ./internal/cli -run '^(TestWindows|TestRemoveWindows|TestRemoveEmptyWindows)'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows CLI tests failed' }
+          $env:YOOOCLAW_TASK_SCHEDULER_INTEGRATION = '1'
           go test ./internal/autostart ./internal/daemon -run '^TestWindows'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows autostart/daemon tests failed' }
+          Remove-Item Env:YOOOCLAW_TASK_SCHEDULER_INTEGRATION
 
           # Simulate an older global npm installation and verify that the native
           # installer migrates it only after the new executable is usable.
