@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/winhost"
 )
 
 type platformManager struct{ root, id, task string }
@@ -34,13 +34,11 @@ func (m *platformManager) Available() error {
 	return nil
 }
 
-// Query and manage tasks in-process; no PowerShell helper is launched.
-// Existing task identity and VBS hidden-launch behavior remain unchanged.
+// In-process COM: no PowerShell, schtasks.exe or other command interpreter is
+// involved in managing tasks. Windows still enforces the caller's permissions.
 var taskSchedulerCOM = nativeTaskSchedulerCOM
 
-const (
-	windowsTaskStateRunning = 4
-)
+const windowsTaskStateRunning = 4
 
 func (m *platformManager) folderAndName() (string, string) {
 	trimmed := strings.Trim(m.task, `\`)
@@ -85,33 +83,24 @@ func (m *platformManager) Status() (Status, error) {
 	return status, nil
 }
 func taskXML(spec Spec, userSID, launcher string) string {
-	wscript := filepath.Join(windowsSystemRoot(), "System32", "wscript.exe")
-	args := "//B //NoLogo " + syscall.EscapeArg(launcher)
+	args := hostArguments(spec)
 	return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers><LogonTrigger><UserId>` + html.EscapeString(userSID) + `</UserId><Enabled>true</Enabled></LogonTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>` + html.EscapeString(userSID) + `</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled><Hidden>true</Hidden></Settings>
-  <Actions Context="Author"><Exec><Command>` + html.EscapeString(wscript) + `</Command><Arguments>` + html.EscapeString(args) + `</Arguments><WorkingDirectory>` + html.EscapeString(spec.RootDir) + `</WorkingDirectory></Exec></Actions>
+  <Actions Context="Author"><Exec><Command>` + html.EscapeString(launcher) + `</Command><Arguments>` + html.EscapeString(args) + `</Arguments><WorkingDirectory>` + html.EscapeString(spec.RootDir) + `</WorkingDirectory></Exec></Actions>
 </Task>`
 }
 
-func vbscriptString(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
-}
-
-func hiddenLauncherVBS(spec Spec) string {
-	commandArgs := make([]string, 0, len(spec.Arguments)+3)
-	commandArgs = append(commandArgs, syscall.EscapeArg(spec.Executable))
-	for _, arg := range append(spec.Arguments, "--format", "json") {
-		commandArgs = append(commandArgs, syscall.EscapeArg(arg))
+func hostArguments(spec Spec) string {
+	args := []string{"run", spec.RootDir, spec.Executable}
+	args = append(args, spec.Arguments...)
+	args = append(args, "--format", "json")
+	for i := range args {
+		args[i] = syscall.EscapeArg(args[i])
 	}
-	command := strings.Join(commandArgs, " ")
-	return "Option Explicit\r\n" +
-		"Dim shell, exitCode\r\n" +
-		"Set shell = CreateObject(\"WScript.Shell\")\r\n" +
-		"exitCode = shell.Run(" + vbscriptString(command) + ", 0, True)\r\n" +
-		"WScript.Quit exitCode\r\n"
+	return strings.Join(args, " ")
 }
 
 func currentUserSID() (string, error) {
@@ -131,15 +120,19 @@ func (m *platformManager) Install(spec Spec) error {
 	if err != nil {
 		return err
 	}
-	launcher := m.launcherPath()
-	if err := fsutil.WriteAtomic(launcher, []byte(hiddenLauncherVBS(spec)), fsutil.ConfigFileMode); err != nil {
-		return fmt.Errorf("写入 Windows daemon 隐藏启动器失败: %w", err)
+	launcher, err := winhost.Ensure(m.root)
+	if err != nil {
+		return fmt.Errorf("安装原生隐藏启动器失败: %w", err)
 	}
 	folder, taskName := m.folderAndName()
-	// Pass Unicode XML directly through COM instead of a PowerShell temp file.
+	// Pass the XML as a Unicode BSTR, not through a shell or temporary file.
 	out, err := taskSchedulerCOM("install", folder, taskName, taskXML(spec, userSID, launcher), userSID)
 	if err != nil {
 		return fmt.Errorf("创建计划任务失败: %s", commandError(out, err))
+	}
+	// Delete only the legacy file owned by this CLI after successful migration.
+	if err := os.Remove(m.launcherPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("计划任务已迁移，但旧 VBS 清理失败: %w", err)
 	}
 	return nil
 }
@@ -206,6 +199,19 @@ func (m *platformManager) Uninstall() error {
 	if err := os.Remove(m.launcherPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("删除 Windows daemon 隐藏启动器失败: %w", err)
 	}
+	entries, err := os.ReadDir(filepath.Join(m.root, "hosts"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "yoooclaw-host-") && strings.HasSuffix(entry.Name(), ".exe") {
+			if err := os.Remove(filepath.Join(m.root, "hosts", entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	_ = os.Remove(filepath.Join(m.root, "hosts"))
+	_ = os.Remove(filepath.Join(m.root, "daemon-host.json"))
 	return nil
 }
 

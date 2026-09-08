@@ -54,6 +54,7 @@ func newConfigCmd() *cobra.Command {
 		RunE:  run(configInit),
 	}
 	initCmd.Flags().Bool("non-interactive", false, "跳过向导（配合 --from-file）")
+	initCmd.Flags().Bool("defaults", false, "使用默认配置，无需 stdin、导入文件或 shell 管道")
 	initCmd.Flags().String("from-file", "", "从 JSON 文件导入配置（- 为 stdin）")
 	initCmd.Flags().Bool("force", false, "已存在 config 时覆盖")
 	initCmd.Flags().Bool("no-start", false, "当前不启动 daemon（仍配置登录自启）")
@@ -75,6 +76,7 @@ type initOpts struct {
 	fromFile       string
 	noStart        bool
 	noAutostart    bool
+	defaults       bool
 }
 
 func configInit(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
@@ -84,10 +86,14 @@ func configInit(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error
 		fromFile:       flagStr(cmd, "from-file"),
 		noStart:        flagBool(cmd, "no-start"),
 		noAutostart:    flagBool(cmd, "no-autostart"),
+		defaults:       flagBool(cmd, "defaults"),
 	})
 }
 
 func initCore(ctx *clictx.Context, o initOpts) (any, error) {
+	if o.defaults && o.fromFile != "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "--defaults 与 --from-file 不能同时使用")
+	}
 	force := o.force
 	if config.Exists(ctx.Paths) && !force {
 		return nil, errs.New(errs.CodeAlreadyExists, "profile `"+ctx.Profile+"` 已初始化",
@@ -100,7 +106,9 @@ func initCore(ctx *clictx.Context, o initOpts) (any, error) {
 
 	nonInteractive := o.nonInteractive
 	fromFile := o.fromFile
-	if nonInteractive || !prompt.IsInteractive() {
+	if o.defaults {
+		// Explicit default selection, including in non-interactive Agents.
+	} else if nonInteractive || !prompt.IsInteractive() {
 		if fromFile == "" {
 			return nil, errs.New(errs.CodeNotInteractive, "非交互模式必须提供 --from-file <config.json>（- 为 stdin）")
 		}

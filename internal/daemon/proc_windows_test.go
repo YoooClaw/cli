@@ -28,7 +28,11 @@ func TestWindowsProcessAliveRejectsExitedProcess(t *testing.T) {
 	if !isProcessAlive(os.Getpid()) {
 		t.Fatal("current process should be alive")
 	}
-	cmd := exec.Command("cmd.exe", "/c", "exit", "0")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestWindowsProcessExitHelper$")
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
@@ -36,3 +40,5 @@ func TestWindowsProcessAliveRejectsExitedProcess(t *testing.T) {
 		t.Fatalf("exited process %d reported alive", cmd.Process.Pid)
 	}
 }
+
+func TestWindowsProcessExitHelper(t *testing.T) {}

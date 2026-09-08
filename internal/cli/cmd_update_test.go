@@ -30,7 +30,7 @@ func TestUpgradeCommandForNativeInstallers(t *testing.T) {
 	t.Parallel()
 
 	windows := upgradeCommandFor("native", "windows", "amd64", "latest", "1.2.3")
-	for _, want := range []string{"install.ps1", "-Version 1.2.3", "-Force"} {
+	for _, want := range []string{"update self --apply", "--version 1.2.3", "--format json"} {
 		if !strings.Contains(windows, want) {
 			t.Errorf("Windows upgrade command %q does not contain %q", windows, want)
 		}

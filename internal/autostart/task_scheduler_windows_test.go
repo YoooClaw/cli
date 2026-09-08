@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,31 +50,101 @@ func TestWindowsTaskSchedulerNativeErrorKeepsHRESULT(t *testing.T) {
 	}
 }
 
-// Registration-only smoke test: keep the legacy launcher, do not start a daemon.
-func TestWindowsTaskSchedulerNativeRegistration(t *testing.T) {
+// Opt-in because it registers and runs a real current-user task. CI enables
+// this only on its disposable Windows runner. No existing CLI task is touched.
+func TestWindowsTaskSchedulerNativeLifecycle(t *testing.T) {
 	if os.Getenv("YOOOCLAW_TASK_SCHEDULER_INTEGRATION") != "1" {
-		t.Skip("opt-in isolated Task Scheduler registration test")
+		t.Skip("set YOOOCLAW_TASK_SCHEDULER_INTEGRATION=1 for isolated native task lifecycle test")
 	}
 	t.Setenv("PATH", t.TempDir())
 	root := t.TempDir()
-	m := &platformManager{root: root, task: fmt.Sprintf(`\yoooclaw-native-test-%d-%d`, os.Getpid(), time.Now().UnixNano())}
+	m := &platformManager{
+		root: root,
+		task: fmt.Sprintf(`\yoooclaw-native-test-%d-%d`, os.Getpid(), time.Now().UnixNano()),
+	}
 	t.Cleanup(func() {
 		if err := m.Uninstall(); err != nil {
-			t.Errorf("cleanup test task: %v", err)
+			t.Errorf("cleanup test task %s: %v", m.task, err)
 		}
 	})
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := Spec{RootDir: root, Executable: exe, Arguments: []string{"--help"}}
-	for range 2 {
+	marker := filepath.Join(root, "started.pid")
+	spec := Spec{
+		RootDir: root, Executable: exe,
+		Arguments: []string{"-test.run=^TestWindowsTaskSchedulerNativeHelper$", "--", "yoooclaw-native-task-helper", marker},
+	}
+	for range 2 { // Both create and update an existing task with the same identity.
 		if err := m.Install(spec); err != nil {
 			t.Fatal(err)
 		}
 		status, err := m.Status()
-		if err != nil || !status.Installed || status.Running {
+		if err != nil || !status.Installed || !status.Loaded || status.Running {
 			t.Fatalf("cold registered task = %+v, %v", status, err)
 		}
 	}
+	// Exercise the same delayed native trigger used by an Agent. There is no
+	// PowerShell, script host, Task.Run or long-lived Agent child involved.
+	if _, err := m.Schedule(spec, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(25 * time.Second)
+	var pidText []byte
+	for time.Now().Before(deadline) {
+		pidText, err = os.ReadFile(marker)
+		if err == nil && len(pidText) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	pid, err := strconv.Atoi(string(pidText))
+	if err != nil || pid <= 0 {
+		t.Fatalf("task did not launch hidden helper, marker = %q: %v", pidText, err)
+	}
+	process, err := syscall.OpenProcess(syscall.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(process)
+	status, err := m.Status()
+	if err != nil || !status.Running {
+		t.Fatalf("started task = %+v, %v", status, err)
+	}
+	inspection, err := m.Inspect(spec, pid)
+	for !inspection.ManagedDaemonVerified && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		inspection, err = m.Inspect(spec, pid)
+	}
+	if err != nil || !inspection.DefinitionMatches || !inspection.ManagedDaemonVerified || inspection.DaemonPID != pid {
+		t.Fatalf("native process association=%+v err=%v", inspection, err)
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := syscall.WaitForSingleObject(process, 5000); err != nil || state != syscall.WAIT_OBJECT_0 {
+		t.Fatalf("task stopped but its helper survived: state=%d, err=%v", state, err)
+	}
+	if err := m.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	status, err = m.Status()
+	if err != nil || status.Installed || status.Loaded || status.Running {
+		t.Fatalf("deleted task = %+v, %v", status, err)
+	}
+}
+
+func TestWindowsTaskSchedulerNativeHelper(t *testing.T) {
+	for i, arg := range os.Args {
+		if arg == "yoooclaw-native-task-helper" && i+1 < len(os.Args) {
+			if err := os.WriteFile(os.Args[i+1], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Finite lifetime even if Task Scheduler Stop fails in the parent test.
+			time.Sleep(30 * time.Second)
+			return
+		}
+	}
+	t.Skip("only run as the isolated Task Scheduler test action")
 }

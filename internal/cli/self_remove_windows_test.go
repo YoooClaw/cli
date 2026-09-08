@@ -63,16 +63,20 @@ func TestRestoreWindowsAliasesAfterRemovalFailure(t *testing.T) {
 	}
 }
 
-func TestWindowsDeferredRemovalCommandUsesEnvironmentPath(t *testing.T) {
-	t.Parallel()
-	command := windowsDeferredRemovalCommand()
-	for _, want := range []string{"YOOOCLAW_UNINSTALL_PENDING_PATH", "YOOOCLAW_UNINSTALL_PENDING_ROOT", "del /F /Q", "if exist"} {
-		if !strings.Contains(command, want) {
-			t.Fatalf("cleanup command missing %q: %s", want, command)
-		}
+func TestWindowsRemovalHelperUsesNativeExecutable(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "yoooclaw-uninstall")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(command, "powershell") || strings.Contains(command, "EncodedCommand") {
-		t.Fatal("cleanup command must not depend on PowerShell")
+	command, err := newWindowsRemovalHelperCommand(filepath.Join(dir, "yoooclaw-test.exe.pending"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(command.Args) != 3 || command.Args[1] != "cleanup" || command.Args[2] != filepath.Join(dir, "yoooclaw-test.exe.pending") {
+		t.Fatalf("args = %v", command.Args)
+	}
+	if command.SysProcAttr.CmdLine != "" {
+		t.Fatal("native helper must use argv, not a shell command string")
 	}
 }
 
@@ -90,7 +94,10 @@ func TestWindowsUninstallTempRootUsesExecutableVolumeOutsideInstallRoot(t *testi
 }
 
 func TestWindowsRemovalHelperDeletesPendingFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "yoooclaw-uninstall")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	pending := filepath.Join(dir, "yoooclaw-test.exe.pending")
 	if err := os.WriteFile(pending, []byte("pending"), 0o600); err != nil {
 		t.Fatal(err)
@@ -145,7 +152,11 @@ func TestWindowsRemovalHelperDeletesRunningExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending := filepath.Join(t.TempDir(), "yoooclaw-running.exe")
+	dir := filepath.Join(t.TempDir(), "yoooclaw-uninstall")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pending := filepath.Join(dir, "yoooclaw-running.exe.pending")
 	if err := os.WriteFile(pending, data, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +176,18 @@ func TestWindowsRemovalHelperDeletesRunningExecutable(t *testing.T) {
 }
 
 func TestWindowsRemovalCommandRunsSynchronously(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "yoooclaw-uninstall")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	pending := filepath.Join(dir, "yoooclaw-sync.exe.pending")
 	if err := os.WriteFile(pending, []byte("pending"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := newWindowsRemovalHelperCommand(pending, false)
+	cmd, err := newWindowsRemovalHelperCommand(pending, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cleanup command failed: %v output=%s", err, out)
 	}

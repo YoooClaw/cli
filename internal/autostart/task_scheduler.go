@@ -13,6 +13,7 @@ type taskSchedulerObject interface {
 	Object(method string, args ...any) (taskSchedulerObject, error)
 	Call(method string, args ...any) error
 	Int(property string) (int, error)
+	String(property string) (string, error)
 	Release()
 }
 
@@ -43,9 +44,9 @@ func taskSchedulerAction(service taskSchedulerObject, action string, args ...str
 	switch action {
 	case "available":
 		wantArgs = 0
-	case "install":
+	case "install", "update":
 		wantArgs = 4 // folder, task name, XML, current user SID
-	case "status", "start", "stop", "delete":
+	case "status", "start", "stop", "delete", "xml", "instances":
 	default:
 		return nil, fmt.Errorf("未知 Task Scheduler COM 操作: %s", action)
 	}
@@ -89,10 +90,14 @@ func taskSchedulerAction(service taskSchedulerObject, action string, args ...str
 	defer folder.Release()
 
 	switch action {
-	case "install":
+	case "install", "update":
 		// TASK_CREATE_OR_UPDATE, current identity, no stored password,
 		// TASK_LOGON_INTERACTIVE_TOKEN, default security descriptor.
-		err = folder.Call("RegisterTask", args[1], args[2], int32(6), args[3], nil, int32(3), nil)
+		flags := int32(6)
+		if action == "update" {
+			flags = 4 | 32
+		} // Update only; ignore registration triggers.
+		err = folder.Call("RegisterTask", args[1], args[2], flags, args[3], nil, int32(3), nil)
 	case "delete":
 		err = folder.Call("DeleteTask", args[1], int32(0))
 	default:
@@ -105,6 +110,33 @@ func taskSchedulerAction(service taskSchedulerObject, action string, args ...str
 		}
 		defer task.Release()
 		switch action {
+		case "xml":
+			value, err := task.String("Xml")
+			return []byte(value), err
+		case "instances":
+			instances, err := task.Object("GetInstances", int32(0))
+			if err != nil {
+				return nil, err
+			}
+			defer instances.Release()
+			count, err := instances.Int("Count")
+			if err != nil {
+				return nil, err
+			}
+			var pids []string
+			for i := 1; i <= count; i++ {
+				instance, err := instances.Object("Item", int32(i))
+				if err != nil {
+					return nil, err
+				}
+				pid, err := instance.Int("EnginePID")
+				instance.Release()
+				if err != nil {
+					return nil, err
+				}
+				pids = append(pids, strconv.Itoa(pid))
+			}
+			return []byte(strings.Join(pids, ",")), nil
 		case "status":
 			state, stateErr := task.Int("State")
 			if stateErr != nil {

@@ -94,9 +94,15 @@ jobs:
           $env:YOOOCLAW_HOME = Join-Path $env:RUNNER_TEMP 'yoooclaw-runtime-home'
           New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
 
+          go build -trimpath -ldflags '-s -w -H=windowsgui' -o internal/winhost/host.bin ./cmd/yoooclaw-host
+          if ($LASTEXITCODE -ne 0) { throw 'Native GUI host build failed' }
+          $env:GOFLAGS = '-tags=nativehost'
+
           # Run the Windows-only syscall coverage on a real Windows runner.
           go test ./internal/cli -run '^(TestWindows|TestRemoveWindows|TestRemoveEmptyWindows)'
           if ($LASTEXITCODE -ne 0) { throw 'Windows CLI tests failed' }
+          # Exercise the native Task Scheduler API with an isolated task and an
+          # empty PATH inside the test, so PowerShell cannot serve as a helper.
           $env:YOOOCLAW_TASK_SCHEDULER_INTEGRATION = '1'
           go test ./internal/autostart ./internal/daemon -run '^TestWindows'
           if ($LASTEXITCODE -ne 0) { throw 'Windows autostart/daemon tests failed' }
@@ -229,3 +235,18 @@ jobs:
           finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
+
+      - name: Native install and uninstall without script hosts
+        shell: cmd
+        run: |
+          go build -trimpath -ldflags "-s -w -H=windowsgui" -o internal/winhost/host.bin ./cmd/yoooclaw-host
+          if errorlevel 1 exit /b 1
+          go build -tags nativehost -o "%RUNNER_TEMP%\yoooclaw-native-test.exe" ./cmd/yc
+          if errorlevel 1 exit /b 1
+          copy /y "%RUNNER_TEMP%\yoooclaw-native-test.exe" internal\installer\cli.bin
+          if errorlevel 1 exit /b 1
+          go build -tags nativehost,nativesetup -o "%RUNNER_TEMP%\yoooclaw-setup-test.exe" ./cmd/yoooclaw-setup
+          if errorlevel 1 exit /b 1
+          set "YOOOCLAW_NATIVE_INSTALLER_TEST_BINARY=%RUNNER_TEMP%\yoooclaw-setup-test.exe"
+          go test -tags nativehost ./internal/cli -run "^TestWindowsNativeInstallerEndToEnd$" -count=1 -v
+          if errorlevel 1 exit /b 1

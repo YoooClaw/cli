@@ -13,6 +13,7 @@ type schedulerStep struct {
 	args   []any
 	object taskSchedulerObject
 	state  int
+	text   string
 	err    error
 }
 
@@ -58,6 +59,48 @@ func (o *scriptedSchedulerObject) Int(property string) (int, error) {
 	return step.state, step.err
 }
 func (o *scriptedSchedulerObject) Release() { o.releases++ }
+func (o *scriptedSchedulerObject) String(property string) (string, error) {
+	step := o.next(property)
+	return step.text, step.err
+}
+
+func TestTaskSchedulerUpdateDoesNotCreateOrRunTask(t *testing.T) {
+	folder := schedulerObject(t, 1, schedulerStep{method: "RegisterTask", args: []any{"daemon", "<Task/>", int32(36), "sid", nil, int32(3), nil}})
+	service := schedulerObject(t, 0, schedulerStep{method: "Connect"}, schedulerStep{method: "GetFolder", args: []any{`\YoooClaw`}, object: folder})
+	if _, err := taskSchedulerAction(service, "update", `\YoooClaw`, "daemon", "<Task/>", "sid"); err != nil {
+		t.Fatal(err)
+	}
+	missing := &taskSchedulerError{hresult: 0x80070003, cause: errors.New("missing")}
+	service = schedulerObject(t, 0, schedulerStep{method: "Connect"}, schedulerStep{method: "GetFolder", args: []any{`\YoooClaw`}, err: missing})
+	if _, err := taskSchedulerAction(service, "update", `\YoooClaw`, "daemon", "<Task/>", "sid"); !errors.Is(err, missing) {
+		t.Fatal("update must not create missing folder")
+	}
+}
+
+func TestTaskSchedulerReadsXMLAndNativeInstances(t *testing.T) {
+	for _, action := range []string{"xml", "instances"} {
+		t.Run(action, func(t *testing.T) {
+			step := schedulerStep{method: "Xml", text: "<Task/>"}
+			if action == "instances" {
+				instance := schedulerObject(t, 1, schedulerStep{method: "EnginePID", state: 123})
+				instances := schedulerObject(t, 1, schedulerStep{method: "Count", state: 1}, schedulerStep{method: "Item", args: []any{int32(1)}, object: instance})
+				step = schedulerStep{method: "GetInstances", args: []any{int32(0)}, object: instances}
+			}
+			task := schedulerObject(t, 1, step)
+			folder := schedulerObject(t, 1, schedulerStep{method: "GetTask", args: []any{"daemon"}, object: task})
+			service := schedulerObject(t, 0, schedulerStep{method: "Connect"}, schedulerStep{method: "GetFolder", args: []any{`\YoooClaw`}, object: folder})
+			out, err := taskSchedulerAction(service, action, `\YoooClaw`, "daemon")
+			want := "<Task/>"
+			if action == "instances" {
+				want = "123"
+			}
+			if err != nil || string(out) != want {
+				t.Fatalf("out=%q err=%v", out, err)
+			}
+		})
+	}
+}
+
 func TestTaskSchedulerStatusDoesNotMaskErrors(t *testing.T) {
 	for _, atFolder := range []bool{true, false} {
 		for _, code := range []uint32{0x80070002, 0x80070003, 0x80070005, 0x800704EC, 0x800706BA} {

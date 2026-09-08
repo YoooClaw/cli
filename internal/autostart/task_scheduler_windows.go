@@ -58,7 +58,13 @@ type nativeTaskSchedulerObject struct{ dispatch *ole.IDispatch }
 func (o *nativeTaskSchedulerObject) Release() { o.dispatch.Release() }
 
 func (o *nativeTaskSchedulerObject) Object(method string, args ...any) (taskSchedulerObject, error) {
-	value, err := oleutil.CallMethod(o.dispatch, method, args...)
+	var value *ole.VARIANT
+	var err error
+	if method == "Item" {
+		value, err = oleutil.GetProperty(o.dispatch, method, args...)
+	} else {
+		value, err = oleutil.CallMethod(o.dispatch, method, args...)
+	}
 	if value != nil {
 		defer value.Clear()
 	}
@@ -97,6 +103,20 @@ func (o *nativeTaskSchedulerObject) Int(property string) (int, error) {
 		return 0, fmt.Errorf("Task Scheduler %s did not return an integer", property)
 	}
 	return int(int32(value.Val)), nil
+}
+
+func (o *nativeTaskSchedulerObject) String(property string) (string, error) {
+	value, err := oleutil.GetProperty(o.dispatch, property)
+	if value != nil {
+		defer value.Clear()
+	}
+	if err != nil {
+		return "", nativeTaskSchedulerError(property, err)
+	}
+	if value == nil || value.VT != ole.VT_BSTR {
+		return "", fmt.Errorf("Task Scheduler %s did not return a string", property)
+	}
+	return value.ToString(), nil
 }
 
 func nativeTaskSchedulerError(operation string, err error) error {

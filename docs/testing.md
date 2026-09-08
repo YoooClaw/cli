@@ -17,6 +17,39 @@ make ci            # 本地复刻 CI：vet + race + 覆盖率门禁
 
 CI（`.github/workflows/ci.yml`）跑 `go test -race -coverprofile` + 覆盖率汇总 + 门禁。
 
+## Windows 原生自启动回归
+
+`internal/autostart/task_scheduler_test.go` 在各平台验证 COM 操作流程：只把明确的
+文件/路径不存在当成缺失；保留访问拒绝、策略阻止和 RPC 错误；核对注册参数、
+启动/停止/删除以及对象释放。Windows 专属测试还通过真实 COM 查询验证 HRESULT。
+
+真实注册/运行测试需要显式启用，CI 的临时 Windows runner 已启用：
+
+```bat
+go build -trimpath -ldflags "-s -w -H=windowsgui" -o internal/winhost/host.bin ./cmd/yoooclaw-host
+set YOOOCLAW_TASK_SCHEDULER_INTEGRATION=1
+go test -tags nativehost ./internal/autostart -run "^TestWindowsTaskSchedulerNative" -count=1 -v
+set YOOOCLAW_TASK_SCHEDULER_INTEGRATION=
+```
+
+该测试创建唯一命名的当前用户任务及临时文件，完成创建、更新、隐藏启动、停止、
+删除和不存在回读；清理仅针对测试任务，不接触用户已有的 YoooClaw 任务或数据。
+测试内部清空 PATH，验证管理过程不再寻找 PowerShell/schtasks，不改系统安全策略。
+原生 GUI host 还验证任务实例与 daemon PID 的关联，以及停止任务时子进程确实退出。
+清空 PATH 不等于企业组策略实测；发布前仍应在目标受限环境验收。
+macOS/Linux 上交叉编译 Windows 测试，只能确认可编译，不能代替 Windows 实机通过。
+
+`internal/installer` 的跨平台测试覆盖覆盖保护、停止/验证/PATH 写入失败的回滚、
+无关文件保留、下载失败、清单缺失/重复和 SHA-256 不匹配拒绝。
+Windows CI 另以 `YOOOCLAW_NATIVE_INSTALLER_TEST_BINARY` 指向内置 CLI/host 的原生 setup，
+在空 PATH、隔离数据目录和带中文/空格/特殊字符的安装路径中完成原生安装、覆盖、
+配置/数据保留及完整卸载，并恢复 runner 的原用户 PATH。开发环境不带 `nativehost`
+标签时，需把同架构 `yoooclaw-host.exe` 放在测试/CLI 二进制旁；官方构建脚本自动嵌入。
+
+发布验收还须覆盖：标准用户真实登录启动、不出现黑框、退出 Agent 后持续运行、
+旧 0.10.x 升级、显式关闭自启不被升级覆盖，以及禁用脚本宿主但允许原生 CLI/计划任务的企业策略环境。
+当前没有 Windows Authenticode 签名流水线；SHA-256 校验不等于发布者签名或企业应用白名单批准。
+
 ## 公共测试设施：`internal/testutil`
 
 仅供 `*_test.go` 使用（依赖 `testing`，不要被生产代码 import）。

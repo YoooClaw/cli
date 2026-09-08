@@ -54,9 +54,22 @@ for t in $TARGETS; do
   if [ "$GOOS" = "windows" ]; then ext=".exe"; bin="yc.exe"; fi
   asset="yoooclaw-${NPM_OS}-${NPM_CPU}${ext}"
 
+  tags=""
+  if [ "$GOOS" = "windows" ]; then
+    CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+      go build -trimpath -ldflags '-s -w -H=windowsgui' -o internal/winhost/host.bin ./cmd/yoooclaw-host
+    tags="nativehost"
+  fi
+
   echo "==> go build $GOOS/$GOARCH -> dist-native/$asset"
   CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-    go build -trimpath -ldflags "$LDFLAGS" -o "dist-native/$asset" ./cmd/yc
+    go build -trimpath -tags "$tags" -ldflags "$LDFLAGS" -o "dist-native/$asset" ./cmd/yc
+
+  if [ "$GOOS" = "windows" ]; then
+    cp "dist-native/$asset" internal/installer/cli.bin
+    CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+      go build -trimpath -tags nativehost,nativesetup -ldflags "$LDFLAGS" -o dist-native/yoooclaw-setup-win32-x64.exe ./cmd/yoooclaw-setup
+  fi
 
   pkgdir="dist-npm/cli-${NPM_OS}-${NPM_CPU}"
   mkdir -p "$pkgdir/bin"

@@ -75,6 +75,7 @@ var nativeArtifacts = []string{
 	"yoooclaw-linux-arm64",
 	"yoooclaw-linux-x64",
 	"yoooclaw-win32-x64.exe",
+	"yoooclaw-setup-win32-x64.exe",
 	"checksums.txt",
 }
 
@@ -294,7 +295,7 @@ func collectArtifacts(distDir, prefix, publicURL, version string) []artifact {
 	if err != nil {
 		fatalf("读取 checksums.txt: %v", err)
 	}
-	seen := 0
+	seen := map[string]bool{}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
@@ -308,10 +309,13 @@ func collectArtifacts(distDir, prefix, publicURL, version string) []artifact {
 		if fields[0] != expected {
 			fatalf("%s 与 checksums.txt 不一致（构建产物残留？）", name)
 		}
-		seen++
+		if seen[name] {
+			fatalf("checksums.txt 重复条目: %s", name)
+		}
+		seen[name] = true
 	}
-	if seen != len(checksums) {
-		fatalf("checksums.txt 条目数 %d 与二进制数 %d 不一致", seen, len(checksums))
+	if len(seen) != len(checksums) {
+		fatalf("checksums.txt 条目数 %d 与二进制数 %d 不一致", len(seen), len(checksums))
 	}
 	return artifacts
 }
@@ -473,6 +477,7 @@ func main() {
 			"wuyingInstallerArchiveUrl":  urlForKey(publicURL, joinKey(prefix, "v"+version, "installer", "install-wuying.sh")),
 			"windowsInstallScriptUrl":    urlForKey(publicURL, joinKey(prefix, "install.ps1")),
 			"windowsInstallerArchiveUrl": urlForKey(publicURL, joinKey(prefix, "v"+version, "installer", "install.ps1")),
+			"windowsSetupUrl":            urlForKey(publicURL, joinKey(prefix, "v"+version, "yoooclaw-setup-win32-x64.exe")),
 			"artifactBaseUrl":            urlForKey(publicURL, joinKey(prefix, "v"+version)),
 			"checksumsUrl":               checksumsURL,
 			"artifacts":                  artifacts,
@@ -488,6 +493,11 @@ func main() {
 			"oss-manifest.json",
 		)
 		if !prerelease {
+			setup, err := os.ReadFile(filepath.Join(distDir, "yoooclaw-setup-win32-x64.exe"))
+			if err != nil {
+				fatalf("读取 Windows 原生安装器: %v", err)
+			}
+			u.put(joinKey(prefix, "yoooclaw-setup.exe"), setup, contentTypeFor("yoooclaw-setup.exe"), "stable native Windows setup")
 			u.put(joinKey(prefix, channel), []byte(version+"\n"), "text/plain; charset=utf-8", channel)
 		}
 	}
@@ -499,7 +509,7 @@ func main() {
 	} else {
 		okf("installer: %s", urlForKey(publicURL, joinKey(prefix, "install.sh")))
 		okf("wuying installer: %s", urlForKey(publicURL, joinKey(prefix, "install-wuying.sh")))
-		okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
+		okf("Windows native installer: %s", urlForKey(publicURL, joinKey(prefix, "yoooclaw-setup.exe")))
 	}
 	okf("artifacts: %s/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
 	if !prerelease {

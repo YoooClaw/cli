@@ -414,7 +414,7 @@ jobs:
         run: |
           cd dist-native
           sha256sum yoooclaw-* > checksums.txt
-          expected=5
+          expected=6
           actual="$(wc -l < checksums.txt | tr -d ' ')"
           if [ "$actual" != "$expected" ]; then
             echo "::error::checksums.txt 应包含 $expected 个 native 产物，实际为 $actual"
@@ -432,6 +432,7 @@ jobs:
             dist-native/yoooclaw-linux-arm64 \
             dist-native/yoooclaw-linux-x64 \
             dist-native/yoooclaw-win32-x64.exe \
+            dist-native/yoooclaw-setup-win32-x64.exe \
             dist-native/checksums.txt \
             release-tarballs/*.tgz
           )
@@ -494,17 +495,18 @@ jobs:
           INSTALL_FLAGS=""
           [ "$PRERELEASE" = "1" ] && INSTALL_FLAGS=" -s -- --version ${VERSION}"
 
-          WINDOWS_INSTALL_COMMAND="irm ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1 | iex"
+          WINDOWS_SETUP_URL="${OSS_PUBLIC_URL}/${OSS_PREFIX}/yoooclaw-setup.exe"
           if [ "$PRERELEASE" = "1" ]; then
-            WINDOWS_INSTALL_COMMAND="& ([scriptblock]::Create((irm '${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1'))) -Version ${VERSION}"
+            WINDOWS_SETUP_URL="${OSS_PUBLIC_URL}/${OSS_PREFIX}/v${VERSION}/yoooclaw-setup-win32-x64.exe"
           fi
+          WINDOWS_INSTALL_COMMAND="curl.exe --fail --location --proto =https --tlsv1.2 ${WINDOWS_SETUP_URL} --output \"%TEMP%\yoooclaw-setup.exe\" && \"%TEMP%\yoooclaw-setup.exe\" --yes --force --format json"
 
           TEXT="🚀 @yoooclaw/cli ${CURRENT_TAG}（${CHANNEL}）已发布
 
           📥 macOS / Linux 安装（阿里云 OSS）：
           curl -fsSL ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.sh | sh${INSTALL_FLAGS}
 
-          📥 Windows PowerShell 安装（无需 Node/npm）：
+          📥 Windows CMD 一键安装（原生 setup，无需 PowerShell/Node/npm）：
           ${WINDOWS_INSTALL_COMMAND}
 
           📝 改动（${RANGE}）：

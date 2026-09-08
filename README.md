@@ -65,19 +65,22 @@ yc --help
 
 A single-file Go executable — lighter cold-start and resource footprint than the older TS/Bun implementation.
 
-One-command install on Windows PowerShell 5.1+, with no Node/npm or administrator rights required:
+One-command install in Windows **CMD**, with no PowerShell, Node/npm or administrator rights required (available after publishing the native-setup release):
 
-```powershell
-irm https://artifact.yoooclaw.com/cli/install.ps1 | iex
+```bat
+curl.exe --fail --location --proto =https --tlsv1.2 https://artifact.yoooclaw.com/cli/yoooclaw-setup.exe --output "%TEMP%\yoooclaw-setup.exe" && "%TEMP%\yoooclaw-setup.exe" --yes --force --format json
 ```
 
-It installs `yoooclaw.exe` / `yc.exe` under `%LOCALAPPDATA%\YoooClaw\bin` and adds that directory to the current user's PATH. To pin a version or overwrite an existing installation:
+The command shell only joins download and execution; neither setup nor the installed CLI invokes a script host. Agents with native download/process tools can perform the two operations directly, without CMD. For a pinned version, download `v<version>/yoooclaw-setup-win32-x64.exe` and verify its SHA-256 against the same release's `checksums.txt` before execution. Setup installs the version it contains, including offline installs; it does not silently fetch a different version.
 
-```powershell
-& ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.9.1 -Force
+```text
+yoooclaw-setup-win32-x64.exe --yes --force --format json
+yoooclaw update self --apply --version <version> --format json
 ```
 
-If an older `npm i -g @yoooclaw/cli` installation is detected, the installer first verifies the new native CLI and then runs `npm uninstall -g @yoooclaw/cli`. Pass `-KeepNpm` to retain it. An npm cleanup failure never rolls back a verified native installation.
+Setup verifies both installed command copies, preserves configuration/data and existing owner/autostart intent, and rolls back file/PATH changes if installation verification fails. It returns the native `executable` path. It updates the current user's PATH, but cannot update the parent Agent's environment: use that absolute path until a new terminal is opened. Old npm packages are retained; setup does not run npm scripts. `update self` remains check-only unless `--apply` is explicit; native updates require a matching SHA-256 manifest before executing setup. Installation success does not imply a connected Relay.
+
+The old `install.ps1` remains an optional compatibility entry for existing users, not a dependency of the native setup/CLI/Agent flow. An external Agent that can execute only a blocked PowerShell tool still needs an approved native execution tool; the CLI cannot change enterprise policy.
 
 macOS / Linux:
 
@@ -95,7 +98,7 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
 ```
 
 The Unix installer does not modify shell startup files by default; pass `--modify-path` to opt in.
-The Windows installer updates the user PATH by default; pass `-NoModifyPath` to opt out.
+The native Windows installer updates the user PATH by default; pass `--no-modify-path` to opt out. `--no-start` preserves a stopped state while allowing cold autostart registration; `--activate` explicitly requests CLI owner handoff. New installations without a profile still need `config init --defaults` and credentials.
 
 Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
 
@@ -220,8 +223,9 @@ yoooclaw daemon restart
 
 Initializing the active profile enables per-user login autostart by default
 (launchd on macOS, systemd user services on Linux, and Task Scheduler on
-Windows) and starts the daemon immediately. It never requires a system service
-or administrator privileges.
+Windows) and starts the daemon immediately. It does not install a system service
+or request administrator elevation; registration is subject to the current
+user's service-manager permissions and enterprise policy.
 
 ```bash
 yoooclaw daemon autostart status
@@ -234,6 +238,20 @@ yoooclaw daemon logs --supervisor    # inspect OS service startup failures
 yoooclaw config init --no-start      # enable autostart, but do not start now
 yoooclaw config init --no-autostart  # start now without enabling autostart
 ```
+
+On Windows, the CLI manages Task Scheduler directly through native COM, without
+launching PowerShell or `schtasks.exe`. Existing task names and interactive-user
+logon behavior are preserved. An embedded native GUI-subsystem host replaces
+VBS/WScript, launches the console CLI with `CREATE_NO_WINDOW`, and binds its
+children to a kill-on-close Job Object. The CLI itself keeps normal terminal
+stdout/stderr. Native uninstall cleanup also needs no CMD or ping. Access-denied
+and policy errors include the failing operation and HRESULT, and are not treated
+as a missing task. This does not change security policy or bypass task permissions.
+`daemon autostart status` exposes `native.definitionMatches` and
+`native.managedDaemonVerified`/`daemonPid`; a running task alone does not prove
+that it owns the current daemon. `daemon autostart schedule --delay 30s` updates
+and verifies a time trigger on an existing ready task; it reports scheduling,
+not an online connection. `config init --defaults --no-start` avoids shell pipes.
 
 Autostart always follows the active profile. `profile use` transfers a running
 daemon to the new profile while preserving a manually stopped state. On Linux,

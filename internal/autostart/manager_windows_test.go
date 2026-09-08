@@ -4,6 +4,7 @@ package autostart
 
 import (
 	"errors"
+	"github.com/YoooClaw/cli/internal/winhost"
 	"os"
 	"strings"
 	"testing"
@@ -152,7 +153,7 @@ func TestWindowsStatusUsesLanguageIndependentNumericState(t *testing.T) {
 	}
 }
 
-func TestWindowsTaskUsesHiddenWScriptHost(t *testing.T) {
+func TestWindowsTaskUsesNativeHiddenHost(t *testing.T) {
 	m := newWindowsTestManager(t)
 	fake := &fakeTaskScheduler{}
 	stubTaskSchedulerCOM(t, fake)
@@ -172,9 +173,7 @@ func TestWindowsTaskUsesHiddenWScriptHost(t *testing.T) {
 		`<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>`,
 		`<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>`,
 		`<StartWhenAvailable>true</StartWhenAvailable>`,
-		`<Command>C:\Windows\System32\wscript.exe</Command>`,
-		`//B //NoLogo`,
-		`yoooclaw-daemon-hidden.vbs`,
+		`yoooclaw-host-`,
 		`<Hidden>true</Hidden>`,
 	} {
 		if !strings.Contains(fake.installXML, want) {
@@ -184,24 +183,24 @@ func TestWindowsTaskUsesHiddenWScriptHost(t *testing.T) {
 	if strings.Contains(fake.installXML, `<Command>`+spec.Executable+`</Command>`) {
 		t.Fatal("console executable is still registered as the visible task host")
 	}
-	if strings.Contains(fake.installXML, `powershell.exe`) {
-		t.Fatal("PowerShell is still registered as the task host")
+	for _, forbidden := range []string{"powershell.exe", "wscript.exe", "cmd.exe", ".vbs", "schtasks.exe"} {
+		if strings.Contains(strings.ToLower(fake.installXML), forbidden) {
+			t.Fatalf("script dependency remains: %s", forbidden)
+		}
 	}
-	launcher, err := os.ReadFile(m.launcherPath())
+	launcherPath, err := winhost.Path(m.root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`CreateObject("WScript.Shell")`,
-		`shell.Run(`,
-		`, 0, True)`,
-		`"C:\Program Files\YoooClaw\yoooclaw.exe"`,
-		`C:\Users\O'Brien\.yoooclaw`,
-		`--format json`,
-	} {
-		if !strings.Contains(string(launcher), want) {
-			t.Fatalf("hidden launcher does not contain %q:\n%s", want, launcher)
-		}
+	launcher, err := os.ReadFile(launcherPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher) < 2 || string(launcher[:2]) != "MZ" {
+		t.Fatal("native host is not a PE executable")
+	}
+	if _, err := os.Stat(m.launcherPath()); !os.IsNotExist(err) {
+		t.Fatal("legacy VBS was not removed")
 	}
 }
 

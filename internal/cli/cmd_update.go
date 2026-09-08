@@ -12,15 +12,15 @@ import (
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/installer"
 	"github.com/YoooClaw/cli/internal/version"
 	"github.com/spf13/cobra"
 )
 
 const (
-	updatePackage    = "@yoooclaw/cli"
-	updateRegistry   = "https://registry.npmjs.org"
-	updateInstallSh  = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh"
-	updateInstallPS1 = "https://artifact.yoooclaw.com/cli/install.ps1"
+	updatePackage   = "@yoooclaw/cli"
+	updateRegistry  = "https://registry.npmjs.org"
+	updateInstallSh = "https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install.sh"
 )
 
 func newUpdateCmd() *cobra.Command {
@@ -28,6 +28,8 @@ func newUpdateCmd() *cobra.Command {
 	self := &cobra.Command{Use: "self", Short: "检查最新版本并提示（不自动更新）", Args: cobra.NoArgs, RunE: run(updateSelf)}
 	self.Flags().Bool("beta", false, "检查 beta channel")
 	self.Flags().Bool("json", false, "只输出版本信息 JSON")
+	self.Flags().Bool("apply", false, "显式下载并执行 Windows 原生升级（默认仍只检查）")
+	self.Flags().String("version", "", "指定 Windows 原生升级版本（需 --apply）")
 	c.AddCommand(self)
 	return c
 }
@@ -54,10 +56,13 @@ func upgradeCommand(channel, latest string) string {
 }
 
 func upgradeCommandFor(dist, goos, goarch, channel, latest string) string {
-	if dist == "native" {
-		if goos == "windows" {
-			return "& ([scriptblock]::Create((irm '" + updateInstallPS1 + "'))) -Version " + latest + " -Force"
+	if goos == "windows" {
+		if dist == "native" {
+			return "yoooclaw update self --apply --version " + latest + " --format json"
 		}
+		return "下载原生安装器 " + installer.ReleaseBase + "/v" + latest + "/" + installer.SetupAsset + " 并校验同目录 checksums.txt 后运行 --yes --force --format json"
+	}
+	if dist == "native" {
 		if nativeTargetNameFor(goos, goarch) == "" {
 			return "curl -fsSL " + updateInstallSh + " | sh"
 		}
@@ -97,7 +102,13 @@ func semverParts(v string) [3]int {
 	return out
 }
 
-func updateSelf(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+func updateSelf(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	if explicit := flagStr(cmd, "version"); explicit != "" {
+		if !flagBool(cmd, "apply") || !installer.ValidVersion(explicit) {
+			return nil, errs.New(errs.CodeInvalidArgument, "--version 需与 --apply 一起使用并提供有效版本")
+		}
+		return applyNativeUpdate(ctx, explicit)
+	}
 	tag := "latest"
 	if flagBool(cmd, "beta") {
 		tag = "beta"
@@ -131,6 +142,12 @@ func updateSelf(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) 
 	latest, ok := parsed.DistTags[tag]
 	if !ok || latest == "" {
 		return nil, errs.New(errs.CodeNotFound, "npm dist-tag `"+tag+"` 不存在")
+	}
+	if !installer.ValidVersion(latest) {
+		return nil, errs.New(errs.CodeNetworkError, "registry 返回无效版本")
+	}
+	if flagBool(cmd, "apply") {
+		return applyNativeUpdate(ctx, latest)
 	}
 
 	updateAvailable := compareSemver(latest, version.Version) > 0

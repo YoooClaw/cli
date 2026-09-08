@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/YoooClaw/cli/internal/installer"
 	"github.com/YoooClaw/cli/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -50,13 +51,28 @@ func newRootCmd() *cobra.Command {
 		newSkillsCmd(),
 		newDoctorCmd(),
 		newUninstallCmd(),
+		newInstallCmd(),
 	)
 	return root
 }
 
 // Execute 构建 root 命令并运行。
 func Execute() {
-	if err := newRootCmd().Execute(); err != nil {
+	executeArgs(os.Args[1:])
+}
+
+func ExecuteSetup() {
+	if len(installer.BundledCLI) == 0 {
+		fmt.Fprintln(os.Stderr, "setup 缺少内置 CLI；请使用 scripts/build-go.sh 构建完整安装器")
+		os.Exit(1)
+	}
+	executeArgs(setupArgs(os.Args[1:]))
+}
+
+func executeArgs(args []string) {
+	root := newRootCmd()
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

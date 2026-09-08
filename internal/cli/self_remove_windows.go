@@ -11,6 +11,9 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"github.com/YoooClaw/cli/internal/winhost"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
@@ -91,7 +94,8 @@ func removeNativeSelfBinary(exe string) (binaryRemovalResult, error) {
 				result.Warnings = append(result.Warnings, warning)
 			}
 			if deferred {
-				result.Hint = "Windows 已将运行中的 CLI 移出安装目录；临时文件将在当前命令退出后清理"
+				result.CleanupPending = true
+				result.Hint = "CLI 安装路径已验证移除；原生助手已安排退出后清理临时文件，尚未验证临时清理完成。失败记录位于 " + filepath.Join(windowsUninstallTempRoot(candidate), "cleanup-error.log")
 			}
 		} else {
 			removeErr = os.Remove(candidate)
@@ -249,7 +253,17 @@ func writeWindowsUserPath(state windowsUserPathState) error {
 		syscall.KEY_SET_VALUE,
 		&key,
 	); err != nil {
-		return os.NewSyscallError("RegOpenKeyExW", err)
+		if !errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
+			return os.NewSyscallError("RegOpenKeyExW", err)
+		}
+		if !state.Exists {
+			return nil
+		}
+		created, _, createErr := registry.CreateKey(registry.CURRENT_USER, `Environment`, registry.SET_VALUE)
+		if createErr != nil {
+			return createErr
+		}
+		key = syscall.Handle(created)
 	}
 	defer syscall.RegCloseKey(key)
 
@@ -566,35 +580,47 @@ func restoreWindowsAliases(exe string, aliases []string) error {
 	return nil
 }
 
-func windowsDeferredRemovalCommand() string {
-	return `ping.exe -n 2 127.0.0.1 >nul & for /L %i in (1,1,30) do @(del /F /Q "%YOOOCLAW_UNINSTALL_PENDING_PATH%" >nul 2>&1 & rd /Q "%YOOOCLAW_UNINSTALL_PENDING_ROOT%" >nul 2>&1 & if exist "%YOOOCLAW_UNINSTALL_PENDING_PATH%" ping.exe -n 2 127.0.0.1 >nul)`
-}
-
-func newWindowsRemovalHelperCommand(path string, breakaway bool) *exec.Cmd {
+func newWindowsRemovalHelperCommand(path string, breakaway bool) (*exec.Cmd, error) {
+	if !filepath.IsAbs(path) || !strings.EqualFold(filepath.Base(filepath.Dir(path)), "yoooclaw-uninstall") || !strings.HasPrefix(filepath.Base(path), "yoooclaw-") || !strings.HasSuffix(path, ".exe.pending") {
+		return nil, fmt.Errorf("invalid native cleanup target")
+	}
+	payload, err := winhost.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), "yoooclaw-cleaner-*.exe.pending")
+	if err != nil {
+		return nil, err
+	}
+	helper := file.Name()
+	_, err = file.Write(payload)
+	closeErr := file.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(helper)
+		return nil, err
+	}
 	flags := uint32(windowsCreateNewProcessGroup | windowsCreateNoWindow)
 	if breakaway {
 		flags |= windowsCreateBreakaway
 	}
-	cmd := exec.Command("cmd.exe")
-	cmd.Env = append(os.Environ(),
-		"YOOOCLAW_UNINSTALL_PENDING_PATH="+path,
-		"YOOOCLAW_UNINSTALL_PENDING_ROOT="+filepath.Dir(path),
-	)
-	// cmd.exe does not use the CommandLineToArgvW parsing convention assumed by
-	// os/exec. Pass its command line verbatim so the quoted environment-variable
-	// paths stay part of the command string instead of becoming separate argv
-	// tokens. The executable name is argv[0] in the CreateProcess command line.
+	cmd := exec.Command(helper, "cleanup", path)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: flags,
-		CmdLine:       `cmd.exe /d /s /c "` + windowsDeferredRemovalCommand() + `"`,
 	}
-	return cmd
+	return cmd, nil
 }
 
 func startWindowsRemovalHelperMode(path string, breakaway bool) error {
-	cmd := newWindowsRemovalHelperCommand(path, breakaway)
+	cmd, err := newWindowsRemovalHelperCommand(path, breakaway)
+	if err != nil {
+		return err
+	}
 	if err := cmd.Start(); err != nil {
+		_ = os.Remove(cmd.Path)
 		return err
 	}
 	return cmd.Process.Release()

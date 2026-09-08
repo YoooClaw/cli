@@ -92,6 +92,9 @@ func uninstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	if binaryRemoval.Hint != "" {
 		result["hint"] = binaryRemoval.Hint
 	}
+	if binaryRemoval.CleanupPending {
+		result["cleanupPending"] = true
+	}
 	return result, nil
 }
 
@@ -145,6 +148,7 @@ type binaryRemovalResult struct {
 	UserPathRemoved    bool
 	Warnings           []string
 	Hint               string
+	CleanupPending     bool
 }
 
 // removeSelfBinary 删除当前可执行文件及同目录下的命令别名。

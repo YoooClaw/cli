@@ -29,7 +29,9 @@ func newDaemonAutostartCmd() *cobra.Command {
 	disable := &cobra.Command{Use: "disable", Short: "停止 daemon 并关闭自启", Args: cobra.NoArgs, RunE: run(daemonAutostartDisable)}
 	status := &cobra.Command{Use: "status", Short: "显示自启期望与系统服务状态", Args: cobra.NoArgs, RunE: run(daemonAutostartStatus)}
 	migrate := &cobra.Command{Use: "migrate", Short: "迁移旧版本的 daemon 自启状态", Hidden: true, Args: cobra.NoArgs, RunE: run(daemonAutostartMigrate)}
-	c.AddCommand(enable, disable, status, migrate)
+	schedule := &cobra.Command{Use: "schedule", Short: "由系统延迟启动已注册的 Windows 任务（不在当前 Agent 会话启动）", Args: cobra.NoArgs, RunE: run(daemonAutostartSchedule)}
+	schedule.Flags().Duration("delay", 30*time.Second, "启动延迟（10s 到 10m）")
+	c.AddCommand(enable, disable, status, migrate, schedule)
 	return c
 }
 
@@ -103,7 +105,62 @@ func autostartSnapshot() (map[string]any, error) {
 	if stateErr != nil {
 		result["stateError"] = stateErr.Error()
 	}
+	if native, ok := manager.(autostart.NativeInspector); ok && status.Installed {
+		spec, err := autostartSpec()
+		if err != nil {
+			return nil, err
+		}
+		pid := 0
+		state := daemon.State(paths.For(persistentActiveProfile()))
+		if state.Running && state.Lock != nil {
+			pid = state.Lock.PID
+		}
+		inspection, inspectErr := native.Inspect(spec, pid)
+		result["native"] = inspection
+		if inspectErr == nil && !inspection.DefinitionMatches {
+			result["drift"] = true
+		}
+		if inspectErr != nil {
+			result["verificationError"] = inspectErr.Error()
+		}
+	}
 	return result, nil
+}
+
+func daemonAutostartSchedule(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	if ctx.Profile != persistentActiveProfile() {
+		return nil, errs.New(errs.CodeInvalidArgument, "只能安排 active profile 自启")
+	}
+	if _, err := config.Require(ctx.Paths); err != nil {
+		return nil, err
+	}
+	if err := daemon.PrecheckStart(ctx, daemon.StartOpts{}); err != nil {
+		return nil, err
+	}
+	desired, err := autostart.Desired(paths.RootDir())
+	if err != nil {
+		return nil, err
+	}
+	if desired != autostart.DesiredEnabled {
+		return nil, errs.New(errs.CodeInvalidArgument, "请先执行 daemon autostart enable --no-start")
+	}
+	if state := daemon.State(ctx.Paths); state.Running {
+		return nil, errs.New(errs.CodeDaemonAlreadyRunning, "daemon 已运行，保留现状，不登记重复启动")
+	}
+	m, ok := autostartManager().(autostart.NativeInspector)
+	if !ok {
+		return nil, errs.New(errs.CodeInvalidArgument, "延迟启动仅支持 Windows 原生任务管理器")
+	}
+	spec, err := autostartSpec()
+	if err != nil {
+		return nil, err
+	}
+	delay, _ := cmd.Flags().GetDuration("delay")
+	at, err := m.Schedule(spec, delay)
+	if err != nil {
+		return nil, autostartError(err)
+	}
+	return map[string]any{"ok": true, "startScheduled": true, "startAt": at.Format(time.RFC3339), "delaySeconds": delay.Seconds(), "profile": ctx.Profile, "connected": false, "hint": "已安排后台启动；请结束当前 Agent 回合，下次查询 daemon/tunnel 状态验证连接"}, nil
 }
 
 func persistentActiveProfile() string {
