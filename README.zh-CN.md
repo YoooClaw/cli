@@ -512,3 +512,22 @@ CLI 不在 PATH 时使用 `/usr/local/bin/yoooclaw` 等实际安装路径。
 它只代表本地配置已应用，连接成功需随后出现 `connected`；401/403 会单独提示服务端鉴权拒绝。
 日志不输出完整 key、gateway token 或凭据文件内容。若连 `service.entry` 都没有，优先检查汇总中的
 systemd/journal；应用进程尚未运行时无法自行写启动日志。
+
+## AI TODO（0.11.0）
+
+`yc todo list|get|create|update|delete` 直接管理云端待办，无需 daemon，使用 `--format json` 获取结构化结果。
+
+```sh
+yc --format json todo list --is-done false
+yc --format json todo get 841
+yc --format json todo create --title '会议' --due-at '2026-09-11T15:00:00+08:00' --is-full-day false
+yc --format json todo update 841 --is-done true
+yc --format json todo update 841 --is-done false
+yc --format json todo delete 841 --confirmed
+```
+
+时间指开始时间：定时使用带偏移的 ISO，全天使用日期，无时间传 JSON null。命令支持 `--json-file FILE`（`-` 为 stdin），不能与字段参数混用。CLI 默认查询不限时间的未完成事项；Agent 查询“今天”时应显式传当地日界。
+
+创建返回 `requestKey`；结果未知时只用 `--request-key KEY` 和相同参数重放。部分成功通过 `ok:false`、分阶段结果及非零退出码呈现。`yoooclaw-todo` Skill 说明自然语言路由、创建后的查看入口及删除确认。
+
+所有接口统一位于 `/api/message/todo/agent/`，凭据及环境沿用已有配置。当前联调中无时间创建仍返回业务码 `910001`，不会自动补时间绕过。详见[实施与验证记录](docs/ai-todo-implementation-plan.md)。
