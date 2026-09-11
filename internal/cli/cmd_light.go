@@ -45,8 +45,8 @@ func newLightCmd() *cobra.Command {
 
 func lightSend(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	segments, preset, rule := flagStr(cmd, "segments"), flagStr(cmd, "preset"), flagStr(cmd, "rule")
-	if segments == "" && preset == "" && rule == "" {
-		return nil, errs.New(errs.CodeInvalidArgument, "需要 --segments / --preset / --rule 之一")
+	if segments == "" && preset == "" && rule == "" && flagStr(cmd, "title") == "" && flagStr(cmd, "reason") == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "需要 --segments / --preset / --rule，或 --title / --reason 仅显示文字")
 	}
 	body := map[string]any{}
 	if segments != "" {
