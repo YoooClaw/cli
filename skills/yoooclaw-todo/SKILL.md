@@ -28,6 +28,8 @@ description: 使用 yoooclaw CLI 查询、创建、修改、完成、恢复和�
 
 ## 时间与结构化输入
 
+待办列表每页沿用 CLI 默认的 20 条，不设置 `--page-size`，JSON 输入也不传 `pageSize`。需要更多结果时保持筛选条件，仅递增 `--page-no` / `pageNo`；直到满足用户所需数量或 `isLastPage=true`。不要扩大单页大小，也不要把第一页当作全部结果。
+
 时间是事项的**开始时间**。定时传带用户时区偏移的 ISO，例如 `2026-09-11T15:00:00+08:00`；全天传 `2026-09-11` 并设置 isFullDay=true；无时间传 JSON null、isFullDay=false。CLI 负责 UTC 转换。切换定时/全天时同时传 dueAt 和 isFullDay。
 
 所有命令支持 `--json-file <path>`；`--json-file -` 从 stdin 读 JSON 对象，不能和字段参数混用。通过 shell 传内容时使用带引号的 heredoc，防止用户文本被执行：
