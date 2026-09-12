@@ -20,7 +20,7 @@ func (c *Client) Light() *LightClient { return &LightClient{c: c} }
 // LightSendResult 是灯效下发结果（re-export 自底层，typed DTO）。
 type LightSendResult = light.SendResult
 
-// LightSendOpts 是 Send 的入参：Segments / Preset / Rule 三选一。
+// LightSendOpts 是 Send 的入参：Segments / Preset / Rule 三选一，或仅提供文字。
 //   - Segments：直接给出灯效段（结构见灯效协议），服务端校验。
 //   - Preset：内置预设 id（如 "red-strobe-3"）。
 //   - Rule：已保存的灯效规则 id。
@@ -37,14 +37,14 @@ type LightSendOpts struct {
 }
 
 // Send 下发灯效到硬件。等价于 CLI `light send`，返回 typed 结果。
-// Segments/Preset/Rule 必须恰好提供一个；否则返回 CodeInvalidArgument。
+// 不提供 Segments/Preset/Rule 时，Title/Reason 用于单次灭灯文字展示。
 func (l *LightClient) Send(ctx context.Context, opts LightSendOpts) (LightSendResult, error) {
 	if err := ctx.Err(); err != nil {
 		return LightSendResult{}, err
 	}
 	n := 0
 	body := map[string]any{}
-	if len(opts.Segments) > 0 {
+	if opts.Segments != nil {
 		body["segments"] = opts.Segments
 		n++
 	}
@@ -56,7 +56,7 @@ func (l *LightClient) Send(ctx context.Context, opts LightSendOpts) (LightSendRe
 		body["rule"] = opts.Rule
 		n++
 	}
-	if n != 1 {
+	if n > 1 || (n == 0 && opts.Title == "" && opts.Reason == "") {
 		return LightSendResult{}, newInvalidArg("需要 Segments / Preset / Rule 之一（且只能一个）")
 	}
 	if opts.Repeat {

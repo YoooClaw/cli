@@ -517,3 +517,20 @@ fingerprints and tunnel changes without logging keys or tokens. Applying credent
 does not confirm a connection: look for the subsequent `connected` or 401/403 logs.
 If no `service.entry` exists, inspect the collected systemd/journal records: an
 application cannot log before the OS has launched it.
+
+## AI TODO (0.11.0)
+
+`yc todo list|get|create|update|delete` manages cloud todos directly without a daemon. Use `--format json`.
+
+```sh
+yc --format json todo list --is-done false
+yc --format json todo get 841
+yc --format json todo create --title "Meeting" --due-at "2026-09-11T15:00:00+08:00" --is-full-day false
+yc --format json todo update 841 --is-done true
+yc --format json todo update 841 --is-done false
+yc --format json todo delete 841 --confirmed
+```
+
+Times are START times: ISO with explicit offsets, all-day dates, or JSON null for undated items. All commands accept `--json-file FILE` (`-` for stdin); field flags cannot be mixed with JSON. CLI list defaults to unfinished across all time; agents supply local day boundaries for natural-language today queries. Creation returns a `requestKey`; replay only the same request with `--request-key KEY` after an unknown outcome. Partial success remains `ok:false` with per-stage outcomes and a nonzero exit code. The `yoooclaw-todo` skill documents user-facing routing and confirmations.
+
+Endpoints share `/api/message/todo/agent/`; API Key and environment use existing configuration. The latest recorded backend rejected undated creation with `910001`; no silent time substitution is performed. See [implementation plan](docs/ai-todo-implementation-plan.md) for the contract and verification.

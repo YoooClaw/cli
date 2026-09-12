@@ -64,6 +64,7 @@ func TestList(t *testing.T) {
 		"yoooclaw-context-query",
 		"yoooclaw-light",
 		"yoooclaw-recordings-process",
+		"yoooclaw-todo",
 		"yoooclaw-tunnel-debug",
 	}
 	if !reflect.DeepEqual(names, want) {

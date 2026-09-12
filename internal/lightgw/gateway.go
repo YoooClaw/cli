@@ -123,9 +123,10 @@ func Send(base string, body map[string]any, host, apiKey string, logger light.Lo
 	title, _ := body["title"].(string)
 
 	var segments []map[string]any
+	_, hasSegments := body["segments"]
 	switch {
-	case body["segments"] != nil:
-		res := light.ValidateSegments(body["segments"])
+	case hasSegments:
+		res := light.ValidateSegments(light.NormalizeOneShotSegments(body["segments"]))
 		if !res.Valid {
 			return nil, &Err{Code: "VALIDATION_FAILED", Message: validationMessage(res), Status: 400}
 		}
@@ -150,6 +151,10 @@ func Send(base string, body map[string]any, host, apiKey string, logger light.Lo
 			rt := float64(rule.RepeatTimes)
 			repeatInput = light.RepeatInput{RepeatTimes: &rt}
 		}
+	case strings.TrimSpace(reason) != "" || strings.TrimSpace(title) != "":
+		segments = light.DisplayOnlySegments()
+		rt := float64(1)
+		repeatInput = light.RepeatInput{RepeatTimes: &rt}
 	default:
 		return nil, &Err{Code: "INVALID_PARAMS", Message: "需要 segments / preset / rule 之一", Status: 400}
 	}
