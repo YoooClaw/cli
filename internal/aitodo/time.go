@@ -104,6 +104,15 @@ func Validate(action string, raw Fields) (Fields, error) {
 		}
 		p[k] = v
 	}
+	if action == "create" {
+		if !rawHas(p, "dueAt") {
+			p["dueAt"] = nil
+		}
+	}
+	if (action == "create" || (action == "update" && rawHas(p, "dueAt"))) && !rawHas(p, "isFullDay") {
+		date, ok := p["dueAt"].(string)
+		p["isFullDay"] = ok && isoDate.MatchString(date)
+	}
 	for _, k := range []string{"dueAt", "startTime", "endTime"} {
 		if s, ok := p[k].(string); ok {
 			ms, e := isoMillis(s, k == "dueAt" && p["isFullDay"] == true)
@@ -133,9 +142,6 @@ func Validate(action string, raw Fields) (Fields, error) {
 			return nil, invalid("title must contain 1–30 characters")
 		}
 		p["title"] = s
-	}
-	if action == "create" && (!rawHas(p, "dueAt") || !rawHas(p, "isFullDay")) {
-		return nil, invalid("dueAt and isFullDay are required")
 	}
 	if v, exists := p["isFullDay"]; exists {
 		if _, ok := v.(bool); !ok {

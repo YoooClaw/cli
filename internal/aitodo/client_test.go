@@ -196,3 +196,20 @@ func TestContentFailureStopsStatus(t *testing.T) {
 		t.Fatal(err, calls)
 	}
 }
+
+func TestTitleOnlyCreateDefaultsBeforeHTTP(t *testing.T) {
+	c, close := serve(t, func(path string, body Fields) (int, any) {
+		if path != APIPath+"/create" || !rawHas(body, "dueAt") || body["dueAt"] != nil || body["isFullDay"] != false {
+			t.Fatalf("unexpected request: %s %#v", path, body)
+		}
+		return 200, Fields{"todoId": "1309", "duplicated": false}
+	})
+	defer close()
+	input := Fields{"title": "洗衣服"}
+	if _, err := c.Execute(context.Background(), "create", input, "test-key"); err != nil {
+		t.Fatal(err)
+	}
+	if len(input) != 1 {
+		t.Fatal("input mutated")
+	}
+}

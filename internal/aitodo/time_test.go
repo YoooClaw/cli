@@ -40,3 +40,38 @@ func TestValidation(t *testing.T) {
 		t.Fatal(p, e)
 	}
 }
+
+func TestInferMissingAllDay(t *testing.T) {
+	for _, action := range []string{"create", "update"} {
+		for _, tc := range []struct {
+			due  any
+			full bool
+		}{{"2026-09-12", true}, {"2026-09-12T00:00:00Z", false}, {nil, false}} {
+			input := Fields{"dueAt": tc.due}
+			if action == "create" {
+				input["title"] = "洗衣服"
+			} else {
+				input["todoId"] = "1"
+			}
+			out, err := Validate(action, input)
+			if err != nil || out["isFullDay"] != tc.full {
+				t.Fatalf("%s %#v: %#v %v", action, input, out, err)
+			}
+			if tc.due != nil && !sameNumber(out["dueAt"], int64(1789171200000)) {
+				t.Fatalf("wrong timestamp: %#v", out)
+			}
+		}
+	}
+	for _, due := range []string{"2026-02-30", "bad-date"} {
+		if _, err := Validate("create", Fields{"title": "x", "dueAt": due}); err == nil {
+			t.Fatal("accepted invalid date")
+		}
+	}
+	if _, err := Validate("create", Fields{"title": "x", "dueAt": "2026-09-12", "isFullDay": false}); err == nil {
+		t.Fatal("overrode explicit false")
+	}
+	out, err := Validate("update", Fields{"todoId": "1", "title": "x"})
+	if err != nil || rawHas(out, "dueAt") || rawHas(out, "isFullDay") {
+		t.Fatal("changed omitted update time")
+	}
+}
