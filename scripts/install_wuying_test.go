@@ -447,3 +447,100 @@ func TestWuyingInstallerHelpContainsOnlyHeader(t *testing.T) {
 }
 
 const sentinelBaseURLForScriptTest = "__YOOOCLAW_CLI_OSS_BASE_URL__"
+
+func TestWuyingSkillCommandWorksWithoutAgentPath(t *testing.T) {
+	t.Parallel()
+	for _, agent := range []string{"claude", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mockBin := filepath.Join(root, "mock-bin")
+			installDir := filepath.Join(root, "cli bin '$literal")
+			skillRoot := filepath.Join(root, ".claude", "skills")
+			codexDir := filepath.Join(root, "custom codex")
+			if agent == "codex" {
+				skillRoot = filepath.Join(codexDir, "skills")
+			}
+			skillFile := filepath.Join(skillRoot, "yoooclaw-context-query", "SKILL.md")
+			mustMkdirAll(t, filepath.Dir(skillFile))
+			frontmatter := "---\nname: yoooclaw-context-query\ndescription: Query context\n---\n"
+			body := "\n# User content\nRun yoooclaw notification summary.\n"
+			if err := os.WriteFile(skillFile, []byte(frontmatter+body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			mustMkdirAll(t, mockBin)
+			fixture := filepath.Join(root, "installer.sh")
+			writeExecutable(t, fixture, `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir) target_dir=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$target_dir"
+cat > "$target_dir/yoooclaw" <<'CLI'
+#!/bin/sh
+case "$*" in
+  *--version*) printf '%s\n' "$@" ;;
+esac
+exit 0
+CLI
+chmod +x "$target_dir/yoooclaw"
+`)
+			writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then cp "$INSTALL_FIXTURE" "$2"; exit; fi
+  shift
+done
+exit 2
+`)
+			env := append(os.Environ(), "HOME="+root, "CODEX_HOME="+codexDir,
+				"INSTALL_FIXTURE="+fixture, "PATH="+mockBin+":/usr/bin:/bin", "BASH_ENV=")
+			profile := "cloud '$literal"
+			var previous string
+			for run := 0; run < 3; run++ {
+				if run == 2 {
+					profile = "updated '$profile"
+				}
+				cmd := exec.Command("sh", mustAbs(t, "install-wuying.sh"), "--api-key", "ock-test",
+					"--skill", agent, "--profile", profile, "--dir", filepath.Base(installDir), "--force")
+				cmd.Dir = root
+				cmd.Env = env
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("installer failed: %v\n%s", err, out)
+				}
+				data, err := os.ReadFile(skillFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				content := string(data)
+				if !strings.HasPrefix(content, frontmatter) || !strings.HasSuffix(content, body) {
+					t.Fatalf("skill content was damaged:\n%s", content)
+				}
+				if strings.Count(content, "<!-- yoooclaw-wuying-command:start -->") != 1 {
+					t.Fatalf("expected one command block:\n%s", content)
+				}
+				if run == 1 && content != previous {
+					t.Fatal("repeat installation changed the Skill")
+				}
+				previous = content
+				_, code, ok := strings.Cut(content, "~~~sh\n")
+				if !ok {
+					t.Fatal("missing command prefix")
+				}
+				prefix, _, _ := strings.Cut(code, "\n~~~")
+				probe := exec.Command("bash", "--noprofile", "--norc", "-c", prefix+" --version")
+				probe.Env = env
+				out, err := probe.CombinedOutput()
+				if err != nil || string(out) != "--profile\n"+profile+"\n--version\n" {
+					t.Fatalf("Skill command failed in Agent shell: %v\n%s", err, out)
+				}
+			}
+			probe := exec.Command("bash", "--noprofile", "--norc", "-c", "command -v yoooclaw")
+			probe.Env = env
+			if out, err := probe.CombinedOutput(); err == nil {
+				t.Fatalf("fixture PATH unexpectedly includes CLI: %s", out)
+			}
+		})
+	}
+}

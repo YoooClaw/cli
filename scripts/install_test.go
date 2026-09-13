@@ -146,6 +146,94 @@ func TestInstallersRejectBetaChannelFlag(t *testing.T) {
 	}
 }
 
+func TestInstallScriptReportsInheritedPathForAgents(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"missing", "present", "shadowed", "modify-path", "relative-dir"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mockBin := filepath.Join(root, "mock-bin")
+			// Exercise quoting as well as absolute symlinks for --dir.
+			installDir := filepath.Join(root, "install bin $literal")
+			mustMkdirAll(t, mockBin)
+			writeExecutable(t, filepath.Join(mockBin, "uname"), `#!/bin/sh
+case "$1" in
+  -s) printf 'Linux\n' ;;
+  -m) printf 'x86_64\n' ;;
+esac
+`)
+			writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
+case "$*" in *checksums.txt*) exit 22 ;; esac
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then
+    printf '%s\n' '#!/bin/sh' 'printf "0.7.2\n"' > "$2"
+    exit 0
+  fi
+  shift
+done
+exit 2
+`)
+			inheritedPath := mockBin + ":/usr/bin:/bin"
+			if mode == "present" {
+				inheritedPath = installDir + ":" + inheritedPath
+			}
+			if mode == "shadowed" {
+				writeExecutable(t, filepath.Join(mockBin, "yoooclaw"), "#!/bin/sh\nexit 1\n")
+			}
+			dirArg := installDir
+			if mode == "relative-dir" {
+				dirArg = filepath.Base(installDir)
+			}
+			args := []string{mustAbs(t, "install.sh"), "--version", "0.7.2", "--dir", dirArg}
+			if mode == "modify-path" {
+				args = append(args, "--modify-path")
+			}
+			env := append(os.Environ(), "HOME="+root, "SHELL=/bin/bash", "PATH="+inheritedPath, "BASH_ENV=", "YOOOCLAW_ACTIVATE_OWNER=")
+			cmd := exec.Command("sh", args...)
+			cmd.Dir = root
+			cmd.Env = env
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("install failed: %v\n%s", err, output)
+			}
+			want := "安装时继承的 PATH 找不到 yoooclaw"
+			if mode == "present" {
+				want = "安装时继承的 PATH 可找到本次安装"
+			} else if mode == "shadowed" {
+				want = "安装时继承的 PATH 优先找到其他 yoooclaw"
+			}
+			for _, message := range []string{want, "二进制验证通过:", "Agent runner/服务启动环境中配置 PATH"} {
+				if !strings.Contains(string(output), message) {
+					t.Fatalf("missing %q:\n%s", message, output)
+				}
+			}
+			// Reproduce an Agent's fresh bash -c using the unchanged parent PATH.
+			if mode == "missing" || mode == "modify-path" {
+				probe := exec.Command("bash", "--noprofile", "--norc", "-c", "command -v yoooclaw")
+				probe.Env = env
+				if out, err := probe.CombinedOutput(); err == nil {
+					t.Fatalf("Agent unexpectedly discovered command: %s", out)
+				}
+			}
+			// The printed fallback must work verbatim, including special characters.
+			for _, line := range strings.Split(string(output), "\n") {
+				if _, command, ok := strings.Cut(line, "完整路径调用（不依赖 PATH）: "); ok {
+					probe := exec.Command("sh", "-c", command)
+					probe.Env = env
+					if out, err := probe.CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "0.7.2" {
+						t.Fatalf("fallback failed: %v\n%s", err, out)
+					}
+				}
+			}
+			probe := exec.Command(filepath.Join(installDir, "yc"), "--version")
+			probe.Dir = "/"
+			if out, err := probe.CombinedOutput(); err != nil {
+				t.Fatalf("yc symlink failed outside install cwd: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
 func TestWindowsInstallerRejectsBetaChannelSwitch(t *testing.T) {
 	t.Parallel()
 
