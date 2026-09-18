@@ -27,7 +27,7 @@
 # non-interactive config when needed, installs bundled Skills for the selected
 # host, takes standalone ownership, and starts the daemon. It prefers login
 # autostart and falls back to a detached daemon when a user service manager is
-# unavailable.
+# unavailable. Installed Skills include the absolute CLI command for Agent shells.
 
 set -eu
 
@@ -111,6 +111,11 @@ else
       ;;
   esac
 fi
+mkdir -p "$EFFECTIVE_INSTALL_DIR"
+case "$EFFECTIVE_INSTALL_DIR" in
+  /*) ;;
+  *) EFFECTIVE_INSTALL_DIR=$(cd "$EFFECTIVE_INSTALL_DIR" && pwd) ;;
+esac
 CLI="$EFFECTIVE_INSTALL_DIR/yoooclaw"
 
 configure_user_service_env
@@ -149,7 +154,7 @@ curl -fsSL -o "$TMP/install.sh" "$BASE_INSTALLER_URL"
 
 set -- "$TMP/install.sh"
 [ -n "$VERSION" ] && set -- "$@" --version "$VERSION"
-[ -n "$INSTALL_DIR" ] && set -- "$@" --dir "$INSTALL_DIR"
+set -- "$@" --dir "$EFFECTIVE_INSTALL_DIR"
 [ "$FORCE" -eq 1 ] && set -- "$@" --force
 if [ "$MODIFY_PATH" -eq 1 ]; then
   set -- "$@" --modify-path
@@ -202,6 +207,62 @@ else
   yc skills install --agent "$SKILL_AGENT"
 fi
 
+# Agent shells may inherit a PATH without ~/.local/bin and do not necessarily
+# read shell profiles. Keep the host's installed Skills self-contained instead
+# of relying on changes to the installer's environment or a running runner.
+configure_skill_command() {
+  case "$SKILL_AGENT" in
+    claude) skill_root="$HOME/.claude/skills" ;;
+    codex) skill_root="${CODEX_HOME:-$HOME/.codex}/skills" ;;
+    *)
+      warn "未知宿主 $SKILL_AGENT 的 Skill 目录；请在该宿主中配置完整 CLI 路径: $CLI"
+      return
+      ;;
+  esac
+  # Quote literal shell arguments, including spaces, quotes and dollar signs.
+  quoted_cli=$(printf '%s' "$CLI" | sed "s/'/'\\\\''/g")
+  quoted_profile=$(printf '%s' "$PROFILE" | sed "s/'/'\\\\''/g")
+  cat > "$TMP/skill-command.md" <<EOF
+<!-- yoooclaw-wuying-command:start -->
+## 无影环境命令调用
+
+本机 CLI 已安装。执行本 Skill 及 references 中的所有命令时，必须将开头的 yoooclaw 或 yc 替换为以下完整命令前缀（保留后续子命令和参数）：
+
+~~~sh
+'$quoted_cli' --profile '$quoted_profile'
+~~~
+
+不要直接执行裸命令 yoooclaw / yc，也不要依赖 alias、PATH 或 shell 启动文件。Agent 的非交互式 shell 可能不读取 .profile / .bashrc。
+<!-- yoooclaw-wuying-command:end -->
+EOF
+  skill_count=0
+  for skill_file in "$skill_root"/yoooclaw-*/SKILL.md; do
+    [ -f "$skill_file" ] || continue
+    # Preserve YAML frontmatter and user content; replace only our managed block.
+    YOOOCLAW_SKILL_COMMAND_FILE="$TMP/skill-command.md" awk '
+      function insert_command( line) {
+        while ((getline line < ENVIRON["YOOOCLAW_SKILL_COMMAND_FILE"]) > 0) print line
+        close(ENVIRON["YOOOCLAW_SKILL_COMMAND_FILE"])
+      }
+      /^<!-- yoooclaw-wuying-command:start -->$/ { managed = 1; next }
+      /^<!-- yoooclaw-wuying-command:end -->$/ { managed = 0; next }
+      managed { next }
+      NR == 1 && $0 !~ /^---\r?$/ { insert_command(); inserted = 1 }
+      { print }
+      !inserted && /^---\r?$/ { if (++delimiters == 2) { insert_command(); inserted = 1 } }
+    ' "$skill_file" > "$TMP/configured-skill.md"
+    cat "$TMP/configured-skill.md" > "$skill_file"
+    skill_count=$((skill_count + 1))
+  done
+  if [ "$skill_count" -gt 0 ]; then
+    info "已为 $skill_count 个 Skill 配置完整 CLI 路径和 profile；Agent 无需依赖 PATH"
+  else
+    warn "未找到可配置的 YoooClaw Skill: ${skill_root}；请使用完整 CLI 路径: $CLI"
+  fi
+}
+
+configure_skill_command
+
 info "停止并清理旧 daemon/autostart…"
 if ! yc daemon autostart disable; then
   err "无法清理旧 daemon/autostart；为避免双 Relay owner，安装已安全中止"
@@ -241,8 +302,9 @@ info "CLI: $CLI"
 info "profile: $PROFILE"
 info "Skill host: $SKILL_AGENT"
 info "Cloud environment: $CLOUD_ENV"
+info "已打开的 Agent 会话请重新加载 Skills 或新建会话，以读取本机命令配置"
 
 case ":${PATH:-}:" in
   *:"${CLI%/*}":*) ;;
-  *) warn "当前 PATH 不含 ${CLI%/*}；请使用完整路径 $CLI，或安装时传 --modify-path 并重新打开终端" ;;
+  *) warn "当前 PATH 不含 ${CLI%/*}；请使用完整路径 $CLI，或在 Agent runner 启动环境中配置 PATH 后重启对应进程；--modify-path 仅配置 shell 启动文件" ;;
 esac
