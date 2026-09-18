@@ -63,6 +63,7 @@ func TestList(t *testing.T) {
 	want := []string{
 		"yoooclaw-context-query",
 		"yoooclaw-light",
+		"yoooclaw-media-generate",
 		"yoooclaw-recordings-process",
 		"yoooclaw-todo",
 		"yoooclaw-tunnel-debug",
@@ -362,6 +363,33 @@ func TestInstall(t *testing.T) {
 	for _, r := range results3 {
 		if r.Status != "installed" {
 			t.Errorf("force should reinstall: %+v", r)
+		}
+	}
+}
+
+func TestInstallMediaSkillIncludesScripts(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	if _, _, err := Install(target, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"SKILL.md",
+		"scripts/client.py",
+		"scripts/image_generate.py",
+		"scripts/video_generate.py",
+	} {
+		name := "yoooclaw-media-generate/" + rel
+		want, err := fs.ReadFile(assets.SkillsFS, "skills/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(target, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("installed %s differs from bundled resource", name)
 		}
 	}
 }
