@@ -99,11 +99,15 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
 Unix 安装器默认不会修改 shell 启动文件；只有显式传入 `--modify-path` 才会写入 PATH。
 Windows 安装器默认写入用户 PATH；传 `-NoModifyPath` 可关闭。
 
+Linux Agent 中出现 `yoooclaw: command not found`，但普通终端可用时，请先使用安装器输出的完整路径（例如 `/home/admin/.local/bin/yoooclaw --version`）。非交互、非登录的 `bash -c` 通常不读取 `.profile` / `.bashrc`，所以 `--modify-path` 和重新打开终端不一定能修复 Agent 的 PATH。应在 **Agent runner / 服务的启动环境**中把实际安装目录加入 PATH，再重启对应进程；当前 Bash 会话也可执行 `export PATH="$HOME/.local/bin:$PATH"` 临时修复。安装器验证二进制可运行，不代表已经运行的 Agent 能按命令名找到它。
+
 直装支持平台：`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`。也可从 [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) 手动下载（同 release 内 `checksums.txt` 校验）。
 
 ### 无影云电脑无人值守安装
 
 专用脚本会安装 CLI、写入 account API key、初始化默认配置、为指定 Agent 宿主安装 Skills，并启动 daemon（优先启用登录自启；用户级服务管理器不可用时降级为 detached daemon）。`--api-key` 与 `--skill` 为必填参数：
+
+对 Claude / Codex，脚本还会在已安装的 YoooClaw Skills 中写入本机 CLI 的绝对路径及所选 profile，指导 Agent 使用完整命令，不依赖 `~/.local/bin` 是否在 PATH 中。重复安装会更新这段配置；已有 Agent 会话需重新加载 Skills 或新建会话。其他宿主暂时只输出完整路径提示。
 
 ```bash
 export YOOOCLAW_API_KEY='ock-xxxx'
