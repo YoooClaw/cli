@@ -97,11 +97,15 @@ curl -fsSL https://raw.githubusercontent.com/YoooClaw/cli/master/scripts/install
 The Unix installer does not modify shell startup files by default; pass `--modify-path` to opt in.
 The Windows installer updates the user PATH by default; pass `-NoModifyPath` to opt out.
 
+If a Linux Agent reports `yoooclaw: command not found` while your terminal works, use the absolute path printed by the installer (for example, `/home/admin/.local/bin/yoooclaw --version`). A non-interactive, non-login `bash -c` normally does not read `.profile` / `.bashrc`, so `--modify-path` or reopening a terminal may not fix the Agent's PATH. Add the actual install directory to PATH in the **Agent runner / service startup environment**, then restart that process. For the current Bash session, `export PATH="$HOME/.local/bin:$PATH"` is a temporary fix. Successful binary verification does not mean an already-running Agent can discover the command.
+
 Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`. You can also download manually from [GitHub Releases](https://github.com/YoooClaw/cli/releases?q=cli-v) (verify against the `checksums.txt` in the same release).
 
 ### Unattended WUYING cloud desktop installation
 
 The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. Both `--api-key` and `--skill` are required:
+
+For Claude / Codex, the script also writes the absolute CLI path and selected profile into the installed YoooClaw Skills, instructing the Agent to use the full command even when `~/.local/bin` is absent from PATH. Reinstalling updates this configuration; existing Agent sessions must reload Skills or start a new session. Other hosts currently receive an absolute-path reminder only.
 
 ```bash
 export YOOOCLAW_API_KEY='ock-xxxx'

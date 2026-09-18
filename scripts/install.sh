@@ -130,7 +130,7 @@ info "目标 ${ASSET}  版本 ${VERSION}"
 
 # ---------- resolve install dir ----------
 if [ -z "$INSTALL_DIR" ]; then
-  if echo "${PATH:-}" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
+  if printf '%s\n' "${PATH:-}" | tr ':' '\n' | grep -Fqx "$HOME/.local/bin"; then
     INSTALL_DIR="$HOME/.local/bin"
   elif [ -w "/usr/local/bin" ]; then
     INSTALL_DIR="/usr/local/bin"
@@ -139,6 +139,11 @@ if [ -z "$INSTALL_DIR" ]; then
   fi
 fi
 mkdir -p "$INSTALL_DIR"
+# Keep symlink targets and the fallback command usable outside the installer's cwd.
+case "$INSTALL_DIR" in
+  /*) ;;
+  *) INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd) ;;
+esac
 
 TARGET="$INSTALL_DIR/yoooclaw"
 if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ]; then
@@ -346,16 +351,32 @@ configure_path() {
 
 configure_path
 
-# 安装器是子进程，无法改变调用它的父 shell；这里仅保证本次验证按命令名执行。
+# ---------- verify ----------
+# Verify the artifact directly, then check discovery BEFORE changing our PATH.
+installed_version=$("$TARGET" --version 2>/dev/null) || err "已写入文件但 --version 执行失败"
+info "yoooclaw $installed_version ready"
+info "二进制验证通过: $TARGET"
+escaped_target=$(escape_double_quoted "$TARGET")
+escaped_install_dir=$(escape_double_quoted "$INSTALL_DIR")
+info "完整路径调用（不依赖 PATH）: \"$escaped_target\" --version"
+resolved_yoooclaw=$(command -v yoooclaw 2>/dev/null || true)
+if [ "$resolved_yoooclaw" = "$TARGET" ]; then
+  info "安装时继承的 PATH 可找到本次安装: $resolved_yoooclaw"
+elif [ -n "$resolved_yoooclaw" ]; then
+  warn "安装时继承的 PATH 优先找到其他 yoooclaw: $resolved_yoooclaw"
+  warn "请使用上方完整路径，或将 $INSTALL_DIR 放到 PATH 最前面"
+else
+  warn "安装时继承的 PATH 找不到 yoooclaw；安装成功不代表调用方已能按命令名执行"
+fi
+if [ "$resolved_yoooclaw" != "$TARGET" ]; then
+  info "当前 sh/bash/zsh 会话可执行: export PATH=\"$escaped_install_dir:\$PATH\""
+fi
+info "Agent/服务的非交互式 bash -c 通常不读取 .profile/.bashrc；--modify-path 不能保证在其中生效"
+info "请在 Agent runner/服务启动环境中配置 PATH 并重启对应进程，或使用上方完整路径；重新打开终端不一定影响 Agent"
+
+# Only subsequent installer operations use this PATH; the caller is unchanged.
 PATH="$INSTALL_DIR:${PATH:-}"
 export PATH
-
-# ---------- verify ----------
-resolved_yoooclaw=$(command -v yoooclaw 2>/dev/null || true)
-[ -n "$resolved_yoooclaw" ] || err "安装完成但找不到 yoooclaw 命令"
-installed_version=$(yoooclaw --version 2>/dev/null) || err "已写入文件但 --version 执行失败"
-info "yoooclaw $installed_version ready"
-info "命令验证通过: $resolved_yoooclaw"
 
 # ---------- restore or explicitly activate owner ----------
 if [ "$ACTIVATE_OWNER" -eq 1 ]; then
