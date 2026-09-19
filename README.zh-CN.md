@@ -180,6 +180,7 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | Skill                           | 说明 |
 | ------------------------------- | ---- |
 | `yoooclaw-context-query`        | 查询最新通知、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
+| `yoooclaw-notification-to-memory` | 从通知提炼个人画像、每日记录与长期记忆，验证持久写入后逐批提交学习进度 |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
 | `yoooclaw-light`                | 通过独立 CLI 播放一次性灯效并管理「通知 → 灯效」持久规则 |
 | `yoooclaw-tunnel-debug`         | 排查鉴权、daemon、ingest、Relay WebSocket 与手机同步链路（🟡） |
