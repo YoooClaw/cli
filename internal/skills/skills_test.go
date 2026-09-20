@@ -64,6 +64,7 @@ func TestList(t *testing.T) {
 		"yoooclaw-context-query",
 		"yoooclaw-light",
 		"yoooclaw-media-generate",
+		"yoooclaw-notification-to-memory",
 		"yoooclaw-recordings-process",
 		"yoooclaw-todo",
 		"yoooclaw-tunnel-debug",

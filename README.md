@@ -179,6 +179,7 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 | ------------------------------- | ----------- |
 | `yoooclaw-media-generate`     | Generates images and videos up to 30 seconds with Python 3; reads `MODEL_PROXY_API_KEY` from `~/.config/yoooclaw/credentials` |
 | `yoooclaw-context-query`        | The sole query Skill for fresh notifications, voice input, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
+| `yoooclaw-notification-to-memory` | Distills notifications into personal, daily, and long-term agent memory; commits each batch only after verified persistence |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
 | `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
 | `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
