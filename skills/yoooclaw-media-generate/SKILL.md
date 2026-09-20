@@ -85,7 +85,7 @@ python3 {baseDir}/scripts/video_generate.py query '<task_id>' --wait 50
 
 公共实现位于 [scripts/client.py](scripts/client.py)。脚本只读当前用户 `~/.config/yoooclaw/credentials` 中的 `MODEL_PROXY_API_KEY=对应的key`，使用 Bearer 鉴权，不输出或保存 Key 副本。凭证文件使用逐行 `KEY=VALUE` 格式，支持空行、整行 `#` 注释以及值外侧的单引号或双引号；不执行文件内容或展开变量。
 
-固定服务地址为 `https://openclaw-service-test.yoooclaw.com/model-proxy/v1`，忽略配置里的 `baseUrl`，不使用 Cookie 或其他凭证来源。配置缺失或无效时报错，由用户修正原配置。
+固定服务地址为 `https://openclaw-service.yoooclaw.com/model-proxy/v1`，忽略配置里的 `baseUrl`，不使用 Cookie 或其他凭证来源。配置缺失或无效时报错，由用户修正原配置。
 
 积分估算使用 GET。失败时脚本输出 `{"status":"error","message":"..."}` 并以 1 退出；视频失败任务也以 1 退出。等待结束但任务仍在运行不代表生成失败。
 
