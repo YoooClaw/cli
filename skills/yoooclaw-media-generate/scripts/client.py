@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = "https://openclaw-service-test.yoooclaw.com/model-proxy/v1"
+BASE = "https://openclaw-service.yoooclaw.com/model-proxy/v1"
 
 class ApiError(Exception):
     pass
