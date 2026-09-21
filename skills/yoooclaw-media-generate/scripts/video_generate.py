@@ -14,6 +14,34 @@ def video_seconds(value):
         raise argparse.ArgumentTypeError("视频时长不能超过 30 秒")
     return seconds
 
+def reference_url(value):
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if (parsed.scheme not in ("https", "http") or not parsed.hostname
+                or parsed.username or parsed.password or parsed.fragment
+                or any(c.isspace() for c in value)):
+            raise ValueError()
+        parsed.port
+    except (ValueError, TypeError):
+        raise ApiError("参考图片必须是服务端可访问的 HTTP(S) URL；不支持本地路径或 data URL。") from None
+    return value
+
+
+def video_input(args):
+    image = getattr(args, "image_url", None)
+    first = getattr(args, "first_frame_url", None)
+    last = getattr(args, "last_frame_url", None)
+    if image and (first or last):
+        raise ApiError("参考图模式与首尾帧模式不能同时使用。")
+    if last and not first:
+        raise ApiError("提供尾帧时必须同时提供首帧。")
+    result = {"prompt": args.prompt}
+    for field, value in (("img_url", image), ("first_frame_url", first), ("last_frame_url", last)):
+        if value is not None:
+            result[field] = reference_url(value)
+    return result
+
+
 def query(task_id):
     result = client.request("GET", "/videos/tasks/" + urllib.parse.quote(task_id, safe=""))
     output = result.get("output")
@@ -22,10 +50,7 @@ def query(task_id):
     status = str(output["task_status"]).upper()
     item = {"task_id": task_id, "status": status}
     if status == "SUCCEEDED":
-        url = output.get("video_url")
-        if not isinstance(url, str) or not url.startswith("https://"):
-            raise ApiError("任务已成功，但未取得有效视频链接；保留任务 ID，不要重新生成。")
-        item["video_url"] = url
+        item["video_url"] = client.media_url(output, "video_url")
     emit(item)
     return status
 
@@ -45,7 +70,7 @@ def run(args):
                 return 0
             time.sleep(min(10, remaining))
     client.check_generation(args)
-    payload = {"model": MODEL, "input": {"prompt": args.prompt}, "parameters": {"duration": args.seconds, "resolution": args.resolution}}
+    payload = {"model": MODEL, "input": video_input(args), "parameters": {"duration": args.seconds, "resolution": args.resolution}}
     result = client.request("POST", "/videos/generations", payload)
     output = result.get("output", {})
     task_id = output.get("task_id") if isinstance(output, dict) else None
@@ -64,6 +89,9 @@ def main():
         command.add_argument("--resolution", type=str.upper, choices=("480P", "720P", "1080P"), required=True)
     est.add_argument("--method", choices=("GET", "POST"), default="GET")
     gen.add_argument("--prompt", "-p", required=True)
+    gen.add_argument("--image-url", help="参考图片 HTTP(S) URL，与文字一起生成视频")
+    gen.add_argument("--first-frame-url", help="首帧图片 HTTP(S) URL")
+    gen.add_argument("--last-frame-url", help="尾帧图片 HTTP(S) URL，需同时提供首帧")
     gen.add_argument("--confirmed", action="store_true")
     query_parser = commands.add_parser("query", help="查询已有任务")
     query_parser.add_argument("task_id")

@@ -67,6 +67,17 @@ def positive(value):
         raise argparse.ArgumentTypeError("必须是正整数")
     return result
 
+def media_url(item, field="url"):
+    url = item.get(field) if isinstance(item, dict) else None
+    if isinstance(url, str) and not any(c.isspace() for c in url):
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username and not parsed.password:
+                return url
+        except ValueError:
+            pass
+    raise ApiError("响应缺少有效的供应商原始媒体链接；请核实原结果，不要重新生成。")
+
 def emit(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
