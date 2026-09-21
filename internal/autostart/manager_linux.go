@@ -73,7 +73,11 @@ func (m *platformManager) EnableBoot() (bootErr error) {
 }
 
 var systemctl = func(args ...string) ([]byte, error) {
-	return exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
+	return runUserSystemctl(args, os.Environ(), os.Getuid(), os.Geteuid(), "/run/user", func(args, env []string) ([]byte, error) {
+		cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+		cmd.Env = env
+		return cmd.CombinedOutput()
+	})
 }
 
 func (m *platformManager) Available() error {

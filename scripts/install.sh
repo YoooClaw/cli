@@ -154,6 +154,30 @@ fi
 # Stop only daemons that are actually running before replacing the executable.
 # Their profile list is restored after a normal update. A Hermes-owned runtime
 # has no running standalone daemon, so it is left completely untouched.
+# Probe before stopping any running daemon. Agent shells may lack the login
+# session environment even though the same user's systemd manager is alive.
+preflight_linux_service() {
+  [ "$OS" = linux ] || return 0
+  if systemctl --user show-environment >/dev/null 2>&1; then
+    return 0
+  fi
+  service_uid=$(id -u)
+  service_runtime="/run/user/$service_uid"
+  if [ "$(id -ru)" = "$service_uid" ] &&
+     [ ! -L "$service_runtime" ] && [ -d "$service_runtime" ] &&
+     [ "$(stat -c '%u:%a' "$service_runtime" 2>/dev/null)" = "$service_uid:700" ] &&
+     [ ! -L "$service_runtime/bus" ] && [ -S "$service_runtime/bus" ] &&
+     [ "$(stat -c '%u' "$service_runtime/bus" 2>/dev/null)" = "$service_uid" ] &&
+     env XDG_RUNTIME_DIR="$service_runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$service_runtime/bus" \
+       systemctl --user show-environment >/dev/null 2>&1; then
+    export XDG_RUNTIME_DIR="$service_runtime"
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$service_runtime/bus"
+    info "已恢复当前用户的 systemd 会话环境"
+    return 0
+  fi
+  err "无法访问当前用户 systemd；保留旧 daemon 和二进制，停止更新。请在该用户的正常登录会话中重试"
+}
+
 stop_existing_daemons() {
   if [ -x "$TARGET" ]; then
     OLD_CLI="$TARGET"
@@ -164,25 +188,29 @@ stop_existing_daemons() {
 
   runtime_root=${YOOOCLAW_HOME:-$HOME/.yoooclaw}
   found_profile=0
+  running_profiles=""
   for profile_dir in "$runtime_root"/profiles/*; do
     [ -d "$profile_dir" ] || continue
     found_profile=1
     profile_name=${profile_dir##*/}
     if "$OLD_CLI" --profile "$profile_name" daemon status >/dev/null 2>&1; then
-      "$OLD_CLI" --profile "$profile_name" daemon stop >/dev/null 2>&1 \
-        || err "无法停止旧 CLI daemon: $profile_name"
-      STOPPED_PROFILES="$STOPPED_PROFILES $profile_name"
-      info "已停止旧 CLI daemon: $profile_name"
+      running_profiles="$running_profiles $profile_name"
     fi
   done
   if [ "$found_profile" -eq 0 ]; then
     if "$OLD_CLI" --profile default daemon status >/dev/null 2>&1; then
-      "$OLD_CLI" --profile default daemon stop >/dev/null 2>&1 \
-        || err "无法停止旧 CLI daemon: default"
-      STOPPED_PROFILES="$STOPPED_PROFILES default"
-      info "已停止旧 CLI daemon: default"
+      running_profiles=" default"
     fi
   fi
+  [ -n "$running_profiles" ] || return 0
+  preflight_linux_service
+  for profile_name in $running_profiles; do
+    "$OLD_CLI" --profile "$profile_name" daemon stop >/dev/null 2>&1 \
+      || err "无法停止旧 CLI daemon: $profile_name"
+    STOPPED_PROFILES="$STOPPED_PROFILES $profile_name"
+    HANDOFF_PENDING=1
+    info "已停止旧 CLI daemon: $profile_name"
+  done
 }
 
 # ---------- download + verify ----------
