@@ -57,6 +57,30 @@ class VideoInputsTests(unittest.TestCase):
                 self.assertEqual(self.invoke(extra), 1)
                 request.assert_not_called()
 
+    def test_duration_limits_before_network(self):
+        for command in ('estimate', 'generate'):
+            for seconds in ('1', '0', '-1', '1.5', '31'):
+                args = ['video_generate.py', command, '--resolution', '480P', '--seconds', seconds]
+                if command == 'generate':
+                    args += ['--prompt', '猫', '--confirmed']
+                with patch.object(sys, 'argv', args), patch.object(video.client, 'request') as request, contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        video.main()
+                    self.assertEqual(caught.exception.code, 2)
+                    request.assert_not_called()
+            for seconds in ('2', '30'):
+                args = ['video_generate.py', command, '--resolution', '480P', '--seconds', seconds]
+                response = {'credits': 100}
+                if command == 'generate':
+                    args += ['--prompt', '猫', '--confirmed']
+                    response = {'output': {'task_id': 'x', 'task_status': 'PENDING'}}
+                with patch.object(sys, 'argv', args), patch.object(video.client, 'request', return_value=response) as request, contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(video.main(), 0)
+                if command == 'generate':
+                    self.assertEqual(request.call_args.args[2]['parameters']['duration'], int(seconds))
+                else:
+                    self.assertIn('seconds=' + seconds, request.call_args.args[1])
+
     def test_authorization_still_required(self):
         with patch.object(video.client, 'request') as request:
             self.assertEqual(self.invoke(['--image-url', 'https://example.com/a.png', '--prompt', '']), 1)

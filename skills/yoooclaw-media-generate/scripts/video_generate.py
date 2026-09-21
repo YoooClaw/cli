@@ -10,8 +10,8 @@ MODEL = "wan3.0-video-prime"
 
 def video_seconds(value):
     seconds = positive(value)
-    if seconds > 30:
-        raise argparse.ArgumentTypeError("视频时长不能超过 30 秒")
+    if not 2 <= seconds <= 30:
+        raise argparse.ArgumentTypeError("不支持该视频时长，仅支持 2–30 的整数秒；请用户重新选择并确认后再生成。")
     return seconds
 
 def reference_url(value):
@@ -85,7 +85,7 @@ def main():
     est = commands.add_parser("estimate", help="查询预计积分")
     gen = commands.add_parser("generate", help="提交一次视频生成任务")
     for command in (est, gen):
-        command.add_argument("--seconds", type=video_seconds, required=True, help="视频时长，1–30 的整数秒")
+        command.add_argument("--seconds", type=video_seconds, required=True, help="视频时长，2–30 的整数秒")
         command.add_argument("--resolution", type=str.upper, choices=("480P", "720P", "1080P"), required=True)
     est.add_argument("--method", choices=("GET", "POST"), default="GET")
     gen.add_argument("--prompt", "-p", required=True)
