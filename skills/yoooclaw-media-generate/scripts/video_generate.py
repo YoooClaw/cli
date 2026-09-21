@@ -9,7 +9,10 @@ import urllib.parse
 MODEL = "wan3.0-video-prime"
 
 def video_seconds(value):
-    seconds = positive(value)
+    try:
+        seconds = int(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError("视频时长必须使用整数秒（例如 2、5、10），不支持小数或其他格式；请用户重新选择 2–30 的整数秒并确认后再生成，不要自动取整。") from None
     if not 2 <= seconds <= 30:
         raise argparse.ArgumentTypeError("不支持该视频时长，仅支持 2–30 的整数秒；请用户重新选择并确认后再生成。")
     return seconds

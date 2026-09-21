@@ -59,15 +59,17 @@ class VideoInputsTests(unittest.TestCase):
 
     def test_duration_limits_before_network(self):
         for command in ('estimate', 'generate'):
-            for seconds in ('1', '0', '-1', '1.5', '31'):
+            for seconds in ('1', '0', '-1', '1.5', '2.0', 'abc', '2s', '31'):
                 args = ['video_generate.py', command, '--resolution', '480P', '--seconds', seconds]
                 if command == 'generate':
                     args += ['--prompt', '猫', '--confirmed']
-                with patch.object(sys, 'argv', args), patch.object(video.client, 'request') as request, contextlib.redirect_stderr(io.StringIO()):
+                with patch.object(sys, 'argv', args), patch.object(video.client, 'request') as request, contextlib.redirect_stderr(io.StringIO()) as errors:
                     with self.assertRaises(SystemExit) as caught:
                         video.main()
                     self.assertEqual(caught.exception.code, 2)
                     request.assert_not_called()
+                    if seconds in ('1.5', '2.0', 'abc', '2s'):
+                        self.assertIn('视频时长必须使用整数秒', errors.getvalue())
             for seconds in ('2', '30'):
                 args = ['video_generate.py', command, '--resolution', '480P', '--seconds', seconds]
                 response = {'credits': 100}
