@@ -62,6 +62,7 @@ func TestList(t *testing.T) {
 	}
 	want := []string{
 		"yoooclaw-context-query",
+		"yoooclaw-data-transfer",
 		"yoooclaw-light",
 		"yoooclaw-media-generate",
 		"yoooclaw-notification-to-memory",

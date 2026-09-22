@@ -21,6 +21,23 @@ type StoredNotification struct {
 	ConversationType string `json:"conversationType,omitempty"`
 	// ConversationName 结构化会话名（主要用于飞书群名）。
 	ConversationName string `json:"conversationName,omitempty"`
+	// Transfer 只在经 `yoooclaw transfer import` 迁入的条目上出现。
+	Transfer *TransferMark `json:"transfer,omitempty"`
+}
+
+// MemoryPolicySkipHistory 标记迁入的历史通知不进入通知→记忆的自动同步。
+const MemoryPolicySkipHistory = "skip-history"
+
+// TransferMark 记录迁入条目的原始来源（与 phone-notifications 插件字段一致）。
+type TransferMark struct {
+	Origin       string `json:"origin"`
+	RecordID     string `json:"recordId"`
+	MemoryPolicy string `json:"memoryPolicy,omitempty"`
+}
+
+// NeedsMemory 报告条目是否应进入通知→记忆同步（迁入的历史通知跳过）。
+func (n StoredNotification) NeedsMemory() bool {
+	return n.Transfer == nil || n.Transfer.MemoryPolicy != MemoryPolicySkipHistory
 }
 
 // RawNotification 是手机端上报 / HTTP ingest 的原始通知。

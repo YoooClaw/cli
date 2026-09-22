@@ -31,6 +31,7 @@ import (
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
+	"github.com/YoooClaw/cli/internal/transfer"
 	"github.com/YoooClaw/cli/internal/version"
 )
 
@@ -38,7 +39,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "images", "lightrules", "multi-apikey"}
+var Capabilities = []string{"notifications", "recordings", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -158,6 +159,17 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		token: token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
 		ingressMode: mode, egress: NoopEgress{},
+		transfer: &transfer.Service{
+			Dir: filepath.Join(ctx.Paths.Dir, "transfers"),
+			Roots: transfer.Roots{
+				transfer.TypeNotifications: ctx.Paths.Notifications,
+				transfer.TypeRecordings:    ctx.Paths.Recordings,
+				transfer.TypeWebPages:      ctx.Paths.WebPages,
+				transfer.TypeImages:        ctx.Paths.Images,
+			},
+			Notifications: storage,
+			Recordings:    recordingStorage,
+		},
 	}
 	if mode == config.IngressProxied {
 		srv.egress = resolveProxyEgress(opts, cfg, logger)
@@ -267,6 +279,7 @@ type server struct {
 	storage           *notif.Storage
 	recordingStorage  *recording.Storage
 	recordingEventLog *recording.EventLog
+	transfer          *transfer.Service
 	ingressMode       string
 	token             string
 	ignored           map[string]bool
@@ -383,6 +396,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleWebPageStatus(w, r, authCtx)
 	case path == "/web-pages/index" && r.Method == http.MethodGet:
 		s.handleWebPageIndex(w, r, authCtx)
+	case path == "/transfer" && r.Method == http.MethodPost:
+		s.handleTransfer(w, r, authCtx)
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
 		s.handleMonitors(w, r, path)
 	case path == "/light/send" && r.Method == http.MethodPost:

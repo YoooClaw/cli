@@ -1,0 +1,11 @@
+# Export local data
+
+1. Select notifications, recordings and saved webpages by default; clarify only genuinely missing scope. Audio requires `--with-audio`; images require `--with-images`; HTML archives require `--with-html`.
+2. Run `yoooclaw transfer export --dry-run --format json` with scope options. `--include` accepts comma-separated `notifications,recordings,web-pages,images`; `--from` and `--to` are timezone-qualified timestamps (e.g. `2026-01-01T00:00:00+08:00`), inclusive/exclusive respectively. The preview returns `records`, `recordsByType`, `bytes` and `warnings`.
+3. If the user supplies a target capability file (from `yoooclaw transfer capabilities --out <file>` or the plugin's `ntf transfer capabilities --out <file>`), add `--target-capabilities <file>`. Without that file, report that target compatibility is not yet verified (`targetVerified: false`).
+4. Run `yoooclaw transfer export --out <new-directory> --format json` with the same approved options. The directory must not exist and must not be inside a source data directory. The package is plaintext and can contain private context; explain this in the export preview.
+5. Report `path`, counts, missing resources and warnings. The user carries the entire directory to the target. Do not send it to others or upload it without authorization.
+
+Export writes one marker file, `.transfer-origin`, into each source data directory so multi-hop transfers keep their original source identity. It is the only source-side write, and `--dry-run` does not make it. Source records are never modified or removed.
+
+If source data changes during export, unstable resources are reported. An unreadable day or index file is skipped and reported rather than failing the whole export; a later export/import can supplement missing data without duplicating existing records. Very large scopes are refused at export time (`YOOOCLAW_TRANSFER_PACKAGE_TOO_MANY_RECORDS`, `YOOOCLAW_TRANSFER_MANIFEST_TOO_LARGE`) instead of producing a package the target would reject — narrow the scope with `--include`, `--from` and `--to`.

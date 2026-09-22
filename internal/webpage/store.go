@@ -91,6 +91,46 @@ type Entry struct {
 	ClientLabel     string `json:"clientLabel,omitempty"`
 	ArchivePath     string `json:"archivePath,omitempty"`
 	ArchiveBytes    int    `json:"archiveBytes,omitempty"`
+	// Transfer 只在经 `yoooclaw transfer import` 迁入的网页上出现，记录原始来源。
+	Transfer *TransferMark `json:"transfer,omitempty"`
+}
+
+// TransferMark 记录迁入条目的原始来源（与 phone-notifications 插件字段一致）。
+type TransferMark struct {
+	Origin   string `json:"origin"`
+	RecordID string `json:"recordId"`
+}
+
+// ImportEntry 在索引写锁内合并一条迁入网页（供 transfer 包使用）。
+//
+// merge 拿到当前条目（不存在为 nil），返回要写入的新条目；返回 nil 表示不改动。
+func ImportEntry(dir, urlHash string, merge func(current *Entry) (*Entry, error)) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	entries := ReadIndex(dir)
+	if raw, err := os.ReadFile(filepath.Join(dir, indexFileName)); err == nil && !json.Valid(raw) {
+		// 索引损坏时不能按空处理，否则写回会丢掉原有条目。
+		return fmt.Errorf("INVALID_TARGET_INDEX")
+	}
+	previous, idx := findByHash(entries, urlHash)
+	var current *Entry
+	if previous != nil {
+		copied := *previous
+		current = &copied
+	}
+	next, err := merge(current)
+	if err != nil || next == nil {
+		return err
+	}
+	if idx >= 0 {
+		entries[idx] = *next
+	} else {
+		entries = append(entries, *next)
+	}
+	if err := fsutil.EnsureDir(dir, fsutil.DirMode); err != nil {
+		return err
+	}
+	return writeIndex(dir, entries)
 }
 
 // IngestResult 是 POST /web-pages 的响应体。
