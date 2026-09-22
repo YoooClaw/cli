@@ -163,7 +163,7 @@ func ScanSync(dir string, scope SyncScope) map[string]any {
 	for _, dateKey := range listDateKeys(dir) {
 		items := readDateFile(dir, dateKey)
 		lastIndex := lastIndexFor(checkpoint, dateKey)
-		unprocessed := len(items) - (lastIndex + 1)
+		unprocessed := countNeedsMemory(safeSlice(items, lastIndex+1, len(items)))
 		if unprocessed <= 0 {
 			continue
 		}
@@ -199,10 +199,12 @@ func NextSync(dir string, scope SyncScope) map[string]any {
 	for _, dateKey := range listDateKeys(dir) { // 降序：从最新日期开始处理
 		items := readDateFile(dir, dateKey)
 		lastIndex := lastIndexFor(checkpoint, dateKey)
-		unprocessed := len(items) - (lastIndex + 1)
-		if unprocessed <= 0 {
+		if len(items) <= lastIndex+1 {
 			continue
 		}
+		// 迁入的历史通知不进记忆，但仍占 checkpoint 位置：批次窗口按原始下标推进，
+		// 计数只算需要写记忆的条目。
+		unprocessed := countNeedsMemory(safeSlice(items, lastIndex+1, len(items)))
 		if !isDateInScope(dateKey, scope) {
 			outsideScopePending += unprocessed
 			continue
@@ -226,8 +228,9 @@ func NextSync(dir string, scope SyncScope) map[string]any {
 		}
 	}
 
-	notifications := safeSlice(nextItems, nextStartIndex, nextStartIndex+SyncFetchLimit)
-	endIndex := nextStartIndex + len(notifications) - 1
+	window := safeSlice(nextItems, nextStartIndex, nextStartIndex+SyncFetchLimit)
+	notifications := filterNeedsMemory(window)
+	endIndex := nextStartIndex + len(window) - 1
 	unprocessedInDate := len(nextItems) - nextStartIndex
 
 	return map[string]any{
@@ -238,7 +241,8 @@ func NextSync(dir string, scope SyncScope) map[string]any {
 		"startIndex":          nextStartIndex,
 		"endIndex":            endIndex,
 		"returned":            len(notifications),
-		"hasMoreInDate":       unprocessedInDate > len(notifications),
+		"hasMoreInDate":       unprocessedInDate > len(window),
+		"skippedOnly":         len(notifications) == 0,
 		"remainingInScope":    totalPending - len(notifications),
 		"outsideScopePending": outsideScopePending,
 		"commitCommand":       "yoooclaw sync commit --date " + nextDate + " --end-index " + strconv.Itoa(endIndex),
@@ -272,16 +276,17 @@ func FetchSync(dir, date, maxEndIndexRaw string) (map[string]any, error) {
 		snapshotEndExclusive = maxEndIndex + 1
 	}
 	unprocessed := safeSlice(items, startIndex, snapshotEndExclusive)
-	notifications := unprocessed
-	if len(notifications) > SyncFetchLimit {
-		notifications = notifications[:SyncFetchLimit]
+	window := unprocessed
+	if len(window) > SyncFetchLimit {
+		window = window[:SyncFetchLimit]
 	}
+	notifications := filterNeedsMemory(window)
 
 	endIndex := lastIndex
-	if len(notifications) > 0 {
-		endIndex = startIndex + len(notifications) - 1
+	if len(window) > 0 {
+		endIndex = startIndex + len(window) - 1
 	}
-	hasMore := len(unprocessed) > len(notifications)
+	hasMore := len(unprocessed) > len(window)
 	var nextStartIndex any
 	if hasMore {
 		nextStartIndex = endIndex + 1
@@ -295,7 +300,8 @@ func FetchSync(dir, date, maxEndIndexRaw string) (map[string]any, error) {
 		"limit":            SyncFetchLimit,
 		"maxEndIndex":      maxEndIndex,
 		"returned":         len(notifications),
-		"totalUnprocessed": len(unprocessed),
+		"totalUnprocessed": countNeedsMemory(unprocessed),
+		"skippedOnly":      len(window) > 0 && len(notifications) == 0,
 		"hasMore":          hasMore,
 		"notifications":    notifications,
 	}, nil
@@ -354,6 +360,27 @@ func CommitSync(dir, date, endIndexRaw string) (map[string]any, error) {
 		"hasMore":        hasMore,
 		"nextStartIndex": nextStartIndex,
 	}, nil
+}
+
+// filterNeedsMemory 去掉迁入时标记为 skip-history 的历史通知（不进记忆）。
+func filterNeedsMemory(items []StoredNotification) []StoredNotification {
+	out := make([]StoredNotification, 0, len(items))
+	for _, item := range items {
+		if item.NeedsMemory() {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func countNeedsMemory(items []StoredNotification) int {
+	n := 0
+	for _, item := range items {
+		if item.NeedsMemory() {
+			n++
+		}
+	}
+	return n
 }
 
 // safeSlice 返回 items[start:end]，对越界 / 反序做防御性夹取（对齐 JS slice 容错）。

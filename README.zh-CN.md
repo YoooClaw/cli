@@ -184,6 +184,7 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | `yoooclaw-notification-to-memory` | 从通知提炼个人画像、每日记录与长期记忆，验证持久写入后逐批提交学习进度 |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
 | `yoooclaw-light`                | 通过独立 CLI 播放一次性灯效并管理「通知 → 灯效」持久规则 |
+| `yoooclaw-data-transfer`        | 在两个环境之间导出/导入本地数据包（通知、录音、网页，可选音频/图片），与 OpenClaw 插件 `ntf transfer` 的包互通 |
 | `yoooclaw-tunnel-debug`         | 排查鉴权、daemon、ingest、Relay WebSocket 与手机同步链路（🟡） |
 
 ```bash
@@ -457,6 +458,20 @@ yoooclaw recording events --id <recording-id> --watch
 ```
 
 录音配置与事件分别落在当前 profile 的 `recordings/asr-config.json` 与 `recordings/state/events.jsonl`；`transcripts/` / `summaries/` 文件名约定为 `<YYYYMMDDHH>_<标题>_<id>.md`，按文件名即可时间排序（升级前的旧文件保留原名，不做批量迁移）。经 `/gateway/recordings.*` 写入的录音会打上发起写入的 api-key 对应 `clientLabel`，读侧（`recording list/status/events`）同样按这个标签隔离——通过 Relay 隧道或某个 api-key 接入的客户端只能看到自己名下的录音，本机 loopback / gateway token 请求不受限，`synced-web-page` 与相关端点同理。
+
+### 数据迁移
+
+`yoooclaw transfer` 以明文数据包目录在两个环境之间搬运本地数据（换电脑、重装、另一个 profile）。包格式与 OpenClaw 插件的 `ntf transfer` 相同（schema 1），数据包和能力文件双向通用。
+
+```bash
+yoooclaw transfer export --dry-run                                  # 预览范围，无需 daemon
+yoooclaw transfer export --out ~/yoooclaw-pkg [--with-audio] [--with-images] [--with-html] [--from <ISO+时区>] [--to <ISO+时区>]
+yoooclaw transfer capabilities --out caps.json                      # 在目标端执行（需要 daemon）
+yoooclaw transfer import --file ~/yoooclaw-pkg                       # 暂存 + 校验 + 预览，从不合并
+yoooclaw transfer import --local <localTransferId> --plan <planId>   # 执行预览出的计划 [--resume]
+```
+
+导入在拥有存储的目标 daemon 内执行。目标端已有记录永不覆盖：内容不同的记录报 `conflict`，PARTIAL 导入会在 `<profile>/transfers/` 下保留暂存包与 `report.json`。迁入的通知带 `transfer.memoryPolicy="skip-history"` 标记，不进入 `yoooclaw sync`（通知 → 记忆）。不迁移记忆、凭据与配置。
 
 ### 数据目录
 

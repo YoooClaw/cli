@@ -182,6 +182,7 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 | `yoooclaw-notification-to-memory` | Distills notifications into personal, daily, and long-term agent memory; commits each batch only after verified persistence |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
 | `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
+| `yoooclaw-data-transfer`        | Exports/imports a local data package (notifications, recordings, web pages, optional audio/images) between environments; packages interoperate with the OpenClaw plugin `ntf transfer` |
 | `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
 
 ```bash
@@ -463,6 +464,20 @@ yoooclaw recording events --id <recording-id> --watch
 ```
 
 Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
+
+### Data Transfer
+
+`yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package directory. The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions.
+
+```bash
+yoooclaw transfer export --dry-run                                  # Preview scope; no daemon needed
+yoooclaw transfer export --out ~/yoooclaw-pkg [--with-audio] [--with-images] [--with-html] [--from <ISO+TZ>] [--to <ISO+TZ>]
+yoooclaw transfer capabilities --out caps.json                      # On the target (needs the daemon)
+yoooclaw transfer import --file ~/yoooclaw-pkg                       # Stage + verify + preview, never merges
+yoooclaw transfer import --local <localTransferId> --plan <planId>   # Execute the previewed plan [--resume]
+```
+
+Imports run inside the target daemon, which owns the stores. Existing target records are never overwritten: differing records are reported as `conflict`, and a PARTIAL import keeps its staged package and `report.json` under `<profile>/transfers/`. Imported notifications are tagged `transfer.memoryPolicy="skip-history"` and excluded from `yoooclaw sync` (notification → memory). Memory, credentials and configuration are not transferred.
 
 ### Data Directory
 

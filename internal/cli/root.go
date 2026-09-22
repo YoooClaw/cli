@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 		newAPICmd(),
 		newLogCmd(),
 		newMigrateCmd(),
+		newTransferCmd(),
 		newUpdateCmd(),
 		newSkillsCmd(),
 		newDoctorCmd(),
