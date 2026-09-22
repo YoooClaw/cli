@@ -342,23 +342,32 @@ func TestWindowsInstallerMigratesNpmAfterNativeVerification(t *testing.T) {
 
 func TestInstallScriptUpdateRestoresRunningCLIOwner(t *testing.T) {
 	t.Parallel()
+	for _, platform := range []string{"Darwin", "Linux", "Linux-no-bus"} {
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
 
-	root := t.TempDir()
-	mockBin := filepath.Join(root, "mock-bin")
-	installDir := filepath.Join(root, "install-bin")
-	commandLog := filepath.Join(root, "commands.log")
-	mustMkdirAll(t, mockBin)
-	mustMkdirAll(t, installDir)
-	mustMkdirAll(t, filepath.Join(root, ".yoooclaw", "profiles", "default"))
+			root := t.TempDir()
+			mockBin := filepath.Join(root, "mock-bin")
+			installDir := filepath.Join(root, "install-bin")
+			commandLog := filepath.Join(root, "commands.log")
+			mustMkdirAll(t, mockBin)
+			mustMkdirAll(t, installDir)
+			mustMkdirAll(t, filepath.Join(root, ".yoooclaw", "profiles", "default"))
 
-	writeExecutable(t, filepath.Join(mockBin, "uname"), `#!/bin/sh
+			writeExecutable(t, filepath.Join(mockBin, "uname"), `#!/bin/sh
 case "$1" in
-  -s) printf 'Darwin\n' ;;
+  -s) printf '%s\n' "$MOCK_OS" ;;
   -m) printf 'arm64\n' ;;
   *) exit 2 ;;
 esac
 `)
-	writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
+			writeExecutable(t, filepath.Join(mockBin, "systemctl"), `#!/bin/sh
+printf 'systemctl:%s\n' "$*" >> "$COMMAND_LOG"
+[ "$MOCK_BUS" = available ] && exit 0
+printf 'Failed to connect to bus: No medium found\n' >&2
+exit 1
+`)
+			writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
 printf 'old:%s\n' "$*" >> "$COMMAND_LOG"
 case "$*" in
   *'daemon status'*) exit 0 ;;
@@ -366,7 +375,7 @@ case "$*" in
 esac
 printf '0.7.3\n'
 `)
-	writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
+			writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
 case "$*" in
   *api.github.com*)
     printf '%s\n' '[{"tag_name":"cli-v0.8.1"}]'
@@ -393,34 +402,61 @@ case "$*" in
 esac
 `)
 
-	cmd := exec.Command("sh", mustAbs(t, "install.sh"), "--dir", installDir, "--force")
-	cmd.Env = append(os.Environ(),
-		"HOME="+root,
-		"SHELL=/bin/zsh",
-		"COMMAND_LOG="+commandLog,
-		"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("install.sh update failed: %v\n%s", err, output)
-	}
-	logBytes, err := os.ReadFile(commandLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logText := string(logBytes)
-	for _, want := range []string{
-		"old:--profile default daemon status",
-		"old:--profile default daemon stop",
-		"new:--profile default daemon autostart enable",
-		"new:daemon autostart migrate --format json",
-	} {
-		if !strings.Contains(logText, want) {
-			t.Fatalf("update did not preserve CLI owner (%q missing):\n%s", want, logText)
-		}
-	}
-	if strings.Contains(logText, "owner activate cli") {
-		t.Fatalf("normal update unexpectedly switched owner:\n%s", logText)
+			cmd := exec.Command("sh", mustAbs(t, "install.sh"), "--dir", installDir, "--force")
+			mockOS, mockBus := platform, "available"
+			if platform == "Linux-no-bus" {
+				mockOS, mockBus = "Linux", "unavailable"
+			}
+			cmd.Env = append(os.Environ(),
+				"MOCK_OS="+mockOS, "MOCK_BUS="+mockBus,
+				"HOME="+root,
+				"SHELL=/bin/zsh",
+				"COMMAND_LOG="+commandLog,
+				"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			)
+			output, err := cmd.CombinedOutput()
+			if platform == "Linux-no-bus" {
+				if err == nil || !strings.Contains(string(output), "保留旧 daemon 和二进制") {
+					t.Fatalf("expected safe abort: %v\n%s", err, output)
+				}
+				logBytes, readErr := os.ReadFile(commandLog)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if strings.Contains(string(logBytes), "daemon stop") {
+					t.Fatalf("stopped healthy daemon: %s", logBytes)
+				}
+				oldBytes, readErr := os.ReadFile(filepath.Join(installDir, "yoooclaw"))
+				if readErr != nil || !strings.Contains(string(oldBytes), "0.7.3") {
+					t.Fatal("old binary was replaced")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("install.sh update failed: %v\n%s", err, output)
+			}
+			logBytes, err := os.ReadFile(commandLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logText := string(logBytes)
+			for _, want := range []string{
+				"old:--profile default daemon status",
+				"old:--profile default daemon stop",
+				"new:--profile default daemon autostart enable",
+				"new:daemon autostart migrate --format json",
+			} {
+				if !strings.Contains(logText, want) {
+					t.Fatalf("update did not preserve CLI owner (%q missing):\n%s", want, logText)
+				}
+			}
+			if strings.Contains(logText, "owner activate cli") {
+				t.Fatalf("normal update unexpectedly switched owner:\n%s", logText)
+			}
+			if platform == "Linux" && strings.Index(logText, "systemctl:--user show-environment") > strings.Index(logText, "daemon stop") {
+				t.Fatal("preflight ran after stop")
+			}
+		})
 	}
 }
 
