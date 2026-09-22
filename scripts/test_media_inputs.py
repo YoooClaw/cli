@@ -1,4 +1,6 @@
 """Run with python3 -B scripts/test_media_inputs.py; no network or credentials needed."""
+import base64
+import tempfile
 import contextlib
 import importlib.util
 import io
@@ -24,11 +26,11 @@ class VideoInputsTests(unittest.TestCase):
         start = 'https://example.com/start.png?Signature=a%2Bb%3D&Expires=123'
         end = 'https://example.com/end.png'
         for extra, expected in [
-            ([], {}),
-            (['--image-url', start], {'img_url': start}),
-            (['--first-frame-url', start], {'first_frame_url': start}),
+            ([], []),
+            (['--image-url', start], [{'type': 'reference_image', 'url': start}]),
+            (['--first-frame-url', start], [{'type': 'first_frame', 'url': start}]),
             (['--first-frame-url', start, '--last-frame-url', end],
-             {'first_frame_url': start, 'last_frame_url': end}),
+             [{'type': 'first_frame', 'url': start}, {'type': 'last_frame', 'url': end}]),
         ]:
             with self.subTest(extra=extra), patch.object(video.client, 'request', return_value={
                 'output': {'task_id': 'task-1', 'task_status': 'PENDING'}
@@ -37,8 +39,30 @@ class VideoInputsTests(unittest.TestCase):
                 request.assert_called_once()
                 method, route, body = request.call_args.args
                 self.assertEqual((method, route), ('POST', '/videos/generations'))
-                self.assertEqual(body['input'], {'prompt': '缓慢转头', **expected})
+                self.assertEqual(body['input'], {'prompt': '缓慢转头', **({'media': expected} if expected else {})})
                 self.assertEqual(body['parameters'], {'duration': 30, 'resolution': '720P'})
+
+    def test_local_and_base64_inputs(self):
+        data = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0n8AAAAASUVORK5CYII=')
+        encoded = 'data:image/png;base64,' + base64.b64encode(data).decode()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'input.png'
+            path.write_bytes(data)
+            for flag, kind in [('--image', 'reference_image'), ('--image-url', 'reference_image'),
+                               ('--first-frame', 'first_frame'), ('--first-frame-url', 'first_frame'),
+                               ('--last-frame', 'last_frame'), ('--last-frame-url', 'last_frame')]:
+                for value in (str(path), encoded):
+                    extra = [flag, value]
+                    expected = [{'type': kind, 'url': encoded}]
+                    if kind == 'last_frame':
+                        extra += ['--first-frame', str(path)]
+                        expected.insert(0, {'type': 'first_frame', 'url': encoded})
+                    with self.subTest(flag=flag, local=value == str(path)), patch.object(video.client, 'request', return_value={
+                        'output': {'task_id': 'task-1', 'task_status': 'PENDING'}
+                    }) as request:
+                        self.assertEqual(self.invoke(extra), 0)
+                        request.assert_called_once()
+                        self.assertEqual(request.call_args.args[2]['input']['media'], expected)
 
     def test_invalid_inputs_do_not_submit(self):
         url = 'https://example.com/a.jpg'
@@ -46,7 +70,9 @@ class VideoInputsTests(unittest.TestCase):
             ['--last-frame-url', url],
             ['--image-url', url, '--first-frame-url', url],
             ['--image-url', url, '--last-frame-url', url],
-            ['--image-url', '/tmp/a.png'],
+            ['--image-url', '/does-not-exist/input.png'],
+            ['--image', 'data:image/jpeg;base64,iVBORw0KGgo='],
+            ['--image', 'ftp://example.com/a.png'],
             ['--image-url', 'data:image/png;base64,abc'],
             ['--image-url', 'https://user:pass@example.com/a.png'],
             ['--image-url', 'https://example.com/a b.png'],

@@ -3,6 +3,7 @@ import argparse
 import sys
 import client
 from client import ApiError, emit, positive
+from image_generate import image_input
 import time
 import urllib.parse
 
@@ -17,19 +18,6 @@ def video_seconds(value):
         raise argparse.ArgumentTypeError("不支持该视频时长，仅支持 2–30 的整数秒；请用户重新选择并确认后再生成。")
     return seconds
 
-def reference_url(value):
-    try:
-        parsed = urllib.parse.urlsplit(value)
-        if (parsed.scheme not in ("https", "http") or not parsed.hostname
-                or parsed.username or parsed.password or parsed.fragment
-                or any(c.isspace() for c in value)):
-            raise ValueError()
-        parsed.port
-    except (ValueError, TypeError):
-        raise ApiError("参考图片必须是服务端可访问的 HTTP(S) URL；不支持本地路径或 data URL。") from None
-    return value
-
-
 def video_input(args):
     image = getattr(args, "image_url", None)
     first = getattr(args, "first_frame_url", None)
@@ -39,9 +27,12 @@ def video_input(args):
     if last and not first:
         raise ApiError("提供尾帧时必须同时提供首帧。")
     result = {"prompt": args.prompt}
-    for field, value in (("img_url", image), ("first_frame_url", first), ("last_frame_url", last)):
+    media = []
+    for kind, value in (("reference_image", image), ("first_frame", first), ("last_frame", last)):
         if value is not None:
-            result[field] = reference_url(value)
+            media.append({"type": kind, "url": image_input(value)})
+    if media:
+        result["media"] = media
     return result
 
 
@@ -92,9 +83,9 @@ def main():
         command.add_argument("--resolution", type=str.upper, choices=("480P", "720P", "1080P"), required=True)
     est.add_argument("--method", choices=("GET", "POST"), default="GET")
     gen.add_argument("--prompt", "-p", required=True)
-    gen.add_argument("--image-url", help="参考图片 HTTP(S) URL，与文字一起生成视频")
-    gen.add_argument("--first-frame-url", help="首帧图片 HTTP(S) URL")
-    gen.add_argument("--last-frame-url", help="尾帧图片 HTTP(S) URL，需同时提供首帧")
+    gen.add_argument("--image", "--image-url", dest="image_url", help="参考图片 HTTP(S) URL、Base64 data URL 或本地路径")
+    gen.add_argument("--first-frame", "--first-frame-url", dest="first_frame_url", help="首帧图片 URL、Base64 data URL 或本地路径")
+    gen.add_argument("--last-frame", "--last-frame-url", dest="last_frame_url", help="尾帧图片 URL、Base64 data URL 或本地路径，需同时提供首帧")
     gen.add_argument("--confirmed", action="store_true")
     query_parser = commands.add_parser("query", help="查询已有任务")
     query_parser.add_argument("task_id")

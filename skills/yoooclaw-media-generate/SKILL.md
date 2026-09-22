@@ -24,6 +24,14 @@ description: >-
 
 本次请求中的规格回复、估价确认、生成、轮询和结果交付属于同一次流程，不因每次调用脚本而重复询问已经确认的本次规格。查询或续查已有任务时直接使用原任务 ID，不重新询问规格，也不创建新任务；用户另提生成、重做或再生成请求时，必须重新开始上述选择和授权流程。
 
+### 对话上传图片的准备
+
+用户请求生成图片或视频，并在本次对话上传图片而非提供 URL 时，在调用生成脚本前按以下步骤准备素材（适用于图生图、视频参考图及首尾帧）：
+
+1. 在运行环境的 `wuying-agent-workspace/.wuying-agent-runner/attachments/` 目录寻找本次上传的对应图片。根据对话附件信息、文件名及图片内容匹配；不要仅凭文件最新就选用，也不要沿用上次请求的附件。路径按实际运行环境定位，不假定它位于用户主目录。找不到或无法确定对应图片时，询问用户确认附件或实际路径。
+2. 将匹配的图片复制到用户当前工作目录的 `media-inputs/` 下；如果该目录不存在，先创建目录，再复制图片。保留原附件，使用唯一文件名避免覆盖已有文件。先确定用户实际工作目录，不把附件目录或 skill 安装目录当作工作目录；复制后确认文件存在、可读且与源文件一致。
+3. 使用复制后图片的绝对路径调用脚本：图生图传 `image_generate.py --image`；视频参考图传 `video_generate.py --image`；视频首尾帧传 `--first-frame` / `--last-frame`。这些参数用于各脚本的 `generate` 子命令，其他规格和授权参数仍按对应流程提供。多张图片逐一复制并保持用户确认的素材顺序。脚本自动将本地图片转为 Base64 data URL。
+
 ### 媒体链接完整性
 
 使用脚本返回的图片链接 `images[]` 或视频链接 `video_url` 保存和交付结果。链接必须完整保留，不改写、不截断。缺少有效链接时核实原结果，不重新提交生成。
@@ -105,19 +113,20 @@ python3 {baseDir}/scripts/video_generate.py query '<task_id>' --wait 50
 ### 参考图与首尾帧
 
 - 纯文字：只传 `--prompt`。
-- 图片＋文字：传 `--image-url` 和 `--prompt`，映射到 `input.img_url`、`input.prompt`。
-- 首帧＋文字：传 `--first-frame-url` 和 `--prompt`，映射到 `input.first_frame_url`。
-- 首尾帧＋文字：同时传 `--first-frame-url`、`--last-frame-url` 和 `--prompt`，尾帧映射到 `input.last_frame_url`。向用户确认两张图的顺序；不能只有尾帧。
-- 参考图模式与首尾帧模式互斥。所有图片须为服务端可访问的 HTTP(S) URL，完整保留签名参数。上传附件、本地路径和 data URL 不能直接使用；当前 skill 不提供上传接口，需要用户提供可访问的图片链接或使用已获授权的上传能力。
-- 参数遵循视频契约，具体模型对参考图和首尾帧的支持仍需联调验证。服务拒绝时报告原任务问题，不删除图片后降级为文生视频，也不自动更换模型重试。
+- 图片＋文字：传 `--image` 和 `--prompt`，图片作为内容参考，不强制作为首帧。
+- 首帧＋文字：传 `--first-frame` 和 `--prompt`，指定视频起始画面。
+- 首尾帧＋文字：同时传 `--first-frame`、`--last-frame` 和 `--prompt`。向用户确认两张图的顺序；不能只有尾帧。
+- 三个图片参数均接受公网 HTTP(S) URL、Base64 data URL 或本地文件路径；兼容旧名称 `--image-url`、`--first-frame-url`、`--last-frame-url`。本地文件由脚本编码，无需公开上传；不要在回复或日志中输出 Base64 内容。URL 完整保留签名参数。
+- 图片支持 JPEG/JPG、PNG（无透明通道）、BMP、WEBP，每张不超过 20 MB，单边 240–8000 像素，宽高比 1:8–8:1。脚本校验本地/Base64 大小、格式签名和 MIME；完整解码、像素、透明通道与远程图片限制由服务端校验。
+- 参考图模式与首尾帧模式互斥。脚本按 Wan 3.0 的 `input.media` 结构提交，使用接口契约允许的扩展字段透传。尚未完成线上生成验证；服务拒绝时报告原任务问题，不删除图片后降级为文生视频，也不自动更换模型或输入方式重试。
 - 先按同样的分辨率、时长估价并取得生成授权，再提交一次。轮询与交付流程不变。
 
 ```bash
-python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds 5 --prompt '小猫转头看向镜头' --image-url 'https://example.com/cat.jpg' --confirmed
-python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds 5 --prompt '从日出平滑过渡到夕阳' --first-frame-url 'https://example.com/start.jpg' --last-frame-url 'https://example.com/end.jpg' --confirmed
+python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds 5 --prompt '小猫转头看向镜头' --image '/absolute/path/cat.jpg' --confirmed
+python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds 5 --prompt '从日出平滑过渡到夕阳' --first-frame '/absolute/path/start.jpg' --last-frame 'https://example.com/end.jpg' --confirmed
 ```
 
-示例链接为占位地址，调用时替换为用户提供的真实图片链接；`--confirmed` 仅用于已获授权的生成。
+示例路径和链接为占位地址，调用时替换为用户提供的实际图片；`--confirmed` 仅用于已获授权的生成。
 
 生成异步返回 `{"task_id":"...","status":"PENDING"}`。保存任务 ID，继续查询：
 
