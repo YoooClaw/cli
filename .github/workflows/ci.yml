@@ -97,6 +97,11 @@ jobs:
           # Run the Windows-only syscall coverage on a real Windows runner.
           go test ./internal/cli -run '^(TestWindows|TestRemoveWindows|TestRemoveEmptyWindows)'
           go test ./internal/autostart ./internal/daemon -run '^TestWindows'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows daemon tests failed' }
+          go test ./internal/autostart -run '^TestLegacyMigrationRepairGating$'
+          if ($LASTEXITCODE -ne 0) { throw 'Migration permission tests failed' }
+          go test ./scripts -run '^TestWindowsMigrationOptionalFields$'
+          if ($LASTEXITCODE -ne 0) { throw 'Migration JSON tests failed' }
 
           # Simulate an older global npm installation and verify that the native
           # installer migrates it only after the new executable is usable.
@@ -179,9 +184,13 @@ jobs:
             if ($yoooclawVersion -ne $version -or $ycVersion -ne $version) {
               throw "installed command versions do not match: yoooclaw=$yoooclawVersion yc=$ycVersion"
             }
-            $npmLog = Get-Content -Raw $env:MOCK_NPM_LOG
-            if ($npmLog -notmatch 'uninstall --global @yoooclaw/cli') {
-              throw "old npm package was not removed: $npmLog"
+            # No profile is initialized, so task migration is skipped. Do not
+            # remove an old task's possible target without confirming migration.
+            if (Test-Path -LiteralPath $env:MOCK_NPM_LOG) {
+              throw 'old npm package was removed despite skipped task migration'
+            }
+            if (-not (Test-Path (Join-Path $env:MOCK_NPM_ROOT '@yoooclaw\cli\package.json'))) {
+              throw 'old npm package was not preserved'
             }
 
             $persistedPath = [Environment]::GetEnvironmentVariable('Path', 'User')

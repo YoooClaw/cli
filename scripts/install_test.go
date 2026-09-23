@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,50 @@ import (
 	"strings"
 	"testing"
 )
+
+// Execute the actual installer fragment under strict PowerShell, including
+// responses that omit optional fields. No installation or task changes.
+func TestWindowsMigrationOptionalFields(t *testing.T) {
+	shell, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		shell, err = exec.LookPath("pwsh")
+	}
+	if err != nil {
+		t.Skip("requires PowerShell")
+	}
+	raw, err := os.ReadFile(mustAbs(t, "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	start := strings.Index(script, "    $taskMigrationConfirmed = $false")
+	end := strings.Index(script, `    Write-Info "Daemon login-autostart state checked."`)
+	if start < 0 || end < start {
+		t.Fatal("migration confirmation fragment not found")
+	}
+	for _, tc := range []struct {
+		json string
+		want bool
+	}{
+		{`{"ok":true,"migrated":false,"reason":"uninitialized"}`, false},
+		{`{"ok":true,"migrated":false,"desired":"disabled"}`, false},
+		{`{"ok":true}`, false},
+		{`{"ok":true,"migrated":true}`, true},
+		{`{"ok":true,"repaired":true}`, true},
+		{`{"migrated":false,"repaired":true}`, true},
+		{`{"migrated":false,"repaired":false}`, false},
+		{`{"migrated":"true","repaired":null}`, false},
+	} {
+		want := "$false"
+		if tc.want {
+			want = "$true"
+		}
+		command := "Set-StrictMode -Version 2.0; $ErrorActionPreference='Stop'; $migrationResult = '" + tc.json + "' | ConvertFrom-Json;\n" + script[start:end] + fmt.Sprintf("\nif ($taskMigrationConfirmed -ne %s) { throw 'unexpected confirmation' }", want)
+		if out, err := exec.Command(shell, "-NoProfile", "-NonInteractive", "-Command", command).CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", tc.json, err, out)
+		}
+	}
+}
 
 func TestInstallScriptResolvesGitHubVersionPortably(t *testing.T) {
 	t.Parallel()

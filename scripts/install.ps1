@@ -494,7 +494,15 @@ try {
         throw "Native CLI installed, but task migration failed. Old npm package and user data were preserved; installation is not complete."
     }
     $migrationResult = ($migrationOutput -join "`n") | ConvertFrom-Json
-    $taskMigrationConfirmed = ($migrationResult.migrated -eq $true -or $migrationResult.repaired -eq $true)
+    # Skipped migrations omit optional fields. StrictMode forbids direct access
+    # to missing PSCustomObject properties; absence must mean unconfirmed.
+    $taskMigrationConfirmed = $false
+    foreach ($field in @('migrated', 'repaired')) {
+        $property = $migrationResult.PSObject.Properties[$field]
+        if ($null -ne $property -and $property.Value -is [bool] -and $property.Value -eq $true) {
+            $taskMigrationConfirmed = $true
+        }
+    }
     Write-Info "Daemon login-autostart state checked."
 
     $activateOwner = $Activate -or ($env:YOOOCLAW_ACTIVATE_OWNER -eq "cli")
