@@ -3,7 +3,6 @@ import argparse
 import sys
 import base64
 import binascii
-import re
 from pathlib import Path
 import urllib.parse
 import client
@@ -90,12 +89,13 @@ def generation_payload(args):
             raise ApiError("图生图编辑指令不能超过 5000 字符。")
         payload["image"] = [image_input(value) for value in args.image]
     options = ("size", "negative_prompt", "seed", "prompt_extend", "watermark")
-    if not args.image and any(getattr(args, name) is not None for name in options):
+    if not args.image and any(getattr(args, name) is not None for name in options if name != "size"):
         raise ApiError("这些扩展参数当前仅用于图生图，请同时提供 --image。")
     if args.size is not None:
         size = args.size
-        if size not in ("1K", "2K") and not re.fullmatch(r"[1-9][0-9]*[x*][1-9][0-9]*", size):
-            raise ApiError("图生图 size 仅支持 1K、2K 或宽高像素（如 1024x1024），不支持 4K。")
+        allowed_sizes = ("1K", "2K", "4K") if args.tier == "professional" and not args.image else ("1K", "2K")
+        if size not in allowed_sizes:
+            raise ApiError("当前档位和输入方式仅支持 " + "、".join(allowed_sizes) + "；4K 仅用于专业版纯文生图（非组图）。不接受自定义像素尺寸；请用户重新选择并确认，不要自动换算尺寸或重新提交。")
     if args.negative_prompt is not None and not args.negative_prompt.strip():
         raise ApiError("反向提示词不能为空。")
     for name in options:
@@ -106,7 +106,7 @@ def generation_payload(args):
 
 def run(args):
     if args.command == "estimate":
-        return client.estimate({"type": "image", "model": MODELS[args.tier], "n": args.count}, args.method)
+        return client.estimate({"type": "image", "model": MODELS[args.tier], "n": args.count})
     client.check_generation(args)
     payload = generation_payload(args)
     result = client.request("POST", "/images/generations", payload)
@@ -132,10 +132,9 @@ def main():
     est.add_argument("--n", action=DeprecatedEstimateN, nargs="?", help=argparse.SUPPRESS)
     est.add_argument("--count", type=positive, default=1, help="该档位待估价的总张数；不是提交次数")
     gen.add_argument("--n", type=image_count, default=1, help="同一提示词本次生成张数，1–4；不是提交次数")
-    est.add_argument("--method", choices=("GET", "POST"), default="GET")
     gen.add_argument("--prompt", "-p", required=True)
     gen.add_argument("--image", action="append", help="参考图片 URL、Base64 data URL 或本地路径；可重复，最多 9 张")
-    gen.add_argument("--size", help="图生图输出规格：1K、2K 或宽高像素")
+    gen.add_argument("--size", help="输出规格：1K、2K；专业版纯文生图（非组图）额外支持 4K")
     gen.add_argument("--negative-prompt", help="反向提示词")
     gen.add_argument("--seed", type=seed_value)
     for name in ("prompt-extend", "watermark"):

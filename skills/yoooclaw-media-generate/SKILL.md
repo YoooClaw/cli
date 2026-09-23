@@ -82,21 +82,42 @@ python3 {baseDir}/scripts/image_generate.py generate --tier standard --prompt '�
 
 **完成条件：取得有效图片链接，执行工作空间保存步骤，并交付脚本返回链接的 Markdown 下载链接；保存失败须明确说明。** 超时或响应格式异常时先核实结果，避免重复生成扣费。目前只解析 URL 图片结果。估算用 `--count` 指定该档位待估价的图片总张数（不是提交次数），返回的是总积分，不要再乘张数；估价传 `--n` 会报错并引导改用 `--count`。生成仍用 `--n` 指定同一提示词本次生成的 1–4 张图片。多个需求档位相同时可合计张数估价，档位不同则分别估价后求和；各次生成张数之和必须与已确认并估价的总张数一致。
 
+### 输出尺寸
+
+`--size` 可用于文生图和图生图；未指定时使用后端默认值。
+
+| 场景 | 可选尺寸 |
+| --- | --- |
+| 标准版文生图 | `1K`、`2K` |
+| 专业版纯文生图（无参考图、非组图） | `1K`、`2K`、`4K` |
+| 任一档位图生图 | `1K`、`2K` |
+
+当前脚本不开放组图模式；`--n` 表示独立输出图片张数。每次向用户确认本次尺寸，不能因用户要求 4K 就擅自切换专业版或移除参考图。自定义像素尺寸当前不接受；不支持的规格需用户重新选择并确认。专业版 4K 已接入参数校验，尚未完成线上生成验证。
+
+```bash
+python3 {baseDir}/scripts/image_generate.py estimate --tier professional --count 1
+python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 1 --size 4K --prompt '雪山日落，光线自然，细节丰富' --confirmed
+```
+
+示例中的 `--confirmed` 仅在本次规格和报价已获用户确认后使用。
+
 ### 图生图 / 图片编辑
 
 向用户确认编辑目标、参考图片顺序、档位和生成张数；多张参考图按传入顺序编号。确认素材后先估价、告知总积分并获得授权，再生成。参考图与输出数量是两个概念：`--image` 可重复最多 9 次，`--n` 是生成张数（1–4）。
 
 ```bash
 python3 {baseDir}/scripts/image_generate.py estimate --tier professional --count 2
-python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 2 --prompt '保持图1主体不变，参考图2风格，将背景换成雪山日落' --image '/absolute/path/source.webp' --image 'https://example.com/style.webp' --size 2K --negative-prompt '模糊，畸变，文字' --seed 123456 --prompt-extend true --watermark false --confirmed
+python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 2 --prompt '保持图1主体不变，参考图2风格，将背景换成雪山日落' --image '/absolute/path/source.webp' --image 'https://example.com/style.webp' --size 1K --negative-prompt '模糊，畸变，文字' --seed 123456 --prompt-extend false --watermark false --confirmed
 ```
+
+已实测成功的标准版单张图生图扩展参数组合：`--size 1K --negative-prompt '模糊，畸变，文字' --seed 123456 --prompt-extend false --watermark false`。这是调用示例，不替代用户本次的参数选择，也不保证精确输出尺寸。
 
 替换示例图片路径/链接后再调用；`--confirmed` 仅用于已获授权的生成。脚本向同一 `/images/generations` 接口传顶层 `image` 数组和 `prompt`，不传百炼原生 `input.messages`。不带 `--image` 时仍为文生图。
 
 - `--image` 接受公网 HTTP(S) URL、Base64 data URL 或本地文件路径。本地文件由脚本编码为 data URL，无需另行公开上传。不要在回复或日志中输出 Base64 图片内容。
 - 输入格式：JPEG/JPG、PNG（无透明通道）、BMP、WEBP；每张不超过 20 MB，单边 240–8000 像素，宽高比 1:8–8:1。脚本检查本地/Base64 大小和格式签名；完整解码、尺寸、透明通道及远程 URL 图片限制由服务端校验。
 - URL 必须可被供应商公网访问。平台媒体中转链接只有确认供应商支持跟随其 302 时才作为输入；本地图片可直接用路径传入。完整保留链接签名。
-- 编辑指令最多 5000 字符。`--size` 支持 `1K`、`2K` 或 `1024x1024` 这样的像素规格，默认由后端使用 `2K`；图生图不支持 `4K`，具体像素限制由服务端校验。
+- 编辑指令最多 5000 字符。图生图的 `--size` 仅接受 `1K`、`2K`，未指定时由后端默认使用 `2K`；不接受自定义尺寸或 `4K`。用户要求这些尺寸时先解释当前脚本限制，请其重新选择并确认，不自动换算或提交。
 - 可选 `--negative-prompt`（非空）、`--seed`（0–2147483647）、`--prompt-extend true|false`、`--watermark true|false`。未指定时不传入，使用服务端默认；同一个 seed 不保证完全相同结果。这些扩展参数当前仅开放给带 `--image` 的请求。
 - 两个档位均按图生图契约接入，但后端需配置支持图像编辑的路由。服务拒绝时报告问题，不移除参考图退化为文生图，不自动更换档位或重新提交。生成网络超时仍为 300 秒。
 
@@ -115,7 +136,7 @@ python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 2 -
 ```bash
 python3 {baseDir}/scripts/video_generate.py estimate --resolution 720P --seconds 5
 python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds 5 --prompt '生成一个小猫的视频' --confirmed
-python3 {baseDir}/scripts/video_generate.py query '<task_id>' --wait 50
+python3 {baseDir}/scripts/video_generate.py query '<task_id>'
 ```
 
 ### 参考图与首尾帧
@@ -136,12 +157,19 @@ python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds
 
 示例路径和链接为占位地址，调用时替换为用户提供的实际图片；`--confirmed` 仅用于已获授权的生成。
 
-生成异步返回 `{"task_id":"...","status":"PENDING"}`。保存任务 ID，继续查询：
+`generate` 只提交一次，立即输出任务 ID 和状态，然后在同一脚本进程内使用完整 ID 自动轮询，默认最多等待 1200 秒（20 分钟，提交成功后开始计时）。Agent 应继续查看原执行进程的输出，不复制任务 ID 另开查询、不因工具调用暂未结束而再次运行 `generate`。执行工具支持时为原进程配置足够的运行时长；最终取得链接后交付。
 
-- `PENDING` / `RUNNING` / `QUEUED`：尚未完成。可每次 `--wait 50`，期间每 10 秒查询一次并输出一行 JSON；在等待之间报告有意义的进度，总等待建议不超过 20 分钟。
-- `SUCCEEDED` 且有 `video_url`：执行工作空间保存步骤，在最终回复中用脚本返回的链接提供带描述和“点击下载”提示的 Markdown 链接；保存失败须明确说明。
-- `FAILED` / `CANCELED` / `CANCELLED`：报告任务终止；保留任务 ID。
-- 未知状态、格式异常或等待超时：保留任务 ID，核实状态或续查原任务。
+`query` 用于原进程已结束或中断后的续查，默认同样最多等待 1200 秒。两条命令可用 `--wait` 调整轮询时长；`generate --wait 0` 仅提交，`query --wait 0` 仅查询一次。脚本每 10 秒查询一次，单次查询连接/读取超时不超过剩余轮询时间（且不超过 60 秒）。等待上限约束的是轮询窗口，不包含最初提交请求耗时。
+
+提交接口直接返回终态时，脚本立即交付成功结果或报告失败，不再轮询。诊断字段经过脱敏和长度限制。
+
+根据脚本输出处理：
+
+- `PENDING` / `RUNNING` / `QUEUED`：尚未完成，继续等待原进程；可据其输出报告进度，不新建任务。
+- `SUCCEEDED` 且有 `video_url`：执行工作空间保存步骤，再用脚本返回的完整链接提供带描述和“点击下载”提示的 Markdown 链接；保存失败须明确说明。
+- `FAILED` / `CANCELED` / `CANCELLED`：报告任务终止及脚本提供的 `code`、`message`，保留任务 ID 和可用的 `request_id`；未返回具体原因时不要猜测。
+- `wait_expired: true`：轮询窗口结束，任务未必失败；保留任务 ID 和最后状态，需要时续查原任务。
+- 未知状态、格式异常或查询错误：脚本停止并保留任务 ID，不自动重新提交。
 
 **拿到任务 ID 仅代表提交成功，取得视频链接才代表生成成功。** 支持文字、参考图加文字和首尾帧视频请求；`query` 始终查询原任务，不创建新任务。
 
@@ -151,7 +179,7 @@ python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds
 
 固定服务地址为 `https://openclaw-service.yoooclaw.com/model-proxy/v1`，忽略配置里的 `baseUrl`，不使用 Cookie 或其他凭证来源。配置缺失或无效时报错，由用户修正原配置。
 
-积分估算使用 GET。失败时脚本输出 `{"status":"error","message":"..."}` 并以 1 退出；视频失败任务也以 1 退出。等待结束但任务仍在运行不代表生成失败。
+积分估算固定使用 GET，参数放在查询字符串中；不提供 `--method` 选项，不尝试 POST。失败时脚本输出 `{"status":"error","message":"..."}` 并以 1 退出；视频失败任务也以 1 退出。等待结束但任务仍在运行不代表生成失败。
 
 生成请求遇到 HTTP 错误、超时或异常结果时不自动重试，避免重复扣费。已有视频任务 ID 就续查，没有 ID 时说明提交结果不确定并核实服务端记录。向用户总结错误，不直接转发可能包含内部信息的原始响应。
 

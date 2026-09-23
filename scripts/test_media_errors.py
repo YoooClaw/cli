@@ -11,6 +11,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/yoooclaw-me
 import client
 
 class MediaErrorTests(unittest.TestCase):
+    def test_estimates_get_only_and_reject_method(self):
+        import image_generate
+        import video_generate
+        for module, options in ((image_generate, ['--tier', 'standard', '--count', '2']),
+                                (video_generate, ['--resolution', '480P', '--seconds', '5'])):
+            args = ['script', 'estimate'] + options
+            with patch.object(sys, 'argv', args), patch.object(client, 'request', return_value={'credits': 10}) as request, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(module.main(), 0)
+                request.assert_called_once()
+                self.assertEqual(request.call_args.args[0], 'GET')
+                self.assertTrue(request.call_args.args[1].startswith('/credits/estimate?'))
+                self.assertEqual(len(request.call_args.args), 2)
+            for method in ('POST', 'GET'):
+                with patch.object(sys, 'argv', args + ['--method', method]), patch.object(client, 'request') as request, contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        module.main()
+                    self.assertEqual(caught.exception.code, 2)
+                    request.assert_not_called()
+
     def test_http_error_details_and_no_retry(self):
         key = 'test-secret-key'
         body = {'error': {'code': 'InvalidSize', 'message': 'bad size ' + key,
