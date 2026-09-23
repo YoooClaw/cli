@@ -64,7 +64,7 @@ const (
 	defaultPrefix       = "cli"
 	defaultCacheControl = "no-cache, no-store, max-age=0, must-revalidate"
 
-	putTimeout  = 2 * time.Minute
+	putTimeout  = 10 * time.Minute
 	maxAttempts = 3
 )
 
