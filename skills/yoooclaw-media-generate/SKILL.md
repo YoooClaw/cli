@@ -115,7 +115,7 @@ python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 2 -
 ```bash
 python3 {baseDir}/scripts/video_generate.py estimate --resolution 720P --seconds 5
 python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds 5 --prompt '生成一个小猫的视频' --confirmed
-python3 {baseDir}/scripts/video_generate.py query '<task_id>' --wait 50
+python3 {baseDir}/scripts/video_generate.py query '<task_id>'
 ```
 
 ### 参考图与首尾帧
@@ -136,12 +136,19 @@ python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds
 
 示例路径和链接为占位地址，调用时替换为用户提供的实际图片；`--confirmed` 仅用于已获授权的生成。
 
-生成异步返回 `{"task_id":"...","status":"PENDING"}`。保存任务 ID，继续查询：
+`generate` 只提交一次，立即输出任务 ID 和状态，然后在同一脚本进程内使用完整 ID 自动轮询，默认最多等待 1200 秒（20 分钟，提交成功后开始计时）。Agent 应继续查看原执行进程的输出，不复制任务 ID 另开查询、不因工具调用暂未结束而再次运行 `generate`。执行工具支持时为原进程配置足够的运行时长；最终取得链接后交付。
 
-- `PENDING` / `RUNNING` / `QUEUED`：尚未完成。可每次 `--wait 50`，期间每 10 秒查询一次并输出一行 JSON；在等待之间报告有意义的进度，总等待建议不超过 20 分钟。
-- `SUCCEEDED` 且有 `video_url`：执行工作空间保存步骤，在最终回复中用脚本返回的链接提供带描述和“点击下载”提示的 Markdown 链接；保存失败须明确说明。
-- `FAILED` / `CANCELED` / `CANCELLED`：报告任务终止；保留任务 ID。
-- 未知状态、格式异常或等待超时：保留任务 ID，核实状态或续查原任务。
+`query` 用于原进程已结束或中断后的续查，默认同样最多等待 1200 秒。两条命令可用 `--wait` 调整轮询时长；`generate --wait 0` 仅提交，`query --wait 0` 仅查询一次。脚本每 10 秒查询一次，单次查询连接/读取超时不超过剩余轮询时间（且不超过 60 秒）。等待上限约束的是轮询窗口，不包含最初提交请求耗时。
+
+提交接口直接返回终态时，脚本立即交付成功结果或报告失败，不再轮询。诊断字段经过脱敏和长度限制。
+
+根据脚本输出处理：
+
+- `PENDING` / `RUNNING` / `QUEUED`：尚未完成，继续等待原进程；可据其输出报告进度，不新建任务。
+- `SUCCEEDED` 且有 `video_url`：执行工作空间保存步骤，再用脚本返回的完整链接提供带描述和“点击下载”提示的 Markdown 链接；保存失败须明确说明。
+- `FAILED` / `CANCELED` / `CANCELLED`：报告任务终止及脚本提供的 `code`、`message`，保留任务 ID 和可用的 `request_id`；未返回具体原因时不要猜测。
+- `wait_expired: true`：轮询窗口结束，任务未必失败；保留任务 ID 和最后状态，需要时续查原任务。
+- 未知状态、格式异常或查询错误：脚本停止并保留任务 ID，不自动重新提交。
 
 **拿到任务 ID 仅代表提交成功，取得视频链接才代表生成成功。** 支持文字、参考图加文字和首尾帧视频请求；`query` 始终查询原任务，不创建新任务。
 

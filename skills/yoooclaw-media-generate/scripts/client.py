@@ -18,7 +18,9 @@ class ApiError(Exception):
 
 
 def diagnostic_text(value, key):
-    text = str(value).replace(key, "[REDACTED]")
+    text = str(value)
+    if key:
+        text = text.replace(key, "[REDACTED]")
     text = re.sub(r"data:[^\s\"'<>]*", "[REDACTED_IMAGE]", text, flags=re.I)
     text = re.sub(r"Bearer\s+[^\s\"'<>]+", "Bearer [REDACTED]", text, flags=re.I)
     return text[:2048]
@@ -67,12 +69,13 @@ def load_api_key():
         raise ApiError("credentials 中的 MODEL_PROXY_API_KEY 必须是非空字符串且不能包含换行。")
     return key.strip()
 
-def request(method, path, payload=None):
+def request(method, path, payload=None, *, timeout=None):
     key = load_api_key()
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
     body = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
     req = urllib.request.Request(BASE + path, data=body, headers=headers, method=method)
-    timeout = 300 if method == "POST" and path == "/images/generations" else 60
+    if timeout is None:
+        timeout = 300 if method == "POST" and path == "/images/generations" else 60
     try:
         with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as response:
             result = json.load(response)
@@ -98,6 +101,15 @@ def request(method, path, payload=None):
         raise ApiError("服务返回的 JSON 结构不符合预期。")
     if result.get("error") or result.get("code") not in (None, 0, "0", 200, "200"):
         raise ApiError("服务返回业务错误；请核实鉴权、参数或余额后再继续。", response_body=error_body(json.dumps(result, ensure_ascii=False), key))
+    # Video task failures arrive as HTTP 200; sanitize their diagnostics with
+    # the credential used for this request before exposing them to the caller.
+    if result.get("request_id") is not None:
+        result["request_id"] = diagnostic_text(result["request_id"], key)
+    output = result.get("output")
+    if isinstance(output, dict):
+        for field in ("code", "message"):
+            if output.get(field) is not None:
+                output[field] = diagnostic_text(output[field], key)
     return result
 
 def positive(value):

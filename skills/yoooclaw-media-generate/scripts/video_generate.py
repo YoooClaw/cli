@@ -2,12 +2,14 @@
 import argparse
 import sys
 import client
-from client import ApiError, emit, positive
+from client import ApiError, emit
 from image_generate import image_input
 import time
 import urllib.parse
 
 MODEL = "wan3.0-video-prime"
+DEFAULT_WAIT = 20 * 60
+PENDING_STATUSES = ("PENDING", "RUNNING", "QUEUED")
 
 def video_seconds(value):
     try:
@@ -36,33 +38,66 @@ def video_input(args):
     return result
 
 
-def query(task_id):
-    result = client.request("GET", "/videos/tasks/" + urllib.parse.quote(task_id, safe=""))
+def task_result(task_id, output, result):
+    status = str(output.get("task_status", "PENDING")).upper()
+    item = {"task_id": task_id, "status": status}
+    if result.get("request_id") is not None:
+        item["request_id"] = client.diagnostic_text(result["request_id"], "")
+    if status == "SUCCEEDED":
+        item["video_url"] = client.media_url(output, "video_url")
+    elif status not in PENDING_STATUSES:
+        for field in ("code", "message"):
+            if output.get(field) is not None:
+                item[field] = client.diagnostic_text(output[field], "")
+    return item
+
+
+def query(task_id, timeout=60):
+    result = client.request("GET", "/videos/tasks/" + urllib.parse.quote(task_id, safe=""), timeout=timeout)
     output = result.get("output")
     if not isinstance(output, dict) or not output.get("task_status"):
         raise ApiError("任务查询响应缺少 output.task_status；保留任务 ID，核实接口契约。")
-    status = str(output["task_status"]).upper()
-    item = {"task_id": task_id, "status": status}
-    if status == "SUCCEEDED":
-        item["video_url"] = client.media_url(output, "video_url")
+    item = task_result(task_id, output, result)
     emit(item)
-    return status
+    return item["status"]
+
+def wait_seconds(value):
+    seconds = int(value)
+    if seconds < 0:
+        raise argparse.ArgumentTypeError("等待时间不能为负数；0 表示不轮询。")
+    return seconds
+
+
+def wait_for_task(task_id, wait, initial_status="UNKNOWN"):
+    deadline = time.monotonic() + wait
+    status = initial_status
+    while True:
+        remaining = deadline - time.monotonic()
+        if wait > 0 and remaining <= 0:
+            emit({"task_id": task_id, "status": status, "wait_expired": True,
+                  "message": "已达到等待上限；保留任务 ID 续查，不要重新提交生成。"})
+            return 0
+        try:
+            status = query(task_id, timeout=min(60, remaining) if wait > 0 else 60)
+        except ApiError as exc:
+            exc.details.update(task_id=task_id, last_task_status=status)
+            raise
+        if status == "SUCCEEDED":
+            return 0
+        if status not in PENDING_STATUSES:
+            return 1
+        if wait == 0:
+            return 0
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(10, remaining))
+
 
 def run(args):
     if args.command == "estimate":
         return client.estimate({"type": "video", "model": MODEL, "resolution": args.resolution, "seconds": args.seconds}, args.method)
     if args.command == "query":
-        deadline = time.monotonic() + args.wait
-        while True:
-            status = query(args.task_id)
-            if status in ("FAILED", "CANCELED", "CANCELLED", "UNKNOWN"):
-                return 1
-            if status == "SUCCEEDED" or status not in ("PENDING", "RUNNING", "QUEUED"):
-                return 0
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return 0
-            time.sleep(min(10, remaining))
+        return wait_for_task(args.task_id, args.wait)
     client.check_generation(args)
     payload = {"model": MODEL, "input": video_input(args), "parameters": {"duration": args.seconds, "resolution": args.resolution}}
     result = client.request("POST", "/videos/generations", payload)
@@ -70,8 +105,14 @@ def run(args):
     task_id = output.get("task_id") if isinstance(output, dict) else None
     if not task_id:
         raise ApiError("响应缺少任务 ID；不要重复提交，请核实服务端任务记录。")
-    emit({"task_id": task_id, "status": output.get("task_status", "PENDING")})
-    return 0
+    item = task_result(task_id, output, result)
+    status = item["status"]
+    emit(item)
+    if status not in PENDING_STATUSES:
+        return 0 if status == "SUCCEEDED" else 1
+    if args.wait == 0:
+        return 0
+    return wait_for_task(task_id, args.wait, status)
 
 def main():
     parser = argparse.ArgumentParser(description="视频生成与任务查询")
@@ -89,7 +130,9 @@ def main():
     gen.add_argument("--confirmed", action="store_true")
     query_parser = commands.add_parser("query", help="查询已有任务")
     query_parser.add_argument("task_id")
-    query_parser.add_argument("--wait", type=positive, default=0, help="最多等待秒数，每 10 秒查询")
+    for command in (gen, query_parser):
+        command.add_argument("--wait", type=wait_seconds, default=DEFAULT_WAIT,
+                             help="最多轮询等待秒数，默认 1200（20 分钟）；0 为仅提交/查询一次")
     return client.execute(run, parser.parse_args())
 
 if __name__ == "__main__":
