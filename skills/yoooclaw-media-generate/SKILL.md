@@ -82,21 +82,42 @@ python3 {baseDir}/scripts/image_generate.py generate --tier standard --prompt '�
 
 **完成条件：取得有效图片链接，执行工作空间保存步骤，并交付脚本返回链接的 Markdown 下载链接；保存失败须明确说明。** 超时或响应格式异常时先核实结果，避免重复生成扣费。目前只解析 URL 图片结果。估算用 `--count` 指定该档位待估价的图片总张数（不是提交次数），返回的是总积分，不要再乘张数；估价传 `--n` 会报错并引导改用 `--count`。生成仍用 `--n` 指定同一提示词本次生成的 1–4 张图片。多个需求档位相同时可合计张数估价，档位不同则分别估价后求和；各次生成张数之和必须与已确认并估价的总张数一致。
 
+### 输出尺寸
+
+`--size` 可用于文生图和图生图；未指定时使用后端默认值。
+
+| 场景 | 可选尺寸 |
+| --- | --- |
+| 标准版文生图 | `1K`、`2K` |
+| 专业版纯文生图（无参考图、非组图） | `1K`、`2K`、`4K` |
+| 任一档位图生图 | `1K`、`2K` |
+
+当前脚本不开放组图模式；`--n` 表示独立输出图片张数。每次向用户确认本次尺寸，不能因用户要求 4K 就擅自切换专业版或移除参考图。自定义像素尺寸当前不接受；不支持的规格需用户重新选择并确认。专业版 4K 已接入参数校验，尚未完成线上生成验证。
+
+```bash
+python3 {baseDir}/scripts/image_generate.py estimate --tier professional --count 1
+python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 1 --size 4K --prompt '雪山日落，光线自然，细节丰富' --confirmed
+```
+
+示例中的 `--confirmed` 仅在本次规格和报价已获用户确认后使用。
+
 ### 图生图 / 图片编辑
 
 向用户确认编辑目标、参考图片顺序、档位和生成张数；多张参考图按传入顺序编号。确认素材后先估价、告知总积分并获得授权，再生成。参考图与输出数量是两个概念：`--image` 可重复最多 9 次，`--n` 是生成张数（1–4）。
 
 ```bash
 python3 {baseDir}/scripts/image_generate.py estimate --tier professional --count 2
-python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 2 --prompt '保持图1主体不变，参考图2风格，将背景换成雪山日落' --image '/absolute/path/source.webp' --image 'https://example.com/style.webp' --size 2K --negative-prompt '模糊，畸变，文字' --seed 123456 --prompt-extend true --watermark false --confirmed
+python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 2 --prompt '保持图1主体不变，参考图2风格，将背景换成雪山日落' --image '/absolute/path/source.webp' --image 'https://example.com/style.webp' --size 1K --negative-prompt '模糊，畸变，文字' --seed 123456 --prompt-extend false --watermark false --confirmed
 ```
+
+已实测成功的标准版单张图生图扩展参数组合：`--size 1K --negative-prompt '模糊，畸变，文字' --seed 123456 --prompt-extend false --watermark false`。这是调用示例，不替代用户本次的参数选择，也不保证精确输出尺寸。
 
 替换示例图片路径/链接后再调用；`--confirmed` 仅用于已获授权的生成。脚本向同一 `/images/generations` 接口传顶层 `image` 数组和 `prompt`，不传百炼原生 `input.messages`。不带 `--image` 时仍为文生图。
 
 - `--image` 接受公网 HTTP(S) URL、Base64 data URL 或本地文件路径。本地文件由脚本编码为 data URL，无需另行公开上传。不要在回复或日志中输出 Base64 图片内容。
 - 输入格式：JPEG/JPG、PNG（无透明通道）、BMP、WEBP；每张不超过 20 MB，单边 240–8000 像素，宽高比 1:8–8:1。脚本检查本地/Base64 大小和格式签名；完整解码、尺寸、透明通道及远程 URL 图片限制由服务端校验。
 - URL 必须可被供应商公网访问。平台媒体中转链接只有确认供应商支持跟随其 302 时才作为输入；本地图片可直接用路径传入。完整保留链接签名。
-- 编辑指令最多 5000 字符。`--size` 支持 `1K`、`2K` 或 `1024x1024` 这样的像素规格，默认由后端使用 `2K`；图生图不支持 `4K`，具体像素限制由服务端校验。
+- 编辑指令最多 5000 字符。图生图的 `--size` 仅接受 `1K`、`2K`，未指定时由后端默认使用 `2K`；不接受 `1024x1024`、`1024*1024` 等自定义像素规格或 `4K`。用户要求这些尺寸时先解释当前脚本限制，请其重新选择并确认，不自动换算或提交。
 - 可选 `--negative-prompt`（非空）、`--seed`（0–2147483647）、`--prompt-extend true|false`、`--watermark true|false`。未指定时不传入，使用服务端默认；同一个 seed 不保证完全相同结果。这些扩展参数当前仅开放给带 `--image` 的请求。
 - 两个档位均按图生图契约接入，但后端需配置支持图像编辑的路由。服务拒绝时报告问题，不移除参考图退化为文生图，不自动更换档位或重新提交。生成网络超时仍为 300 秒。
 

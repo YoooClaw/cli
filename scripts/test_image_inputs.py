@@ -68,18 +68,50 @@ class ImageInputsTests(unittest.TestCase):
                     self.invoke(extra, 'estimate')
                 request.assert_not_called()
 
+    def test_verified_extension_combination(self):
+        with patch.object(image.client, 'request', return_value={'data': [{'url': URL}]}) as request:
+            self.assertEqual(self.invoke(['--image', URL, '--size', '1K',
+                '--negative-prompt', '模糊，畸变，文字', '--seed', '123456',
+                '--prompt-extend', 'false', '--watermark', 'false']), 0)
+        body = request.call_args.args[2]
+        self.assertEqual(body['size'], '1K')
+        self.assertEqual(body['seed'], 123456)
+        self.assertEqual(body['negative_prompt'], '模糊，畸变，文字')
+        self.assertIs(body['prompt_extend'], False)
+        self.assertIs(body['watermark'], False)
+
     def test_invalid_inputs_no_request(self):
         for extra in [
-            ['--image', URL, '--size', '4K'], ['--image', URL, '--negative-prompt', ' '],
+            ['--image', URL, '--size', '4K'],
+            ['--image', URL, '--size', '1024x1024'], ['--image', URL, '--size', '1024*1024'], ['--image', URL, '--negative-prompt', ' '],
             ['--image', URL, '--prompt', 'x'*5001], ['--image', ''],
             ['--image', 'data:image/png;base64,invalid!'], ['--image', 'ftp://example.com/a.png'],
             ['--image', 'https://user:password@example.com/a.png'],
-            ['--image', '/does-not-exist/image.png'], ['--size', '2K'],
+            ['--image', '/does-not-exist/image.png'], ['--seed', '123456'],
             ['--image', URL]*10,
         ]:
             with self.subTest(extra=extra), patch.object(image.client, 'request') as request:
                 self.assertEqual(self.invoke(extra), 1)
                 request.assert_not_called()
+
+    def test_size_by_tier_and_input_mode(self):
+        for tier in ('standard', 'professional'):
+            for has_image in (False, True):
+                for size in ('1K', '2K', '4K', '1024x1024'):
+                    extra = ['--tier', tier, '--size', size]
+                    if has_image:
+                        extra += ['--image', URL]
+                    allowed = size in ('1K', '2K') or (size == '4K' and tier == 'professional' and not has_image)
+                    with self.subTest(tier=tier, image=has_image, size=size), patch.object(image.client, 'request', return_value={'data': [{'url': URL}]}) as request:
+                        self.assertEqual(self.invoke(extra), 0 if allowed else 1)
+                        if allowed:
+                            request.assert_called_once()
+                            payload = request.call_args.args[2]
+                            self.assertEqual(payload['size'], size)
+                            self.assertEqual('image' in payload, has_image)
+                            self.assertEqual(payload['model'], image.MODELS[tier])
+                        else:
+                            request.assert_not_called()
 
     def test_cli_ranges(self):
         for extra in [['--n', '0'], ['--n', '5'], ['--seed', '-1'], ['--seed', '2147483648'], ['--watermark', 'maybe']]:
