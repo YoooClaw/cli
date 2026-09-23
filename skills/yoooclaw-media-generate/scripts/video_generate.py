@@ -95,7 +95,7 @@ def wait_for_task(task_id, wait, initial_status="UNKNOWN"):
 
 def run(args):
     if args.command == "estimate":
-        return client.estimate({"type": "video", "model": MODEL, "resolution": args.resolution, "seconds": args.seconds}, args.method)
+        return client.estimate({"type": "video", "model": MODEL, "resolution": args.resolution, "seconds": args.seconds})
     if args.command == "query":
         return wait_for_task(args.task_id, args.wait)
     client.check_generation(args)
@@ -122,7 +122,6 @@ def main():
     for command in (est, gen):
         command.add_argument("--seconds", type=video_seconds, required=True, help="视频时长，2–30 的整数秒")
         command.add_argument("--resolution", type=str.upper, choices=("480P", "720P", "1080P"), required=True)
-    est.add_argument("--method", choices=("GET", "POST"), default="GET")
     gen.add_argument("--prompt", "-p", required=True)
     gen.add_argument("--image", "--image-url", dest="image_url", help="参考图片 HTTP(S) URL、Base64 data URL 或本地路径")
     gen.add_argument("--first-frame", "--first-frame-url", dest="first_frame_url", help="首帧图片 URL、Base64 data URL 或本地路径")

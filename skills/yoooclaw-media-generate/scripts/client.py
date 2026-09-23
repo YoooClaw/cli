@@ -132,12 +132,10 @@ def media_url(item, field="url"):
 def emit(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
-def estimate(payload, method="GET"):
-    if method == "GET":
-        result = request("GET", "/credits/estimate?" + urllib.parse.urlencode(payload))
-    else:
-        result = request("POST", "/credits/estimate", payload)
+def estimate(payload):
+    result = request("GET", "/credits/estimate?" + urllib.parse.urlencode(payload))
     emit({"estimate_response": result})
+
 
 def execute(run, args):
     try:

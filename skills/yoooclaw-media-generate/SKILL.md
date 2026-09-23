@@ -179,7 +179,7 @@ python3 {baseDir}/scripts/video_generate.py generate --resolution 720P --seconds
 
 固定服务地址为 `https://openclaw-service.yoooclaw.com/model-proxy/v1`，忽略配置里的 `baseUrl`，不使用 Cookie 或其他凭证来源。配置缺失或无效时报错，由用户修正原配置。
 
-积分估算使用 GET。失败时脚本输出 `{"status":"error","message":"..."}` 并以 1 退出；视频失败任务也以 1 退出。等待结束但任务仍在运行不代表生成失败。
+积分估算固定使用 GET，参数放在查询字符串中；不提供 `--method` 选项，不尝试 POST。失败时脚本输出 `{"status":"error","message":"..."}` 并以 1 退出；视频失败任务也以 1 退出。等待结束但任务仍在运行不代表生成失败。
 
 生成请求遇到 HTTP 错误、超时或异常结果时不自动重试，避免重复扣费。已有视频任务 ID 就续查，没有 ID 时说明提交结果不确定并核实服务端记录。向用户总结错误，不直接转发可能包含内部信息的原始响应。
 

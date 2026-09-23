@@ -106,7 +106,7 @@ def generation_payload(args):
 
 def run(args):
     if args.command == "estimate":
-        return client.estimate({"type": "image", "model": MODELS[args.tier], "n": args.count}, args.method)
+        return client.estimate({"type": "image", "model": MODELS[args.tier], "n": args.count})
     client.check_generation(args)
     payload = generation_payload(args)
     result = client.request("POST", "/images/generations", payload)
@@ -132,7 +132,6 @@ def main():
     est.add_argument("--n", action=DeprecatedEstimateN, nargs="?", help=argparse.SUPPRESS)
     est.add_argument("--count", type=positive, default=1, help="该档位待估价的总张数；不是提交次数")
     gen.add_argument("--n", type=image_count, default=1, help="同一提示词本次生成张数，1–4；不是提交次数")
-    est.add_argument("--method", choices=("GET", "POST"), default="GET")
     gen.add_argument("--prompt", "-p", required=True)
     gen.add_argument("--image", action="append", help="参考图片 URL、Base64 data URL 或本地路径；可重复，最多 9 张")
     gen.add_argument("--size", help="输出规格：1K、2K；专业版纯文生图（非组图）额外支持 4K")
