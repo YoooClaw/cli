@@ -29,6 +29,8 @@ func newDaemonAutostartCmd() *cobra.Command {
 	disable := &cobra.Command{Use: "disable", Short: "停止 daemon 并关闭自启", Args: cobra.NoArgs, RunE: run(daemonAutostartDisable)}
 	status := &cobra.Command{Use: "status", Short: "显示自启期望与系统服务状态", Args: cobra.NoArgs, RunE: run(daemonAutostartStatus)}
 	migrate := &cobra.Command{Use: "migrate", Short: "迁移旧版本的 daemon 自启状态", Hidden: true, Args: cobra.NoArgs, RunE: run(daemonAutostartMigrate)}
+	migrate.Flags().Bool("repair-permissions", false, "Windows：旧任务拒绝访问时请求授权修复任务权限")
+	addTaskRepairCommand(c)
 	c.AddCommand(enable, disable, status, migrate)
 	return c
 }
@@ -126,7 +128,7 @@ func daemonAutostartStatus(_ *clictx.Context, _ *cobra.Command, _ []string) (any
 // an explicit user opt-out is never overwritten. Registration is deliberately
 // cold: a daemon that was stopped before the upgrade remains stopped until the
 // next login, while an installer can separately restore one that was running.
-func daemonAutostartMigrate(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+func daemonAutostartMigrate(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	root := paths.RootDir()
 	desired, err := autostart.Desired(root)
 	if err != nil {
@@ -157,6 +159,7 @@ func daemonAutostartMigrate(ctx *clictx.Context, _ *cobra.Command, _ []string) (
 	if err != nil {
 		return nil, autostartError(err)
 	}
+	spec.RepairPermissions, _ = cmd.Flags().GetBool("repair-permissions")
 	status, err := autostart.Enable(autostartManager(), spec, false)
 	if err != nil {
 		return nil, autostartError(err)

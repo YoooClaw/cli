@@ -332,6 +332,14 @@ func TestWindowsInstallerMigratesNpmAfterNativeVerification(t *testing.T) {
 	verifiedAt := strings.Index(script, `if ($installedVersion -ne $resolvedVersion)`)
 	committedAt := strings.Index(script, `$installationCommitted = $true`)
 	removeAt := strings.Index(script, `$npmRemoved = Remove-NpmCli $npmCommand`)
+	migrateAt := strings.Index(script, `& $target daemon autostart migrate --repair-permissions --format json`)
+	restoreAt := strings.Index(script, `Restore-Daemons $target $stoppedProfiles`)
+	if migrateAt < committedAt || restoreAt < migrateAt || removeAt < restoreAt {
+		t.Fatal("migration must precede daemon restore and npm cleanup")
+	}
+	if !strings.Contains(script, `throw "Native CLI installed, but task migration failed.`) {
+		t.Fatal("migration failure must not report installation success")
+	}
 	if verifiedAt < 0 || committedAt < 0 || removeAt < 0 {
 		t.Fatalf("install.ps1 is missing npm migration ordering markers")
 	}
