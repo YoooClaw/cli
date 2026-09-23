@@ -2,6 +2,7 @@
 """Shared authentication, HTTP requests and credit estimation."""
 import argparse
 import json
+import re
 from pathlib import Path
 import sys
 import urllib.error
@@ -11,7 +12,34 @@ import urllib.request
 BASE = "https://openclaw-service.yoooclaw.com/model-proxy/v1"
 
 class ApiError(Exception):
-    pass
+    def __init__(self, message, **details):
+        super().__init__(message)
+        self.details = details
+
+
+def diagnostic_text(value, key):
+    text = str(value).replace(key, "[REDACTED]")
+    text = re.sub(r"data:[^\s\"'<>]*", "[REDACTED_IMAGE]", text, flags=re.I)
+    text = re.sub(r"Bearer\s+[^\s\"'<>]+", "Bearer [REDACTED]", text, flags=re.I)
+    return text[:2048]
+
+
+def error_body(raw, key):
+    # Only expose diagnostic fields, never echoed request objects or image arrays.
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return "非 JSON 错误响应，正文已省略。"
+    def select(value):
+        if not isinstance(value, dict):
+            return diagnostic_text(value, key) if isinstance(value, (str, int, float)) else None
+        result = {}
+        for name in ("code", "message", "type", "param", "request_id", "requestId", "error"):
+            if name in value:
+                result[name] = select(value[name])
+        return result
+    return select(body)
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -49,8 +77,19 @@ def request(method, path, payload=None):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as response:
             result = json.load(response)
     except urllib.error.HTTPError as exc:
-        # Do not print server bodies: they may contain credentials or internal model names.
-        raise ApiError(f"服务返回 HTTP {exc.code}。未自动重试；生成请求可能已受理，请先核实。") from None
+        details = {"http_status": exc.code}
+        try:
+            raw = exc.read(16385)
+            details["response_body"] = error_body(raw[:16384], key)
+            if len(raw) > 16384:
+                details["response_body_truncated"] = True
+        except (OSError, ValueError):
+            details["response_body_unavailable"] = True
+        finally:
+            exc.close()
+        if exc.headers and exc.headers.get("x-request-id"):
+            details["request_id"] = diagnostic_text(exc.headers.get("x-request-id"), key)
+        raise ApiError(f"服务返回 HTTP {exc.code}。未自动重试。", **details) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise ApiError("请求未完成，结果不确定。不要重复提交生成请求；已有任务请使用任务 ID 查询。") from None
     except (ValueError, UnicodeError):
@@ -58,7 +97,7 @@ def request(method, path, payload=None):
     if not isinstance(result, dict):
         raise ApiError("服务返回的 JSON 结构不符合预期。")
     if result.get("error") or result.get("code") not in (None, 0, "0", 200, "200"):
-        raise ApiError("服务返回业务错误；请核实鉴权、参数或余额后再继续。")
+        raise ApiError("服务返回业务错误；请核实鉴权、参数或余额后再继续。", response_body=error_body(json.dumps(result, ensure_ascii=False), key))
     return result
 
 def positive(value):
@@ -93,7 +132,7 @@ def execute(run, args):
         return run(args) or 0
     except (ApiError, OSError, ValueError) as exc:
         message = str(exc) if isinstance(exc, ApiError) else "本地配置读取失败，请检查凭证文件格式和权限。"
-        emit({"status": "error", "message": message})
+        emit({"status": "error", "message": message, **(exc.details if isinstance(exc, ApiError) else {})})
         return 1
 
 def check_generation(args):

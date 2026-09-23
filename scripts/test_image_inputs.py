@@ -45,8 +45,28 @@ class ImageInputsTests(unittest.TestCase):
             self.assertNotIn('image', request.call_args.args[2])
             self.assertEqual(request.call_args.args[2]['n'], 4)
         with patch.object(image.client, 'request', return_value={'credits': 101}) as request:
-            self.assertEqual(self.invoke(['--n', '4'], 'estimate'), 0)
+            self.assertEqual(self.invoke(['--count', '4'], 'estimate'), 0)
             self.assertIn('n=4', request.call_args.args[1])
+
+    def test_estimate_total_and_deprecated_n(self):
+        with patch.object(image.client, 'request', return_value={'credits': 200}) as request:
+            self.assertEqual(self.invoke(['--count', '8'], 'estimate'), 0)
+            request.assert_called_once()
+            self.assertIn('n=8', request.call_args.args[1])
+        for extra in (['--n', '2'], ['--n=2'], ['--n'], ['--count', '3', '--n', '2']):
+            with self.subTest(extra=extra), patch.object(image.client, 'request') as request, contextlib.redirect_stderr(io.StringIO()) as output:
+                with self.assertRaises(SystemExit) as caught:
+                    self.invoke(extra, 'estimate')
+                self.assertEqual(caught.exception.code, 2)
+                self.assertIn('--count', output.getvalue())
+                self.assertIn('总张数', output.getvalue())
+                self.assertIn('不是提交次数', output.getvalue())
+                request.assert_not_called()
+        for extra in (['--count', '0'], ['--count', '2.5'], ['--cou', '2']):
+            with patch.object(image.client, 'request') as request, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    self.invoke(extra, 'estimate')
+                request.assert_not_called()
 
     def test_invalid_inputs_no_request(self):
         for extra in [

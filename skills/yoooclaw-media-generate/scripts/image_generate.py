@@ -15,10 +15,10 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MIMES = {"image/jpeg", "image/jpg", "image/png", "image/bmp", "image/webp"}
 
 def image_count(value):
-    n = positive(value)
-    if n > 4:
-        raise argparse.ArgumentTypeError("每次生成 1–4 张图片")
-    return n
+    count = positive(value)
+    if count > 4:
+        raise argparse.ArgumentTypeError("同一需求每次生成 1–4 张图片")
+    return count
 
 def boolean_value(value):
     if value not in ("true", "false"):
@@ -106,7 +106,7 @@ def generation_payload(args):
 
 def run(args):
     if args.command == "estimate":
-        return client.estimate({"type": "image", "model": MODELS[args.tier], "n": args.n}, args.method)
+        return client.estimate({"type": "image", "model": MODELS[args.tier], "n": args.count}, args.method)
     client.check_generation(args)
     payload = generation_payload(args)
     result = client.request("POST", "/images/generations", payload)
@@ -117,14 +117,21 @@ def run(args):
     emit({"status": "success", "images": images})
     return 0
 
+class DeprecatedEstimateN(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error("估价不支持 --n，请改用 --count；--count 是该档位待估价的图片总张数，不是提交次数。生成时仍使用 --n 指定单次张数。")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="图片生成服务")
+    parser = argparse.ArgumentParser(description="图片生成服务", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    est = commands.add_parser("estimate", help="查询预计积分")
-    gen = commands.add_parser("generate", help="文生图或图生图，生成 1–4 张图片")
+    est = commands.add_parser("estimate", help="查询指定档位和总张数的预计总积分", allow_abbrev=False)
+    gen = commands.add_parser("generate", help="文生图或图生图，同一需求每次生成 1–4 张图片", allow_abbrev=False)
     for command in (est, gen):
         command.add_argument("--tier", choices=tuple(MODELS), required=True)
-        command.add_argument("--n", type=image_count, default=1, help="生成张数，1–4；估价与生成须一致")
+    est.add_argument("--n", action=DeprecatedEstimateN, nargs="?", help=argparse.SUPPRESS)
+    est.add_argument("--count", type=positive, default=1, help="该档位待估价的总张数；不是提交次数")
+    gen.add_argument("--n", type=image_count, default=1, help="同一提示词本次生成张数，1–4；不是提交次数")
     est.add_argument("--method", choices=("GET", "POST"), default="GET")
     gen.add_argument("--prompt", "-p", required=True)
     gen.add_argument("--image", action="append", help="参考图片 URL、Base64 data URL 或本地路径；可重复，最多 9 张")
