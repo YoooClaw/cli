@@ -89,7 +89,7 @@ def request(method, path, payload=None):
             exc.close()
         if exc.headers and exc.headers.get("x-request-id"):
             details["request_id"] = diagnostic_text(exc.headers.get("x-request-id"), key)
-        raise ApiError(f"服务返回 HTTP {exc.code}。未自动重试；生成请求可能已受理，请先核实。", **details) from None
+        raise ApiError(f"服务返回 HTTP {exc.code}。未自动重试。", **details) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise ApiError("请求未完成，结果不确定。不要重复提交生成请求；已有任务请使用任务 ID 查询。") from None
     except (ValueError, UnicodeError):
