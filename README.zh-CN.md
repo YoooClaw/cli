@@ -461,13 +461,13 @@ yoooclaw recording events --id <recording-id> --watch
 
 ### 数据迁移
 
-`yoooclaw transfer` 以明文数据包目录在两个环境之间搬运本地数据（换电脑、重装、另一个 profile）。包格式与 OpenClaw 插件的 `ntf transfer` 相同（schema 1），数据包和能力文件双向通用。
+`yoooclaw transfer` 以明文数据包在两个环境之间搬运本地数据（换电脑、重装、另一个 profile）：`--out` 以 `.tar.gz`/`.tgz` 结尾时生成单个压缩包（0.12.0 起），其他路径生成包目录。包格式与 OpenClaw 插件的 `ntf transfer` 相同（schema 1），数据包和能力文件双向通用；低于 CLI 0.12.0 / 插件 1.18.0 的目标端只能导入包目录，带 `--target-capabilities` 导出 tar.gz 会报 `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`。压缩不等于加密。
 
 ```bash
 yoooclaw transfer export --dry-run                                  # 预览范围，无需 daemon
-yoooclaw transfer export --out ~/yoooclaw-pkg [--with-audio] [--with-images] [--with-html] [--from <ISO+时区>] [--to <ISO+时区>]
+yoooclaw transfer export --out ~/yoooclaw-pkg.tar.gz [--with-audio] [--with-images] [--with-html] [--from <ISO+时区>] [--to <ISO+时区>]
 yoooclaw transfer capabilities --out caps.json                      # 在目标端执行（需要 daemon）
-yoooclaw transfer import --file ~/yoooclaw-pkg                       # 暂存 + 校验 + 预览，从不合并
+yoooclaw transfer import --file ~/yoooclaw-pkg.tar.gz                # 暂存 + 校验 + 预览，从不合并（压缩包或目录）
 yoooclaw transfer import --local <localTransferId> --plan <planId>   # 执行预览出的计划 [--resume]
 ```
 

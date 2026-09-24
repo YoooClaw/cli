@@ -467,13 +467,13 @@ Recording config and events live under the current profile at `recordings/asr-co
 
 ### Data Transfer
 
-`yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package directory. The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions.
+`yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package: a single `.tar.gz` file (since 0.12.0, when `--out` ends in `.tar.gz`/`.tgz`) or a package directory (any other path). The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions; targets older than CLI 0.12.0 / plugin 1.18.0 only read directories, and `--target-capabilities` refuses a tar.gz export for them with `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`. Compression is not encryption.
 
 ```bash
 yoooclaw transfer export --dry-run                                  # Preview scope; no daemon needed
-yoooclaw transfer export --out ~/yoooclaw-pkg [--with-audio] [--with-images] [--with-html] [--from <ISO+TZ>] [--to <ISO+TZ>]
+yoooclaw transfer export --out ~/yoooclaw-pkg.tar.gz [--with-audio] [--with-images] [--with-html] [--from <ISO+TZ>] [--to <ISO+TZ>]
 yoooclaw transfer capabilities --out caps.json                      # On the target (needs the daemon)
-yoooclaw transfer import --file ~/yoooclaw-pkg                       # Stage + verify + preview, never merges
+yoooclaw transfer import --file ~/yoooclaw-pkg.tar.gz                # Stage + verify + preview, never merges (archive or directory)
 yoooclaw transfer import --local <localTransferId> --plan <planId>   # Execute the previewed plan [--resume]
 ```
 

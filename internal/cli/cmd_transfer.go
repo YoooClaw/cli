@@ -34,11 +34,11 @@ func newTransferCmd() *cobra.Command {
 
 	export := &cobra.Command{
 		Use:   "export",
-		Short: "导出明文本地数据包；默认不含音频 🟢",
+		Short: "导出明文本地数据包（tar.gz 或目录）；默认不含音频 🟢",
 		Args:  cobra.NoArgs,
 		RunE:  run(transferExport),
 	}
-	export.Flags().String("out", "", "新的输出目录（必须不存在）")
+	export.Flags().String("out", "", "新的输出路径（必须不存在）：以 .tar.gz/.tgz 结尾生成单个压缩包，否则生成包目录")
 	export.Flags().Bool("dry-run", false, "只预览，不生成数据包")
 	export.Flags().String("include", "", "逗号分隔：notifications,recordings,web-pages,images（缺省前三类）")
 	export.Flags().String("from", "", "起始时间（含），必须带时区，如 2026-01-01T00:00:00+08:00")
@@ -54,7 +54,7 @@ func newTransferCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  run(transferImport),
 	}
-	imp.Flags().String("file", "", "本地数据包目录；只暂存、校验与预览，不合并")
+	imp.Flags().String("file", "", "本地数据包（.tar.gz 压缩包或包目录）；只暂存、校验与预览，不合并")
 	imp.Flags().Bool("dry-run", false, "与 --file 同用时无额外作用（--file 本身从不合并）")
 	imp.Flags().String("local", "", "预览返回的 localTransferId")
 	imp.Flags().String("plan", "", "预览返回的 planId")
@@ -162,11 +162,16 @@ func transferExport(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, e
 		if err := transfer.CheckCapabilities(caps); err != nil {
 			return nil, transferError(err)
 		}
+		if transfer.IsArchivePath(flagStr(cmd, "out")) {
+			if err := transfer.CheckArchiveSupport(caps); err != nil {
+				return nil, transferError(err)
+			}
+		}
 	}
 	dryRun := flagBool(cmd, "dry-run")
 	out := flagStr(cmd, "out")
 	if !dryRun && out == "" {
-		return nil, errs.New("YOOOCLAW_TRANSFER_OUTPUT_REQUIRED", "需要 --out <新目录>，或用 --dry-run 预览")
+		return nil, errs.New("YOOOCLAW_TRANSFER_OUTPUT_REQUIRED", "需要 --out <新路径，如 ./pkg.tar.gz>，或用 --dry-run 预览")
 	}
 	output := ""
 	if !dryRun {
@@ -178,10 +183,21 @@ func transferExport(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, e
 		transfer.TypeWebPages:      ctx.Paths.WebPages,
 		transfer.TypeImages:        ctx.Paths.Images,
 	}
-	m, err := transfer.Export(roots, output, transfer.ExportOptions{
+	opts := transfer.ExportOptions{
 		Include: flagStr(cmd, "include"), From: flagStr(cmd, "from"), To: flagStr(cmd, "to"),
 		WithAudio: flagBool(cmd, "with-audio"), WithImages: flagBool(cmd, "with-images"), WithHTML: flagBool(cmd, "with-html"),
-	})
+	}
+	archive := output != "" && transfer.IsArchivePath(output)
+	var (
+		m            *transfer.Manifest
+		archiveBytes int64
+		err          error
+	)
+	if archive {
+		m, archiveBytes, err = transfer.ExportArchive(roots, output, opts)
+	} else {
+		m, err = transfer.Export(roots, output, opts)
+	}
 	if err != nil {
 		return nil, transferError(err)
 	}
@@ -200,6 +216,11 @@ func transferExport(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, e
 	}
 	if output != "" {
 		result["path"] = output
+		result["packageFormat"] = "directory"
+		if archive {
+			result["packageFormat"] = "tar.gz"
+			result["archiveBytes"] = archiveBytes
+		}
 	}
 	return result, nil
 }
@@ -219,7 +240,7 @@ func transferImport(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, e
 		req = transfer.Request{Action: "preview", File: abs}
 	} else {
 		if local == "" || plan == "" || flagBool(cmd, "dry-run") {
-			return nil, errs.New("YOOOCLAW_TRANSFER_LOCAL_AND_PLAN_REQUIRED", "需要 --file <包目录> 预览，或 --local 与 --plan 执行计划")
+			return nil, errs.New("YOOOCLAW_TRANSFER_LOCAL_AND_PLAN_REQUIRED", "需要 --file <包文件或目录> 预览，或 --local 与 --plan 执行计划")
 		}
 		req = transfer.Request{Action: "import", LocalTransferID: local, PlanID: plan, Resume: flagBool(cmd, "resume")}
 	}

@@ -167,6 +167,73 @@ func (s *Service) pruneStaging() {
 	}
 }
 
+// stagePackage 把外部包放进私有 staging 目录并全量校验。目录包只复制清单列出的
+// 资源；tar.gz 包严格解包后删掉清单没引用的 blob，两种来源在 staging 里形态一致。
+func stagePackage(source, local string) (*Manifest, error) {
+	info, err := os.Stat(source)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(local, "blobs"), 0o700); err != nil {
+		return nil, err
+	}
+	if info.Mode().IsRegular() {
+		if err := ExtractArchive(source, local); err != nil {
+			return nil, err
+		}
+		m, err := ReadPackage(local, ReadOptions{})
+		if err != nil {
+			return nil, err
+		}
+		listed := map[string]bool{}
+		for _, r := range m.Records {
+			for _, a := range r.Assets {
+				listed[a.Hash] = true
+			}
+		}
+		names, err := os.ReadDir(filepath.Join(local, "blobs"))
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range names {
+			if !listed[e.Name()] {
+				if err := os.Remove(filepath.Join(local, "blobs", e.Name())); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return m, nil
+	}
+	m, err := ReadPackage(source, ReadOptions{})
+	if err != nil {
+		return nil, err
+	}
+	// 不递归复制包内任意内容，只复制校验过的清单与资源。
+	mf, err := safeFile(source, "manifest.json")
+	if err != nil {
+		return nil, err
+	}
+	if err := copyFile(mf, filepath.Join(local, "manifest.json")); err != nil {
+		return nil, err
+	}
+	for _, r := range m.Records {
+		for _, a := range r.Assets {
+			dest := filepath.Join(local, "blobs", a.Hash)
+			if pathExists(dest) {
+				continue
+			}
+			src, err := safeFile(source, "blobs/"+a.Hash)
+			if err != nil {
+				return nil, err
+			}
+			if err := copyFile(src, dest); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return ReadPackage(local, ReadOptions{})
+}
+
 // stage 校验包、只复制清单列出的资源到私有 staging 目录，再生成预览计划。
 // --file 永远只到预览为止，合并必须走 --local + --plan。
 func (s *Service) stage(file string) (any, error) {
@@ -178,43 +245,13 @@ func (s *Service) stage(file string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := ReadPackage(source, ReadOptions{})
-	if err != nil {
-		return nil, err
-	}
 	localID := newUUID()
 	local := filepath.Join(s.Dir, localID)
-	if err := os.MkdirAll(filepath.Join(local, "blobs"), 0o700); err != nil {
-		return nil, err
-	}
 	cleanup := func(err error) (any, error) {
 		_ = os.RemoveAll(local)
 		return nil, err
 	}
-	// 不递归复制包内任意内容，只复制校验过的清单与资源。
-	mf, err := safeFile(source, "manifest.json")
-	if err != nil {
-		return cleanup(err)
-	}
-	if err := copyFile(mf, filepath.Join(local, "manifest.json")); err != nil {
-		return cleanup(err)
-	}
-	for _, r := range m.Records {
-		for _, a := range r.Assets {
-			dest := filepath.Join(local, "blobs", a.Hash)
-			if pathExists(dest) {
-				continue
-			}
-			src, err := safeFile(source, "blobs/"+a.Hash)
-			if err != nil {
-				return cleanup(err)
-			}
-			if err := copyFile(src, dest); err != nil {
-				return cleanup(err)
-			}
-		}
-	}
-	verified, err := ReadPackage(local, ReadOptions{})
+	verified, err := stagePackage(source, local)
 	if err != nil {
 		return cleanup(err)
 	}

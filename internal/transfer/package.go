@@ -7,6 +7,8 @@
 //	  manifest.json        记录清单（明文，含元数据白名单字段）
 //	  blobs/<sha256>       内容寻址的附件（录音音频/转写/摘要、网页正文/存档、图片）
 //
+// 包可以是上述目录，也可以是把它打成 gzip 压缩 ustar 的单个 .tar.gz 文件（见 archive.go）。
+//
 // 只迁移通知、录音、网页、图片；不迁移记忆、凭据与宿主配置。
 package transfer
 
@@ -964,6 +966,7 @@ func Capabilities() map[string]any {
 		"supportedDataTypes":              Types,
 		"notificationImportPolicyVersion": 1,
 		"transport":                       []string{"local"},
+		"packageFormats":                  PackageFormats,
 	}
 }
 
