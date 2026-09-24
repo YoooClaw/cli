@@ -2,9 +2,12 @@
 """Shared authentication, HTTP requests and credit estimation."""
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -150,3 +153,82 @@ def check_generation(args):
         raise ApiError("先向用户展示规格与本次积分，获得选择及授权后再传 --confirmed。")
     if not args.prompt.strip():
         raise ApiError("生成描述不能为空。")
+
+
+# ── 结果保存与交付文本 ──
+# 由脚本下载结果并生成可直接粘贴的 Markdown，Agent 不再手写下载命令或拼接链接。
+
+MEDIA_TYPES = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/bmp": ".bmp",
+    "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm",
+}
+DOWNLOAD_LIMIT = 1024 * 1024 * 1024
+
+
+def safe_stem(text, limit=24):
+    stem = re.sub(r"[^\w\u4e00-\u9fff-]+", "-", text).strip("-")
+    return stem[:limit] or "media"
+
+
+def download(url, kind, save_dir, stem):
+    """下载单个媒体，校验类型与非空后原子落盘，返回绝对路径。不携带任何凭据。"""
+    target_dir = Path(save_dir).expanduser().resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "yoooclaw-media/1"})
+    with urllib.request.urlopen(req, timeout=120) as response:
+        mime = (response.headers.get_content_type() or "").lower()
+        if not mime.startswith(kind + "/"):
+            raise ApiError("下载内容类型不是" + ("图片" if kind == "image" else "视频") + "：" + mime)
+        suffix = MEDIA_TYPES.get(mime, "." + mime.split("/")[-1][:8])
+        fd, tmp = tempfile.mkstemp(dir=target_dir, prefix=".download-")
+        size = 0
+        try:
+            with os.fdopen(fd, "wb") as out:
+                while True:
+                    chunk = response.read(1 << 20)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > DOWNLOAD_LIMIT:
+                        raise ApiError("下载内容超过 1GB 上限")
+                    out.write(chunk)
+            if size == 0:
+                raise ApiError("下载内容为空")
+            path = target_dir / (stem + suffix)
+            index = 2
+            while path.exists():
+                path = target_dir / f"{stem}-{index}{suffix}"
+                index += 1
+            os.replace(tmp, path)
+            return str(path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+
+def reply_markdown(kind, urls, prompt):
+    """每个结果一行描述性下载链接；链接原样取自接口结果。"""
+    label = "图片" if kind == "image" else "视频"
+    subject = re.sub(r"[\[\]()\\\r\n]+", " ", prompt).strip()
+    subject = (subject[:20] + "…") if len(subject) > 20 else subject
+    lines = []
+    for index, url in enumerate(urls, 1):
+        suffix = f" {index}" if len(urls) > 1 else ""
+        text = f"{subject}{label}{suffix}（点击下载）" if subject else f"{label}{suffix}（点击下载）"
+        lines.append(f"[{text}]({url})")
+    return "\n".join(lines)
+
+
+def save_results(kind, urls, prompt, save_dir):
+    """下载全部结果到 save_dir，返回 files / download_failed / reply_markdown。"""
+    stem = time.strftime("%Y%m%d-%H%M%S") + "-" + safe_stem(prompt)
+    files, failed = [], 0
+    for index, url in enumerate(urls, 1):
+        try:
+            files.append(download(url, kind, save_dir, stem if len(urls) == 1 else f"{stem}-{index}"))
+        except (ApiError, OSError, urllib.error.URLError, TimeoutError, ValueError):
+            failed += 1
+    result = {"files": files, "reply_markdown": reply_markdown(kind, urls, prompt)}
+    if failed:
+        result["download_failed"] = failed
+    return result

@@ -9,6 +9,12 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/yoooclaw-media-generate/scripts'))
 import video_generate as video
 
+
+# 结果保存（下载）由 test_media_link_guard.py 覆盖；这里隔离网络。
+_SAVE = patch.object(video.client, 'save_results', side_effect=lambda kind, urls, prompt, save_dir: {'files': [], 'reply_markdown': '\n'.join('[x](' + u + ')' for u in urls)})
+def setUpModule(): _SAVE.start()
+def tearDownModule(): _SAVE.stop()
+
 class PollingTests(unittest.TestCase):
     def invoke(self, args):
         with patch.object(sys, 'argv', ['video_generate.py'] + args), contextlib.redirect_stdout(io.StringIO()) as out:

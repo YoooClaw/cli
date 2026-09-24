@@ -14,6 +14,12 @@ import image_generate as image
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0n8AAAAASUVORK5CYII=')
 URL = 'https://example.com/a.png?Signature=a%2Bb%3D&Expires=123'
 
+
+# 结果保存（下载）由 test_media_link_guard.py 覆盖；这里隔离网络。
+_SAVE = patch.object(image.client, 'save_results', side_effect=lambda kind, urls, prompt, save_dir: {'files': [], 'reply_markdown': '\n'.join('[x](' + u + ')' for u in urls)})
+def setUpModule(): _SAVE.start()
+def tearDownModule(): _SAVE.stop()
+
 class ImageInputsTests(unittest.TestCase):
     def invoke(self, extra, command='generate'):
         args = ['image_generate.py', command, '--tier', 'professional']

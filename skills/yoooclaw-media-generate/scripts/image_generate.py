@@ -114,7 +114,7 @@ def run(args):
     if not isinstance(data, list) or not data:
         raise ApiError("响应缺少图片结果，请核实接口响应；不要自动重复生成。")
     images = [client.media_url(item) for item in data]
-    emit({"status": "success", "images": images})
+    emit({"status": "success", "images": images, **client.save_results("image", images, args.prompt, args.save_dir)})
     return 0
 
 class DeprecatedEstimateN(argparse.Action):
@@ -140,6 +140,7 @@ def main():
     for name in ("prompt-extend", "watermark"):
         gen.add_argument("--" + name, type=boolean_value,
                          metavar="true|false")
+    gen.add_argument("--save-dir", default="media-results", help="结果保存目录，默认当前工作目录下的 media-results/")
     gen.add_argument("--confirmed", action="store_true")
     return client.execute(run, parser.parse_args())
 

@@ -3,9 +3,11 @@ package skills
 import (
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -380,11 +382,15 @@ func TestInstallMediaSkillIncludesScripts(t *testing.T) {
 		"scripts/client.py",
 		"scripts/image_generate.py",
 		"scripts/video_generate.py",
+		"scripts/link_guard.py",
 	} {
 		name := "yoooclaw-media-generate/" + rel
 		want, err := fs.ReadFile(assets.SkillsFS, "skills/"+name)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if rel == "SKILL.md" {
+			want = substituteSkillDir(want, filepath.Join(target, "yoooclaw-media-generate"))
 		}
 		got, err := os.ReadFile(filepath.Join(target, filepath.FromSlash(name)))
 		if err != nil {
@@ -436,5 +442,38 @@ func TestInstallRemovesMergedLegacySkills(t *testing.T) {
 	}
 	if !fsutil.Exists(unrelated) {
 		t.Error("unrelated personal skill should remain")
+	}
+}
+
+func TestInstallWritesAbsoluteSkillDirIntoMediaHook(t *testing.T) {
+	target := filepath.Join(t.TempDir(), `agent "skills" it's`)
+	if _, _, err := Install(target, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(target, "yoooclaw-media-generate", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, skillDirPlaceholder) {
+		t.Fatal("placeholder left in installed SKILL.md")
+	}
+	var command string
+	for _, line := range strings.Split(content, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "command: ") {
+			command = strings.TrimPrefix(trimmed, "command: ")
+		}
+	}
+	unquoted, err := strconv.Unquote(command)
+	if err != nil {
+		t.Fatalf("hook command is not a valid double-quoted YAML string: %s", command)
+	}
+	out, err := exec.Command("sh", "-c", strings.Replace(unquoted, "python3 ", "printf '%s' ", 1)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.ToSlash(filepath.Join(target, "yoooclaw-media-generate", "scripts", "link_guard.py"))
+	if string(out) != want {
+		t.Fatalf("hook resolves to %q, want %q", out, want)
 	}
 }

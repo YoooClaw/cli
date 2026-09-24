@@ -52,13 +52,20 @@ def task_result(task_id, output, result):
     return item
 
 
-def query(task_id, timeout=60):
+def emit_task(item, args):
+    """输出任务状态；成功时附带本地保存结果与可直接粘贴的交付文本。"""
+    if item.get("video_url"):
+        item.update(client.save_results("video", [item["video_url"]], getattr(args, "prompt", "") or "", args.save_dir))
+    emit(item)
+
+
+def query(task_id, args, timeout=60):
     result = client.request("GET", "/videos/tasks/" + urllib.parse.quote(task_id, safe=""), timeout=timeout)
     output = result.get("output")
     if not isinstance(output, dict) or not output.get("task_status"):
         raise ApiError("任务查询响应缺少 output.task_status；保留任务 ID，核实接口契约。")
     item = task_result(task_id, output, result)
-    emit(item)
+    emit_task(item, args)
     return item["status"]
 
 def wait_seconds(value):
@@ -68,7 +75,7 @@ def wait_seconds(value):
     return seconds
 
 
-def wait_for_task(task_id, wait, initial_status="UNKNOWN"):
+def wait_for_task(task_id, wait, args, initial_status="UNKNOWN"):
     deadline = time.monotonic() + wait
     status = initial_status
     while True:
@@ -78,7 +85,7 @@ def wait_for_task(task_id, wait, initial_status="UNKNOWN"):
                   "message": "已达到等待上限；保留任务 ID 续查，不要重新提交生成。"})
             return 0
         try:
-            status = query(task_id, timeout=min(60, remaining) if wait > 0 else 60)
+            status = query(task_id, args, timeout=min(60, remaining) if wait > 0 else 60)
         except ApiError as exc:
             exc.details.update(task_id=task_id, last_task_status=status)
             raise
@@ -97,7 +104,7 @@ def run(args):
     if args.command == "estimate":
         return client.estimate({"type": "video", "model": MODEL, "resolution": args.resolution, "seconds": args.seconds})
     if args.command == "query":
-        return wait_for_task(args.task_id, args.wait)
+        return wait_for_task(args.task_id, args.wait, args)
     client.check_generation(args)
     payload = {"model": MODEL, "input": video_input(args), "parameters": {"duration": args.seconds, "resolution": args.resolution}}
     result = client.request("POST", "/videos/generations", payload)
@@ -107,12 +114,12 @@ def run(args):
         raise ApiError("响应缺少任务 ID；不要重复提交，请核实服务端任务记录。")
     item = task_result(task_id, output, result)
     status = item["status"]
-    emit(item)
+    emit_task(item, args)
     if status not in PENDING_STATUSES:
         return 0 if status == "SUCCEEDED" else 1
     if args.wait == 0:
         return 0
-    return wait_for_task(task_id, args.wait, status)
+    return wait_for_task(task_id, args.wait, args, status)
 
 def main():
     parser = argparse.ArgumentParser(description="视频生成与任务查询")
@@ -132,6 +139,7 @@ def main():
     for command in (gen, query_parser):
         command.add_argument("--wait", type=wait_seconds, default=DEFAULT_WAIT,
                              help="最多轮询等待秒数，默认 1200（20 分钟）；0 为仅提交/查询一次")
+        command.add_argument("--save-dir", default="media-results", help="结果保存目录，默认当前工作目录下的 media-results/")
     return client.execute(run, parser.parse_args())
 
 if __name__ == "__main__":

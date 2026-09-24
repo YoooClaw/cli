@@ -3,8 +3,10 @@
 package skills
 
 import (
+	"bytes"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -302,6 +304,25 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 	return results, installed, nil
 }
 
+// skillDirPlaceholder 出现在 SKILL.md frontmatter 的 hook 命令里：宿主执行 hook
+// 时不保证提供 skill 目录变量，安装时写入 skill 目录的绝对路径。
+const skillDirPlaceholder = "__YOOOCLAW_SKILL_DIR__"
+
+// substituteSkillDir 把占位符替换为 shell 单引号包裹的绝对路径，并按 YAML
+// 双引号字符串转义（hook 命令写在双引号里）。
+func substituteSkillDir(data []byte, dest string) []byte {
+	if !bytes.Contains(data, []byte(skillDirPlaceholder)) {
+		return data
+	}
+	abs, err := filepath.Abs(dest)
+	if err != nil {
+		abs = dest
+	}
+	quoted := "'" + strings.ReplaceAll(filepath.ToSlash(abs), "'", `'\''`) + "'"
+	yamlSafe := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(quoted)
+	return bytes.ReplaceAll(data, []byte(skillDirPlaceholder), []byte(yamlSafe))
+}
+
 // extractSkill 把内嵌的 skills/<name>/** 写到 dest。
 func extractSkill(name, dest string) error {
 	srcRoot := embedRoot + "/" + name
@@ -321,6 +342,9 @@ func extractSkill(name, dest string) error {
 		data, err := fs.ReadFile(assets.SkillsFS, p)
 		if err != nil {
 			return err
+		}
+		if path.Base(p) == "SKILL.md" {
+			data = substituteSkillDir(data, dest)
 		}
 		if err := fsutil.EnsureDir(filepath.Dir(outPath), fsutil.DirMode); err != nil {
 			return err
