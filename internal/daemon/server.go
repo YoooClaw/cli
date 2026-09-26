@@ -396,6 +396,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleWebPageStatus(w, r, authCtx)
 	case path == "/web-pages/index" && r.Method == http.MethodGet:
 		s.handleWebPageIndex(w, r, authCtx)
+	case path == "/web-pages/tracking" && r.Method == http.MethodPost:
+		s.handleWebPageTracking(w, r, authCtx)
 	case path == "/transfer" && r.Method == http.MethodPost:
 		s.handleTransfer(w, r, authCtx)
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
@@ -683,7 +685,7 @@ func isIngestPath(path string) bool {
 	case "/notifications", "/images",
 		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么
 		// 一起能用 api-key，要么一起不能，分开授权只会让 popup 一半功能可用。
-		"/web-pages", "/web-pages/status", "/web-pages/index",
+		"/web-pages", "/web-pages/status", "/web-pages/index", "/web-pages/tracking",
 		"/gateway/notifications.push", "/gateway/recordings.result.write", "/gateway/images.sync":
 		return true
 	}

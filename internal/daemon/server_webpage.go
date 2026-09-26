@@ -46,3 +46,31 @@ func (s *server) handleWebPageIndex(w http.ResponseWriter, r *http.Request, auth
 	}
 	writeJSON(w, 200, map[string]any{"pages": webpage.ProjectFields(entries, fields)})
 }
+
+// handleWebPageTracking 设置某个网页的「追踪变化」开关（POST /web-pages/tracking），
+// 请求体 {"hash": "<urlHash 或 ≥8 位前缀>", "tracking": "auto|on|off"}。
+// 供扩展 popup 的开关使用（web-page-versions-prd §3.2）；没收过的网页回 404。
+func (s *server) handleWebPageTracking(w http.ResponseWriter, r *http.Request, auth authResult) {
+	var body struct {
+		Hash     string `json:"hash"`
+		Tracking string `json:"tracking"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	entry, found, err := webpage.SetTracking(s.ctx.Paths.WebPages, body.Hash, body.Tracking, auth.scope())
+	if err != nil {
+		var ingestErr *webpage.Error
+		if errors.As(err, &ingestErr) {
+			writeJSON(w, ingestErr.Status, errBody(ingestErr.Code, ingestErr.Message))
+			return
+		}
+		writeJSON(w, 500, errBody("WEB_PAGE_WRITE_FAILED", err.Error()))
+		return
+	}
+	if !found {
+		writeJSON(w, 404, errBody("WEB_PAGE_NOT_FOUND", "没有收藏过这个网页"))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "urlHash": entry.URLHash, "tracking": entry.Tracking})
+}
