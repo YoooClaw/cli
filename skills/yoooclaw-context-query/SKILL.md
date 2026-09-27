@@ -1,7 +1,7 @@
 ---
 name: yoooclaw-context-query
 description: |
-  Query yoooclaw data already synchronized to this computer: notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”), images (“同步图片”), or cross-source local context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
+  Query yoooclaw data already synchronized to this computer: notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source local context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
 ---
 
 # YoooClaw local context query
@@ -28,7 +28,7 @@ Do not infer reply language from previous messages, source content, command outp
 - Notifications/messages, senders, apps, recent/unread summaries: read `references/notifications.md`.
 - Voice input, dictation/口述 history, or “我刚才说了什么”: read `references/voice-input.md`.
 - Phone/meeting recordings, recording transcripts, or “录音里说了什么”: read `references/recordings.md`.
-- Saved, viewed, read, opened, bookmarked, or captured pages/articles: read `references/web-pages.md`.
+- Saved, viewed, read, opened, bookmarked, or captured pages/articles, including earlier versions of a saved page and what changed between them: read `references/web-pages.md`.
 - Synchronized images, screenshots, metadata, or local image files: read `references/images.md`.
 - Several sources or “local data/context” without one source: read every relevant reference and use the cross-source flow below.
 
