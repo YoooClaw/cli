@@ -144,6 +144,10 @@ func (v versionedIngest) run() (IngestResult, Entry, bool, error) {
 	}
 
 	verb := map[ingestMode]string{modeUnchanged: "内容未变化", modeOverwrite: "补录", modeCreate: "新版本"}[mode]
+	if mode == modeOverwrite && tracking == TrackingOff {
+		// R1 与 R4 落盘动作相同，但原因不同；日志分开写，排查时才看得出是开关还是合并窗口。
+		verb = "追踪已关，覆盖"
+	}
 	v.logger.Info(fmt.Sprintf("web-page[%s] %s：v%d（第 %d 次收藏）", hash8, verb, chain.LatestVersion, entry.CaptureCount))
 	return result, entry, true, nil
 }
