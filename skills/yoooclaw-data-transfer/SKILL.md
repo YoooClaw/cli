@@ -36,12 +36,24 @@ The package format is shared with the OpenClaw plugin: a package exported with `
 
 Use OSS migration by default: `export --via oss` uploads a tar.gz package and returns a `taskId`; `import --task <taskId>` downloads, validates and imports the package. The commands use the configured CLI API key and cloud environment. No scope flag/header is needed. Use local packages only when the user supplies one or explicitly asks for local/offline/no-cloud transfer. Do not expose or ask users to copy signed URLs.
 
-For a successful export, keep the reply short and in replyLanguage. In Chinese, use: “已打包上传，共 N 条记录。把下面这句话发给目标 Agent：” followed by “帮我导入这份迁移数据：任务ID”. For English, use “Please import this migration: <taskId>”. Keep taskId unchanged. Do not append routine notes about retention, account keys, compatibility, default exclusions, or asking the user to return for confirmation. Report actual errors and missing data the user requested.
+For successful OSS exports, use this order: a short completion sentence, the standalone privacy warning, an instruction to copy only the sentence below to the destination Agent, then a fenced `text` code block containing only the importPrompt. Keep taskId unchanged. Never put the completion summary, warning, copying instructions, or extra notes inside that code block. Translate the prose and importPrompt to replyLanguage. Chinese example:
+
+已打包上传，共 N 条记录。
+
+**⚠️ 迁移数据包含大量隐私信息，请妥善保管任务 ID 和数据包，避免向他人分享或泄露。**
+
+**只复制下面这句话，发给你要迁入的 Agent：**
+
+```text
+帮我导入这份迁移数据：<taskId>
+```
+
+Do not append routine notes about retention, account keys, compatibility, default exclusions, or asking the user to return for confirmation. Report actual errors and missing data the user requested.
 
 For both export and import replies, omit routine warnings for data types with no source data in the default scope, such as `web-pages: unavailable` or `images: unavailable` caused by an absent source directory. This also applies when an import carries those warnings from the export: do not describe them as missing, damaged or lost data, and do not add a “部分数据不可用” notice. Keep the diagnostic warnings in the command result unchanged. Report actual read/parse failures, missing files referenced by records, conflicts, and absent data types the user explicitly requested; do not suppress those as empty categories.
 
 Report the actual result: a prepared export is not an imported target. For PARTIAL results, show the report location and the local recovery command.
 
-For every export and import reply (including local packages and partial results), include this prominent standalone privacy warning in replyLanguage. In Chinese, use exactly: **⚠️ 迁移数据中含有大量隐私信息，请妥善保管，避免分享和泄露。** In other languages, translate the same warning. Do not omit it to keep the reply short, and keep it outside the copyable import prompt.
+For every export and import reply (including local packages and partial results), include this prominent standalone privacy warning in replyLanguage. In Chinese, use exactly: **⚠️ 迁移数据包含大量隐私信息，请妥善保管任务 ID 和数据包，避免向他人分享或泄露。** In other languages, translate the same warning. Do not omit it to keep the reply short, and keep it outside the copyable import prompt.
 
 Cloud migration packages are maintained by the server and automatically deleted 24 hours after upload completion, regardless of import status. The plugin and CLI never delete cloud packages. Local staging cleanup after successful import is unchanged.
