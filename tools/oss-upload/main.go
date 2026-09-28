@@ -34,8 +34,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -221,40 +219,11 @@ func (u *uploader) put(key string, body []byte, contentType, label string) strin
 		logf("would upload %s -> %s", label, key)
 		return publicURL
 	}
-	logf("uploading %s -> %s", label, key)
-
-	req := &oss.PutObjectRequest{
-		Bucket:       oss.Ptr(u.bucket),
-		Key:          oss.Ptr(key),
-		Body:         bytes.NewReader(body),
-		ContentType:  oss.Ptr(contentType),
-		CacheControl: oss.Ptr(u.cacheControl),
+	if err := u.upload(key, body, "", contentType, label); err != nil {
+		fatalf("%v", err)
 	}
-	if u.acl != "" {
-		req.Acl = oss.ObjectACLType(u.acl)
-	}
-
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), putTimeout)
-		_, err := u.client.PutObject(ctx, req)
-		cancel()
-		if err == nil {
-			okf("done: %s", publicURL)
-			return publicURL
-		}
-		lastErr = err
-		if attempt < maxAttempts {
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
-			warnf("upload %s 失败（第 %d/%d 次）: %v，%s 后重试", label, attempt, maxAttempts, err, backoff)
-			time.Sleep(backoff)
-			if _, err := req.Body.(*bytes.Reader).Seek(0, 0); err != nil {
-				fatalf("重置上传流失败: %v", err)
-			}
-		}
-	}
-	fatalf("upload %s 连续 %d 次失败: %v", label, maxAttempts, lastErr)
-	return ""
+	okf("done: %s", publicURL)
+	return publicURL
 }
 
 func collectArtifacts(distDir, prefix, publicURL, version string) []artifact {
@@ -417,7 +386,10 @@ func main() {
 		cfg := oss.LoadDefaultConfig().
 			WithCredentialsProvider(credentials.NewEnvironmentVariableCredentialsProvider()).
 			WithRegion(region).
-			WithRetryMaxAttempts(maxAttempts)
+			WithRetryMaxAttempts(1).
+			WithConnectTimeout(10 * time.Second).
+			WithReadWriteTimeout(60 * time.Second).
+			WithLogLevel(oss.LogOff)
 		if endpoint := strings.TrimSpace(os.Getenv("OSS_ENDPOINT")); endpoint != "" {
 			cfg = cfg.WithEndpoint(endpoint)
 		}
@@ -450,11 +422,14 @@ func main() {
 	if *only == "" || *only == "artifacts" {
 		artifacts := collectArtifacts(distDir, prefix, publicURL, version)
 		for _, a := range artifacts {
-			data, err := os.ReadFile(a.localPath)
-			if err != nil {
-				fatalf("读取 %s: %v", a.localPath, err)
+			if u.dryRun {
+				logf("would upload %s -> %s", a.Filename, a.Key)
+				continue
 			}
-			u.put(a.Key, data, a.ContentType, a.Filename)
+			if err := u.upload(a.Key, nil, a.localPath, a.ContentType, a.Filename); err != nil {
+				fatalf("%v", err)
+			}
+			okf("done: %s", a.URL)
 		}
 
 		var checksumsURL string
