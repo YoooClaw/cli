@@ -182,7 +182,7 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 | `yoooclaw-notification-to-memory` | Distills notifications into personal, daily, and long-term agent memory; commits each batch only after verified persistence |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
 | `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
-| `yoooclaw-data-transfer`        | Exports/imports a local data package (notifications, recordings, web pages, optional audio/images) between environments; packages interoperate with the OpenClaw plugin `ntf transfer` |
+| `yoooclaw-data-transfer`        | Migrates data via OSS task IDs or local packages (notifications, recordings, web pages, optional audio/images) between environments; packages interoperate with the OpenClaw plugin `ntf transfer` |
 | `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
 
 ```bash
@@ -470,12 +470,17 @@ Recording config and events live under the current profile at `recordings/asr-co
 `yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package: a single `.tar.gz` file (since 0.12.0, when `--out` ends in `.tar.gz`/`.tgz`) or a package directory (any other path). The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions; targets older than CLI 0.12.0 / plugin 1.18.0 only read directories, and `--target-capabilities` refuses a tar.gz export for them with `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`. Compression is not encryption.
 
 ```bash
+yoooclaw transfer export --via oss                                 # Upload and return taskId
+yoooclaw transfer import --task <taskId>                            # Download and import; server deletes cloud package after 24 hours
+yoooclaw transfer import --task <taskId> --dry-run                  # Download and preview only
 yoooclaw transfer export --dry-run                                  # Preview scope; no daemon needed
 yoooclaw transfer export --out ~/yoooclaw-pkg.tar.gz [--with-audio] [--with-images] [--with-html] [--from <ISO+TZ>] [--to <ISO+TZ>]
 yoooclaw transfer capabilities --out caps.json                      # On the target (needs the daemon)
 yoooclaw transfer import --file ~/yoooclaw-pkg.tar.gz                # Stage + verify + preview, never merges (archive or directory)
 yoooclaw transfer import --local <localTransferId> --plan <planId>   # Execute the previewed plan [--resume]
 ```
+
+The data-transfer Skill defaults to OSS. Cloud commands use the existing CLI API key (`cli` scope, no extra scope header) and configured cloud environment; source and target keys must belong to the same account. Signed download URLs and STS credentials stay inside the command; users copy only the taskId. Upload and download reuse Alibaba Cloud OSS SDK checkpoints during retries within one invocation. Uploads automatically renew STS credentials via `/file/plugin/refresh` before expiry or after an expired-token error, preserving the original task and multipart checkpoint; no agent-facing refresh command is needed. The server automatically deletes cloud packages 24 hours after upload completion, regardless of import status. The CLI never deletes cloud packages and has no cloud deletion command. Successful imports still clean local staging; PARTIAL/failed imports retain local staging and reports for retry. Migration replies prominently warn: **⚠️ 迁移数据包含大量隐私信息，请妥善保管任务 ID 和数据包，避免向他人分享或泄露。** For interrupted upload confirmation, use `yoooclaw transfer complete --task <taskId> --object-key <objectKey>` from the error instead of creating a new task.
 
 Imports run inside the target daemon, which owns the stores. Existing target records are never overwritten: differing records are reported as `conflict`, and a PARTIAL import keeps its staged package and `report.json` under `<profile>/transfers/`. Imported notifications are tagged `transfer.memoryPolicy="skip-history"` and excluded from `yoooclaw sync` (notification → memory). Memory, credentials and configuration are not transferred.
 

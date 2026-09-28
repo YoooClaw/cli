@@ -965,7 +965,7 @@ func Capabilities() map[string]any {
 		"supportedRecordVersions":         []int{1},
 		"supportedDataTypes":              Types,
 		"notificationImportPolicyVersion": 1,
-		"transport":                       []string{"local"},
+		"transport":                       []string{"local", "oss-task"},
 		"packageFormats":                  PackageFormats,
 	}
 }
