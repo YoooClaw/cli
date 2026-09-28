@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,7 +19,6 @@ import (
 	"github.com/YoooClaw/cli/internal/paths"
 	"github.com/YoooClaw/cli/internal/testutil"
 	"github.com/YoooClaw/cli/internal/transfer"
-	"github.com/YoooClaw/cli/internal/transfercloud"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 )
 
@@ -42,9 +40,6 @@ func TestTransferCloudCommandRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			svc := &transfer.Service{Dir: filepath.Join(dst.Dir, "transfers"), Roots: transfer.Roots{transfer.TypeNotifications: dst.Notifications}, Notifications: ns}
-			svc.DeleteCloud = func(task string) error {
-				return transfercloud.New(creds.ResolveAPIKey().Value, "cloud.test").Delete(context.Background(), task)
-			}
 			if err := daemon.WriteLock(dst, daemon.Lock{PID: os.Getpid(), Bind: "127.0.0.1", Port: 19000}); err != nil {
 				t.Fatal(err)
 			}
@@ -150,11 +145,11 @@ func TestTransferCloudCommandRoundTrip(t *testing.T) {
 				}
 				result = decode(t, out)
 			}
-			if result["state"] != "SUCCEEDED" || deletes != 1 {
+			if result["state"] != "SUCCEEDED" || deletes != 0 {
 				t.Fatalf("result: %s deletes=%d", out, deletes)
 			}
-			if result["cloudCleanup"].(map[string]any)["status"] != "DELETED" {
-				t.Fatal("cloud not cleaned")
+			if result["cloudCleanup"] != nil {
+				t.Fatal("unexpected cloud cleanup result")
 			}
 		})
 	}
@@ -171,6 +166,14 @@ func TestTransferRejectsAmbiguousCloudFlags(t *testing.T) {
 	for _, args := range cases {
 		if out, code := execCLI(t, append([]string{"transfer"}, args...)...); code == 0 {
 			t.Fatalf("accepted %v: %s", args, out)
+		}
+	}
+}
+
+func TestTransferHasNoCloudDeleteCommand(t *testing.T) {
+	for _, command := range newTransferCmd().Commands() {
+		if command.Name() == "delete" {
+			t.Fatal("cloud deletion is owned by the server")
 		}
 	}
 }

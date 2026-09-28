@@ -220,20 +220,6 @@ func (c *Client) downloadURL(ctx context.Context, id string) (string, error) {
 	}
 	return result.SignedURL, nil
 }
-func (c *Client) Delete(ctx context.Context, id string) error {
-	if !ValidTaskID(id) {
-		return failure("INVALID_TASK", "迁移 taskId 无效")
-	}
-	var deleted bool
-	if err := c.call(ctx, http.MethodDelete, "/delete?taskId="+url.QueryEscape(id), nil, &deleted); err != nil {
-		return err
-	}
-	if !deleted {
-		return failure("CLOUD_DELETE_FAILED", "云端迁移包删除未确认")
-	}
-	return nil
-}
-
 func validObjectKey(id, key string) bool {
 	match := objectKeyRE.FindStringSubmatch(key)
 	return len(match) == 2 && match[1] == id

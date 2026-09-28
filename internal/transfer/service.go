@@ -32,9 +32,7 @@ type Service struct {
 	Roots         Roots
 	Notifications *notif.Storage
 	Recordings    *recording.Storage
-	// DeleteCloud is injected by the daemon; it uses the current CLI credentials.
-	DeleteCloud func(taskID string) error
-	mu          sync.Mutex
+	mu            sync.Mutex
 }
 
 // Request 是 daemon /transfer 的请求体（字段与插件本地端点一致）。
@@ -395,15 +393,6 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 	}
 	// 成功即清理 staging 副本；PARTIAL/失败保留可重试包与 report，等用户处理。
 	if state == "SUCCEEDED" {
-		if id := stored.Plan.CloudTaskID; id != "" {
-			cleanup := map[string]any{"taskId": id, "status": "FAILED", "nextCommand": "yoooclaw transfer delete --task " + id}
-			if s.DeleteCloud != nil && s.DeleteCloud(id) == nil {
-				cleanup = map[string]any{"taskId": id, "status": "DELETED"}
-			} else {
-				cleanup["error"] = "导入已成功，云端迁移包删除未确认，请重试删除"
-			}
-			result["cloudCleanup"] = cleanup
-		}
 		_ = os.RemoveAll(local)
 		delete(result, "reportPath")
 		result["staging"] = "cleaned"

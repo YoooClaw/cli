@@ -43,7 +43,7 @@ func TestTaskAPIUsesCLIKeyAndHidesURL(t *testing.T) {
 			}
 		}
 		var body map[string]string
-		if r.Method != "DELETE" {
+		if r.Method == "POST" {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
@@ -64,11 +64,6 @@ func TestTaskAPIUsesCLIKeyAndHidesURL(t *testing.T) {
 				t.Error("wrong download body")
 			}
 			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL})
-		case apiPath + "/delete":
-			if r.Method != "DELETE" || r.URL.Query().Get("taskId") != testID {
-				t.Error("wrong delete request")
-			}
-			reply(w, true)
 		default:
 			t.Error("unexpected path")
 			w.WriteHeader(404)
@@ -92,10 +87,7 @@ func TestTaskAPIUsesCLIKeyAndHidesURL(t *testing.T) {
 	if _, err = c.downloadURL(ctx, testID); err != nil {
 		t.Fatal(err)
 	}
-	if err = c.Delete(ctx, testID); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 4 {
+	if calls != 3 {
 		t.Fatalf("calls %d", calls)
 	}
 }

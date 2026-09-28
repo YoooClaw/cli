@@ -471,9 +471,8 @@ Recording config and events live under the current profile at `recordings/asr-co
 
 ```bash
 yoooclaw transfer export --via oss                                 # Upload and return taskId
-yoooclaw transfer import --task <taskId>                            # Download, import, delete cloud package on success
+yoooclaw transfer import --task <taskId>                            # Download and import; server deletes cloud package after 24 hours
 yoooclaw transfer import --task <taskId> --dry-run                  # Download and preview only
-yoooclaw transfer delete --task <taskId>                            # Retry cloud cleanup
 yoooclaw transfer export --dry-run                                  # Preview scope; no daemon needed
 yoooclaw transfer export --out ~/yoooclaw-pkg.tar.gz [--with-audio] [--with-images] [--with-html] [--from <ISO+TZ>] [--to <ISO+TZ>]
 yoooclaw transfer capabilities --out caps.json                      # On the target (needs the daemon)
@@ -481,7 +480,7 @@ yoooclaw transfer import --file ~/yoooclaw-pkg.tar.gz                # Stage + v
 yoooclaw transfer import --local <localTransferId> --plan <planId>   # Execute the previewed plan [--resume]
 ```
 
-The data-transfer Skill defaults to OSS. Cloud commands use the existing CLI API key (`cli` scope, no extra scope header) and configured cloud environment; source and target keys must belong to the same account. Signed download URLs and STS credentials stay inside the command; users copy only the taskId. Upload and download reuse Alibaba Cloud OSS SDK checkpoints during retries within one invocation. Uploads automatically renew STS credentials via `/file/plugin/refresh` before expiry or after an expired-token error, preserving the original task and multipart checkpoint; no agent-facing refresh command is needed. After all records import successfully, the daemon deletes the cloud package; a failed deletion returns `cloudCleanup.status: FAILED` and a retry command without marking the imported data as failed. PARTIAL/failed imports keep the cloud package. For interrupted upload confirmation, use `yoooclaw transfer complete --task <taskId> --object-key <objectKey>` from the error instead of creating a new task.
+The data-transfer Skill defaults to OSS. Cloud commands use the existing CLI API key (`cli` scope, no extra scope header) and configured cloud environment; source and target keys must belong to the same account. Signed download URLs and STS credentials stay inside the command; users copy only the taskId. Upload and download reuse Alibaba Cloud OSS SDK checkpoints during retries within one invocation. Uploads automatically renew STS credentials via `/file/plugin/refresh` before expiry or after an expired-token error, preserving the original task and multipart checkpoint; no agent-facing refresh command is needed. The server automatically deletes cloud packages 24 hours after upload completion, regardless of import status. The CLI never deletes cloud packages and has no cloud deletion command. Successful imports still clean local staging; PARTIAL/failed imports retain local staging and reports for retry. Migration replies prominently warn: **⚠️ 迁移数据中含有大量隐私信息，请妥善保管，避免分享和泄露。** For interrupted upload confirmation, use `yoooclaw transfer complete --task <taskId> --object-key <objectKey>` from the error instead of creating a new task.
 
 Imports run inside the target daemon, which owns the stores. Existing target records are never overwritten: differing records are reported as `conflict`, and a PARTIAL import keeps its staged package and `report.json` under `<profile>/transfers/`. Imported notifications are tagged `transfer.memoryPolicy="skip-history"` and excluded from `yoooclaw sync` (notification → memory). Memory, credentials and configuration are not transferred.
 

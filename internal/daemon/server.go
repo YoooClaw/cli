@@ -32,7 +32,6 @@ import (
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
 	"github.com/YoooClaw/cli/internal/transfer"
-	"github.com/YoooClaw/cli/internal/transfercloud"
 	"github.com/YoooClaw/cli/internal/version"
 )
 
@@ -170,11 +169,6 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			},
 			Notifications: storage,
 			Recordings:    recordingStorage,
-			DeleteCloud: func(taskID string) error {
-				deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				return transfercloud.New(creds.ResolveAPIKey().Value, config.ResolveCloudHost(cfg)).Delete(deleteCtx, taskID)
-			},
 		},
 	}
 	if mode == config.IngressProxied {

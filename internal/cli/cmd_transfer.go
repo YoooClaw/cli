@@ -58,7 +58,7 @@ func newTransferCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  run(transferImport),
 	}
-	imp.Flags().String("task", "", "迁移 taskId；自动下载、校验、导入，全部成功后删除云端包")
+	imp.Flags().String("task", "", "迁移 taskId；自动下载、校验、导入；云端包由服务端在 24 小时后自动删除")
 	imp.Flags().String("file", "", "本地数据包（.tar.gz 压缩包或包目录）；只暂存、校验与预览，不合并")
 	imp.Flags().Bool("dry-run", false, "--task 只下载并预览；--file 本身只预览")
 	imp.Flags().String("local", "", "预览返回的 localTransferId")
@@ -68,9 +68,7 @@ func newTransferCmd() *cobra.Command {
 	complete := &cobra.Command{Use: "complete", Short: "重试确认已上传的迁移包", Args: cobra.NoArgs, RunE: run(transferComplete)}
 	complete.Flags().String("task", "", "迁移 taskId")
 	complete.Flags().String("object-key", "", "创建任务时返回的 objectKey")
-	remove := &cobra.Command{Use: "delete", Short: "删除本人云端迁移包", Args: cobra.NoArgs, RunE: run(transferDelete)}
-	remove.Flags().String("task", "", "迁移 taskId")
-	c.AddCommand(capabilities, export, imp, complete, remove)
+	c.AddCommand(capabilities, export, imp, complete)
 	return c
 }
 
@@ -314,15 +312,6 @@ func transferComplete(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any,
 	}
 	return transferTaskResult(receipt), nil
 }
-func transferDelete(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	reqCtx, cancel := context.WithTimeout(cmd.Context(), time.Minute)
-	defer cancel()
-	id := flagStr(cmd, "task")
-	if err := transferCloudClient(ctx).Delete(reqCtx, id); err != nil {
-		return nil, err
-	}
-	return map[string]any{"taskId": id, "status": "DELETED"}, nil
-}
 func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any, error) {
 	if !transfercloud.ValidTaskID(id) {
 		return nil, errs.New("YOOOCLAW_TRANSFER_INVALID_TASK", "迁移 taskId 无效")
@@ -331,8 +320,7 @@ func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any
 	if err := cloud.CheckAuth(); err != nil {
 		return nil, err
 	}
-	// Refuse older daemons before download: they ignore cloudTaskId and cannot
-	// guarantee cleanup for a later --local/--plan import.
+	// Refuse older daemons before download: they do not support OSS task provenance.
 	caps, err := transferRequest(ctx, transfer.Request{Action: "capabilities"})
 	if err != nil {
 		return nil, err
