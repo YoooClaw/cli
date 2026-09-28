@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -31,12 +32,15 @@ type Service struct {
 	Roots         Roots
 	Notifications *notif.Storage
 	Recordings    *recording.Storage
-	mu            sync.Mutex
+	// DeleteCloud is injected by the daemon; it uses the current CLI credentials.
+	DeleteCloud func(taskID string) error
+	mu          sync.Mutex
 }
 
 // Request 是 daemon /transfer 的请求体（字段与插件本地端点一致）。
 type Request struct {
 	Action          string `json:"action"`
+	CloudTaskID     string `json:"cloudTaskId,omitempty"`
 	File            string `json:"file,omitempty"`
 	LocalTransferID string `json:"localTransferId,omitempty"`
 	PlanID          string `json:"planId,omitempty"`
@@ -65,6 +69,7 @@ type plan struct {
 	TargetWarnings           []string       `json:"targetWarnings"`
 	NotificationMemoryPolicy string         `json:"notificationMemoryPolicy"`
 	Capabilities             map[string]any `json:"capabilities"`
+	CloudTaskID              string         `json:"cloudTaskId,omitempty"`
 }
 
 // Handle 串行执行一个请求（同一时刻只跑一个迁移动作）。
@@ -78,7 +83,12 @@ func (s *Service) Handle(req Request) (any, error) {
 		if req.File == "" {
 			return nil, fail("PACKAGE_REQUIRED")
 		}
-		return s.stage(req.File)
+		if req.CloudTaskID != "" {
+			if _, err := hex.DecodeString(req.CloudTaskID); err != nil || len(req.CloudTaskID) != 32 {
+				return nil, fail("INVALID_TASK")
+			}
+		}
+		return s.stage(req.File, req.CloudTaskID)
 	case "import":
 		return s.importPlan(req.LocalTransferID, req.PlanID, req.Resume)
 	}
@@ -236,7 +246,7 @@ func stagePackage(source, local string) (*Manifest, error) {
 
 // stage 校验包、只复制清单列出的资源到私有 staging 目录，再生成预览计划。
 // --file 永远只到预览为止，合并必须走 --local + --plan。
-func (s *Service) stage(file string) (any, error) {
+func (s *Service) stage(file, taskID string) (any, error) {
 	if err := fsutil.EnsureDir(s.Dir, fsutil.DirMode); err != nil {
 		return nil, err
 	}
@@ -259,8 +269,10 @@ func (s *Service) stage(file string) (any, error) {
 	if err != nil {
 		return cleanup(err)
 	}
+	p.CloudTaskID = taskID
 	planID := sha(canonical(map[string]any{
-		"package": toAny(verified), "decisions": toAny(p.Decisions), "targetVersion": p.TargetVersion,
+		"cloudTaskId": taskID,
+		"package":     toAny(verified), "decisions": toAny(p.Decisions), "targetVersion": p.TargetVersion,
 		"warnings": toAny(p.Warnings), "targetWarnings": toAny(p.TargetWarnings),
 		"notificationMemoryPolicy": p.NotificationMemoryPolicy, "capabilities": toAny(p.Capabilities),
 	}))
@@ -270,6 +282,7 @@ func (s *Service) stage(file string) (any, error) {
 	}
 	return map[string]any{
 		"localTransferId": localID, "planId": planID, "decisions": p.Decisions,
+		"cloudTaskId":   taskID,
 		"targetVersion": p.TargetVersion, "warnings": p.Warnings, "targetWarnings": p.TargetWarnings,
 		"notificationMemoryPolicy": p.NotificationMemoryPolicy, "capabilities": p.Capabilities,
 		"nextCommand": "yoooclaw transfer import --local " + localID + " --plan " + planID,
@@ -374,13 +387,23 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 	}
 	result := map[string]any{
 		"state": state, "planId": stored.PlanID, "localTransferId": localID, "results": results,
-		"warnings": m.Warnings, "targetWarnings": fresh.TargetWarnings, "reportPath": reportPath,
+		"cloudTaskId": stored.Plan.CloudTaskID,
+		"warnings":    m.Warnings, "targetWarnings": fresh.TargetWarnings, "reportPath": reportPath,
 	}
 	if err := writePrivateJSON(reportPath, result); err != nil {
 		return nil, err
 	}
 	// 成功即清理 staging 副本；PARTIAL/失败保留可重试包与 report，等用户处理。
 	if state == "SUCCEEDED" {
+		if id := stored.Plan.CloudTaskID; id != "" {
+			cleanup := map[string]any{"taskId": id, "status": "FAILED", "nextCommand": "yoooclaw transfer delete --task " + id}
+			if s.DeleteCloud != nil && s.DeleteCloud(id) == nil {
+				cleanup = map[string]any{"taskId": id, "status": "DELETED"}
+			} else {
+				cleanup["error"] = "导入已成功，云端迁移包删除未确认，请重试删除"
+			}
+			result["cloudCleanup"] = cleanup
+		}
 		_ = os.RemoveAll(local)
 		delete(result, "reportPath")
 		result["staging"] = "cleaned"

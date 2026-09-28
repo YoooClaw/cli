@@ -285,3 +285,79 @@ func TestExportValidatesScopeAndOutput(t *testing.T) {
 		t.Fatal("dry-run must not write the origin marker")
 	}
 }
+
+func TestCloudCleanupOnlyAfterSuccessfulImport(t *testing.T) {
+	const taskID = "0123456789abcdef0123456789abcdef"
+	for _, scenario := range []string{"success", "partial", "delete-failed", "local"} {
+		t.Run(scenario, func(t *testing.T) {
+			src, dst := newEnv(t), newEnv(t)
+			seedSource(t, src.roots)
+			pkg := exportAll(t, src.roots)
+			if scenario == "partial" {
+				runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+				if _, _, err := dst.svc.Recordings.Rename("r1", "preserve target title"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			dst.svc.DeleteCloud = func(id string) error {
+				calls++
+				if id != taskID {
+					t.Error("wrong task deleted")
+				}
+				// Storage must have finished writing before cloud deletion starts.
+				if _, ok := dst.svc.Recordings.FindByID("r1"); !ok {
+					t.Error("deleted before import")
+				}
+				if scenario == "delete-failed" {
+					return os.ErrPermission
+				}
+				return nil
+			}
+			id := taskID
+			if scenario == "local" {
+				id = ""
+			}
+			raw, err := dst.svc.Handle(Request{Action: "preview", File: pkg, CloudTaskID: id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			preview := raw.(map[string]any)
+			if calls != 0 {
+				t.Fatal("preview deleted cloud data")
+			}
+			// Simulate a later command / daemon restart: cloud provenance must survive.
+			svc := &Service{Dir: dst.svc.Dir, Roots: dst.roots, Notifications: dst.svc.Notifications, Recordings: dst.svc.Recordings, DeleteCloud: dst.svc.DeleteCloud}
+			result := runPlan(t, svc, preview)
+			if scenario == "partial" {
+				if calls != 0 || result["state"] != "PARTIAL" {
+					t.Fatalf("partial cleanup: %v", result)
+				}
+				if _, err := os.Stat(result["reportPath"].(string)); err != nil {
+					t.Fatal("partial staging lost")
+				}
+				return
+			}
+			if result["state"] != "SUCCEEDED" {
+				t.Fatalf("state: %v", result)
+			}
+			if scenario == "local" {
+				if calls != 0 || result["cloudCleanup"] != nil {
+					t.Fatal("local import touched cloud")
+				}
+				return
+			}
+			if calls != 1 {
+				t.Fatalf("delete calls %d", calls)
+			}
+			cleanup := result["cloudCleanup"].(map[string]any)
+			if scenario == "delete-failed" {
+				if cleanup["status"] != "FAILED" || cleanup["nextCommand"] != "yoooclaw transfer delete --task "+taskID {
+					t.Fatalf("missing recovery: %v", cleanup)
+				}
+			} else if cleanup["status"] != "DELETED" {
+				t.Fatal("cleanup not reported")
+			}
+		})
+	}
+}
