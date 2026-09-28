@@ -2,6 +2,7 @@ package transfercloud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
-	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 )
 
 const partSize int64 = 8 << 20
@@ -58,8 +58,9 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 	if err != nil {
 		return nil, err
 	}
+	provider := &uploadCredentials{cloud: c, task: *task}
 	cfg := oss.LoadDefaultConfig().WithLogLevel(oss.LogOff).WithRegion(strings.TrimPrefix(task.Region, "oss-")).WithEndpoint(task.Endpoint).
-		WithCredentialsProvider(credentials.NewStaticCredentialsProvider(task.Credentials.AccessKeyID, task.Credentials.AccessKeySecret, task.Credentials.SecurityToken)).WithHttpClient(c.http)
+		WithCredentialsProvider(provider).WithHttpClient(c.http)
 	uploader := oss.NewUploader(oss.NewClient(cfg), func(o *oss.UploaderOptions) {
 		o.PartSize = partSize
 		o.ParallelNum = 3
@@ -68,8 +69,8 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 	})
 	var receipt *Receipt
 	err = retry(ctx, func() error {
-		if expiry, _ := time.Parse(time.RFC3339, task.Credentials.Expiration); !expiry.After(time.Now()) {
-			return failure("STS_EXPIRED", "迁移上传凭据已过期，任务 "+task.TaskID)
+		if _, e := provider.GetCredentials(ctx); e != nil {
+			return e
 		}
 		_, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{Bucket: oss.Ptr(task.Bucket), Key: oss.Ptr(task.ObjectKey), ContentType: oss.Ptr("application/gzip")}, path)
 		if e != nil {
@@ -78,6 +79,10 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 			if confirmed, confirmErr := c.Complete(ctx, task.TaskID, task.ObjectKey); confirmErr == nil {
 				receipt = confirmed
 				return nil
+			}
+			var serviceErr *oss.ServiceError
+			if errors.As(e, &serviceErr) && (serviceErr.Code == "SecurityTokenExpired" || serviceErr.Code == "InvalidSecurityToken") {
+				provider.invalidate()
 			}
 			return failure("CLOUD_UPLOAD_FAILED", "OSS 上传未完成，任务 "+task.TaskID)
 		}

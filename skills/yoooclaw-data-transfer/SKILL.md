@@ -38,4 +38,6 @@ Use OSS migration by default: `export --via oss` uploads a tar.gz package and re
 
 For a successful export, keep the reply short and in replyLanguage. In Chinese, use: “已打包上传，共 N 条记录。把下面这句话发给目标 Agent：” followed by “帮我导入这份迁移数据：任务ID”. For English, use “Please import this migration: <taskId>”. Keep taskId unchanged. Do not append routine notes about retention, plaintext, account keys, compatibility, default exclusions, or asking the user to return for confirmation. Report actual errors and missing data the user requested.
 
+For both export and import replies, omit routine warnings for data types with no source data in the default scope, such as `web-pages: unavailable` or `images: unavailable` caused by an absent source directory. This also applies when an import carries those warnings from the export: do not describe them as missing, damaged or lost data, and do not add a “部分数据不可用” notice. Keep the diagnostic warnings in the command result unchanged. Report actual read/parse failures, missing files referenced by records, conflicts, and absent data types the user explicitly requested; do not suppress those as empty categories.
+
 Report the actual result: a prepared export is not an imported target. For PARTIAL results, show the report location and the local recovery command.

@@ -52,6 +52,8 @@ func (n *Number) UnmarshalJSON(b []byte) error {
 }
 
 type UploadTask struct {
+	FileType    string `json:"fileType"`
+	FileName    string `json:"fileName"`
 	TaskID      string `json:"taskId"`
 	ObjectKey   string `json:"objectKey"`
 	Bucket      string `json:"bucket"`
@@ -156,13 +158,36 @@ func (c *Client) Create(ctx context.Context, name string) (*UploadTask, error) {
 	if err := c.call(ctx, http.MethodPost, "/create", map[string]string{"fileType": "DATA_TRANSFER", "fileName": name}, &task); err != nil {
 		return nil, err
 	}
-	u, err := validateOSSURL(task.Endpoint)
-	exp, expErr := time.Parse(time.RFC3339, task.Credentials.Expiration)
-	if err != nil || u.RawQuery != "" || (u.Path != "" && u.Path != "/") || !ValidTaskID(task.TaskID) || !validObjectKey(task.TaskID, task.ObjectKey) || !bucketRE.MatchString(task.Bucket) || !regionRE.MatchString(task.Region) || !endpointRE.MatchString(task.Endpoint) || task.Credentials.AccessKeyID == "" || task.Credentials.AccessKeySecret == "" || task.Credentials.SecurityToken == "" || expErr != nil || !exp.After(time.Now()) {
-		return nil, failure("CLOUD_RESPONSE_INVALID", "迁移上传凭据无效或已过期")
+	if err := validateUploadTask(&task); err != nil {
+		return nil, err
 	}
 	return &task, nil
 }
+
+func validateUploadTask(task *UploadTask) error {
+	u, err := validateOSSURL(task.Endpoint)
+	exp, expErr := time.Parse(time.RFC3339, task.Credentials.Expiration)
+	if err != nil || u.RawQuery != "" || (u.Path != "" && u.Path != "/") || !ValidTaskID(task.TaskID) || !validObjectKey(task.TaskID, task.ObjectKey) || !bucketRE.MatchString(task.Bucket) || !regionRE.MatchString(task.Region) || !endpointRE.MatchString(task.Endpoint) || task.Credentials.AccessKeyID == "" || task.Credentials.AccessKeySecret == "" || task.Credentials.SecurityToken == "" || expErr != nil || !exp.After(time.Now()) {
+		return failure("CLOUD_RESPONSE_INVALID", "迁移上传凭据无效或已过期")
+	}
+	return nil
+}
+
+// Refresh is internal to the uploader; no command exposes temporary credentials.
+func (c *Client) Refresh(ctx context.Context, original *UploadTask) (*UploadTask, error) {
+	var next UploadTask
+	if err := c.call(ctx, http.MethodPost, "/refresh", map[string]string{"taskId": original.TaskID}, &next); err != nil {
+		return nil, err
+	}
+	if err := validateUploadTask(&next); err != nil {
+		return nil, err
+	}
+	if next.TaskID != original.TaskID || next.ObjectKey != original.ObjectKey || next.Bucket != original.Bucket || next.Endpoint != original.Endpoint || next.Region != original.Region || next.FileType != original.FileType || next.FileName != original.FileName {
+		return nil, failure("CLOUD_RESPONSE_INVALID", "迁移上传任务信息不匹配")
+	}
+	return &next, nil
+}
+
 func (c *Client) Complete(ctx context.Context, id, key string) (*Receipt, error) {
 	if !ValidTaskID(id) || !validObjectKey(id, key) {
 		return nil, failure("INVALID_TASK", "需要有效的 taskId 与 objectKey")

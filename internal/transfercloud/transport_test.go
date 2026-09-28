@@ -212,7 +212,7 @@ func TestSDKMultipartUploadResumesCheckpoint(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[int]int{}
 	parts := map[int][]byte{}
-	creates, inits, lists := 0, 0, 0
+	creates, inits, lists, refreshes := 0, 0, 0, 0
 	retryAllowed, completed := false, false
 	firstTwo := make(chan struct{})
 	c := mockOSSClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +221,15 @@ func TestSDKMultipartUploadResumesCheckpoint(t *testing.T) {
 			creates++
 			mu.Unlock()
 			reply(w, testTask())
+			return
+		}
+		if r.URL.Path == apiPath+"/refresh" {
+			mu.Lock()
+			refreshes++
+			mu.Unlock()
+			next := testTask()
+			next["credentials"].(map[string]string)["securityToken"] = "renewed-token"
+			reply(w, next)
 			return
 		}
 		if r.URL.Path == apiPath+"/complete" {
@@ -274,10 +283,13 @@ func TestSDKMultipartUploadResumesCheckpoint(t *testing.T) {
 					return
 				}
 				w.WriteHeader(403)
-				fmt.Fprint(w, `<Error><Code>AccessDenied</Code><Message>test interruption</Message></Error>`)
+				fmt.Fprint(w, `<Error><Code>SecurityTokenExpired</Code><Message>test interruption</Message></Error>`)
 				return
 			}
 			mu.Lock()
+			if n == 3 && r.Header.Get("x-oss-security-token") != "renewed-token" {
+				t.Error("retry did not use new STS token")
+			}
 			parts[n] = data
 			if n <= 2 && len(parts[1]) > 0 && len(parts[2]) > 0 {
 				select {
@@ -321,6 +333,9 @@ func TestSDKMultipartUploadResumesCheckpoint(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if refreshes != 1 {
+		t.Fatalf("refresh calls=%d", refreshes)
+	}
 	if creates != 1 || inits != 1 || lists != 1 || calls[1] != 1 || calls[2] != 1 || calls[3] != 2 {
 		t.Fatalf("create=%d init=%d list=%d parts=%v", creates, inits, lists, calls)
 	}
