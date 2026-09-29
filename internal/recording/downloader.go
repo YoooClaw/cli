@@ -93,10 +93,12 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 	var lastErr error
 	refreshed := false
 	for attempt := 1; attempt <= retries; attempt++ {
+		logger.Info(fmt.Sprintf("[downloader] 开始下载 %s (attempt %d/%d)", filepath.Base(destPath), attempt, retries))
 		ctx, cancel := context.WithTimeout(parent, timeout)
 		transport := &downloadClient{client: client, header: opts.HeaderTimeout, idle: opts.IdleTimeout, strict: refreshed}
 		err = ossdownload.Download(ctx, transport, rawURL, "audio", staged, checkpoint, maxAudioBytes, true)
 		if errors.Is(err, ossdownload.ErrNoRange) {
+			logger.Info("[downloader] 源站不支持可靠分段下载，转为单流下载")
 			var req *http.Request
 			req, err = http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 			if err == nil {
@@ -121,19 +123,24 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			if e != nil {
 				return DownloadResult{Error: e.Error()}
 			}
+			logger.Info(fmt.Sprintf("[downloader] 下载完成 %s (%d bytes, %s)", filepath.Base(destPath), info.Size(), time.Since(start)))
 			return DownloadResult{OK: true, SizeBytes: info.Size(), Elapsed: time.Since(start)}
 		}
 		lastErr = err
+		logger.Warn(fmt.Sprintf("[downloader] 下载失败 (attempt %d/%d): %s", attempt, retries, safeDownloadError(err)))
 		if downloadStatus(err) == 403 && !refreshed && opts.RefreshURL != nil && parent.Err() == nil {
 			refreshed = true
+			logger.Info("[downloader] HTTP 403，开始刷新签名链接（本轮最多一次）")
 			refreshCtx, done := context.WithTimeout(parent, 30*time.Second)
 			next, e := opts.RefreshURL(refreshCtx)
 			done()
 			if e != nil {
 				lastErr = e
+				logger.Warn("[downloader] 签名链接刷新失败: " + safeDownloadError(e))
 				break
 			}
 			rawURL = next
+			logger.Info("[downloader] 签名链接已刷新，继续下载")
 			// The refresh retry is available even when the attempt budget was exhausted.
 			if attempt == retries {
 				retries++
@@ -143,7 +150,6 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 		if !isRetryableDownloadError(err) || parent.Err() != nil {
 			break
 		}
-		logger.Warn(fmt.Sprintf("[downloader] 下载失败 (attempt %d/%d): %s", attempt, retries, safeDownloadError(err)))
 		if attempt < retries {
 			delay := backoff
 			for i := 1; i < attempt && delay < 30*time.Second; i++ {
@@ -208,7 +214,8 @@ func (d *downloadClient) Do(req *http.Request) (*http.Response, error) {
 	if idle <= 0 {
 		idle = 30 * time.Second
 	}
-	timer := time.AfterFunc(header, cancel)
+	deadline := &headerDeadline{cancel: cancel}
+	timer := time.AfterFunc(header, deadline.expire)
 	client := *d.client
 	if d.strict {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -219,7 +226,14 @@ func (d *downloadClient) Do(req *http.Request) (*http.Response, error) {
 		direct = directHTTPClient(&client)
 		resp, err = direct.Do(req)
 	}
+	timedOut := deadline.finish()
 	timer.Stop()
+	if timedOut {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		err = context.DeadlineExceeded
+	}
 	if err != nil {
 		cancel()
 		if direct != nil {
@@ -231,6 +245,31 @@ func (d *downloadClient) Do(req *http.Request) (*http.Response, error) {
 	body.timer = time.AfterFunc(idle, cancel)
 	resp.Body = body
 	return resp, nil
+}
+
+// Serialize completion with the timer callback. Stop alone cannot prevent an
+// already queued callback from cancelling a body after Do has returned it.
+// If expiry wins, reject the response here instead of handing out a cancelled body.
+type headerDeadline struct {
+	mu             sync.Mutex
+	done, timedOut bool
+	cancel         context.CancelFunc
+}
+
+func (d *headerDeadline) expire() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.done {
+		d.done = true
+		d.timedOut = true
+		d.cancel()
+	}
+}
+func (d *headerDeadline) finish() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.done = true
+	return d.timedOut
 }
 
 type idleBody struct {
