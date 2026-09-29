@@ -10,6 +10,7 @@ import (
 
 // StatusEvent 是录音状态变化事件。
 type StatusEvent struct {
+	OssTaskID          string           `json:"ossTaskId,omitempty"`
 	RecordingID        string           `json:"recordingId"`
 	TransferStatus     string           `json:"transfer_status"`
 	AudioStatus        string           `json:"audio_status,omitempty"`

@@ -55,6 +55,7 @@ type Metadata struct {
 
 // Entry 是一条录音索引项。
 type Entry struct {
+	OssTaskID          string   `json:"ossTaskId,omitempty"`
 	ID                 string   `json:"id"`
 	ClientLabel        string   `json:"clientLabel,omitempty"`
 	Metadata           Metadata `json:"metadata"`
@@ -451,9 +452,13 @@ func (s *Storage) SetAudioFile(recordingID, filename string) error {
 }
 
 // SetResultAudioPending 持久化 result.write 携带的最新 OSS URL；已有本地音频
-// 时直接复用，否则标记为待下载。
-func (s *Storage) SetResultAudioPending(recordingID, ossURL string) error {
+// 时直接复用，否则标记为待下载。传 taskID（包括空串）替换任务关联；
+// 恢复已有下载时省略 taskID，保留原关联。
+func (s *Storage) SetResultAudioPending(recordingID, ossURL string, taskID ...string) error {
 	return s.updateEntry(recordingID, func(entry *Entry) {
+		if len(taskID) > 0 {
+			entry.OssTaskID = taskID[0]
+		}
 		nextURL := strings.TrimSpace(ossURL)
 		entry.Metadata.OssAudioURL = nextURL
 		if entry.AudioFile != "" {

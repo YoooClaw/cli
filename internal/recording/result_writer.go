@@ -1,6 +1,7 @@
 package recording
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,7 @@ type ResultSummary struct {
 
 // ResultWriteParams 是 recordings.result.write 的入参。
 type ResultWriteParams struct {
+	OssTaskID      *string           `json:"ossTaskId,omitempty"`
 	RecordingID    string            `json:"recordingId"`
 	OssURL         string            `json:"ossUrl,omitempty"`
 	DurationMillis *float64          `json:"durationMillis,omitempty"`
@@ -69,6 +71,7 @@ type ResultWriteStored struct {
 
 // ResultWriteResult 是 recordings.result.write 的返回。
 type ResultWriteResult struct {
+	OssTaskID      string            `json:"ossTaskId,omitempty"`
 	OK             bool              `json:"ok"`
 	RecordingID    string            `json:"recordingId"`
 	TransferStatus string            `json:"transfer_status"`
@@ -93,6 +96,13 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		return ResultWriteResult{}, errors.New("transcript or summary is required")
 	}
 
+	taskID := ""
+	if params.OssTaskID != nil {
+		taskID = strings.TrimSpace(*params.OssTaskID)
+		if taskID == "" || len(taskID) > 256 || resultOssURL(params) == "" {
+			return ResultWriteResult{}, errors.New("ossTaskId requires a nonempty task ID (max 256 bytes) and ossUrl")
+		}
+	}
 	entry, found := storage.FindByID(recordingID)
 	clientLabel := strings.TrimSpace(opts.ClientLabel)
 	if !found {
@@ -162,7 +172,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 
 	oss := resultOssURL(params)
 	if oss != "" {
-		if err := storage.SetResultAudioPending(recordingID, oss); err != nil {
+		if err := storage.SetResultAudioPending(recordingID, oss, taskID); err != nil {
 			return ResultWriteResult{}, err
 		}
 		updated, _ = storage.FindByID(recordingID)
@@ -173,7 +183,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	}
 	emitResultStatus(recordingID, storage, logger, opts.NotifyStatus, transcript, summaryText, title)
 
-	if oss != "" {
+	if oss != "" && updated.AudioStatus != AudioStatusDownloaded {
 		go downloadResultAudio(recordingID, oss, storage, logger, opts)
 	}
 
@@ -182,6 +192,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		RecordingID:    recordingID,
 		TransferStatus: updated.Status,
 		AudioStatus:    updated.AudioStatus,
+		OssTaskID:      updated.OssTaskID,
 		Stored: ResultWriteStored{
 			TranscriptDataFile: updated.TranscriptDataFile,
 			TranscriptFile:     updated.TranscriptFile,
@@ -384,8 +395,33 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 	dest := storage.AudioFilePath(recordingID, ossURL)
 	staged := dest + ".incoming"
 	defer os.Remove(staged)
-	logger.Info("[recording-result] 开始下载音频: " + recordingID + ", audio=" + ossURL)
-	result := DownloadFile(ossURL, staged, logger, opts.DownloadOptions)
+	logger.Info("[recording-result] 开始下载音频: " + recordingID)
+	downloadOpts := opts.DownloadOptions
+	entry, _ := storage.FindByID(recordingID)
+	isCurrent := func() bool {
+		now, ok := storage.FindByID(recordingID)
+		return ok && now.Metadata.OssAudioURL == ossURL && now.OssTaskID == entry.OssTaskID && now.ClientLabel == entry.ClientLabel
+	}
+	if entry.OssTaskID != "" && opts.URLRefresher != nil {
+		refresh := opts.URLRefresher(entry.ClientLabel, entry.OssTaskID)
+		downloadOpts.RefreshURL = func(ctx context.Context) (string, error) {
+			if !isCurrent() {
+				return "", errors.New("recording download superseded")
+			}
+			next, err := refresh(ctx)
+			if err != nil {
+				return "", err
+			}
+			if !isCurrent() {
+				return "", errors.New("recording download superseded")
+			}
+			return next, nil
+		}
+	}
+	result := DownloadFile(ossURL, staged, logger, downloadOpts)
+	if !isCurrent() {
+		return
+	}
 	if !result.OK {
 		message := "音频下载失败: " + result.Error
 		logger.Error("[recording-result] " + message + ": " + recordingID)
@@ -462,6 +498,7 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 	}
 	event := StatusEvent{
 		RecordingID:        entry.ID,
+		OssTaskID:          entry.OssTaskID,
 		TransferStatus:     entry.Status,
 		AudioStatus:        entry.AudioStatus,
 		AudioFile:          entry.AudioFile,

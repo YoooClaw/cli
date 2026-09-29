@@ -43,6 +43,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		body.RecordingID = recordingID
 		result, err := recording.HandleRecordingResultWrite(body, s.recordingStorage, s.logger, recording.SyncOptions{
 			NotifyStatus: s.notifyRecordingStatus,
+			URLRefresher: s.recordingURLRefresher,
 			ClientLabel:  auth.clientLabel,
 		})
 		if err != nil {
@@ -50,7 +51,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			switch {
 			case strings.HasPrefix(err.Error(), "Recording not found:"):
 				code = "NOT_FOUND"
-			case err.Error() == "recordingId is required" || err.Error() == "transcript or summary is required":
+			case strings.HasPrefix(err.Error(), "ossTaskId") || err.Error() == "recordingId is required" || err.Error() == "transcript or summary is required":
 				code = "INVALID_PARAMS"
 			}
 			s.logRecordingWriteFailure(recordingID, r.Header.Get(relay.InternalRequestIDHeader), err)
@@ -285,7 +286,7 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 }
 
 func recordingListItem(entry recording.Entry) map[string]any {
-	return map[string]any{
+	result := map[string]any{
 		"recordingId":        entry.ID,
 		"name":               entry.Metadata.Name,
 		"duration_sec":       entry.Metadata.DurationSec,
@@ -304,11 +305,15 @@ func recordingListItem(entry recording.Entry) map[string]any {
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
 	}
+	if entry.OssTaskID != "" {
+		result["ossTaskId"] = entry.OssTaskID
+	}
+	return result
 }
 
 func recordingDetail(entry recording.Entry) map[string]any {
 	title := firstNonEmptyStr(entry.Title, entry.Metadata.Name, entry.ID)
-	return map[string]any{
+	result := map[string]any{
 		"recordingId":        entry.ID,
 		"name":               entry.Metadata.Name,
 		"duration_sec":       entry.Metadata.DurationSec,
@@ -331,6 +336,10 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
 	}
+	if entry.OssTaskID != "" {
+		result["ossTaskId"] = entry.OssTaskID
+	}
+	return result
 }
 
 func maskedKeyLog(asr *recording.AsrConfig) string {

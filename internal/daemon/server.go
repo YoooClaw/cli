@@ -233,6 +233,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 	}
 	if count := recording.RecoverMissingResultAudio(recordingStorage, logger, recording.SyncOptions{
 		NotifyStatus: srv.notifyRecordingStatus,
+		URLRefresher: srv.recordingURLRefresher,
 	}); count > 0 {
 		logger.Info(fmt.Sprintf("[recording-recovery] 已恢复 %d 个缺失音频任务", count))
 	}
