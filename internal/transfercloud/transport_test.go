@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/ossdownload"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 )
 
@@ -146,7 +147,7 @@ func TestDownloadRejectsOversizeAndWrongRange(t *testing.T) {
 					w.Write([]byte("0123456789"))
 				}
 			})
-			d := &signedDownload{client: c.http, url: signedURL}
+			d := ossdownload.NewAdapter(c.http, signedURL, MaxBytes, false)
 			_, err := d.HeadObject(context.Background(), &oss.HeadObjectRequest{})
 			if scenario == "oversize" || scenario == "redirect" {
 				if err == nil {

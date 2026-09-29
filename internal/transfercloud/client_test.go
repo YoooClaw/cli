@@ -149,3 +149,42 @@ func TestAPIRefusesRedirectAndMissingKey(t *testing.T) {
 		t.Fatal("accepted missing key")
 	}
 }
+
+func TestRecordingDownloadURLValidation(t *testing.T) {
+	for _, scenario := range []string{"valid", "string-expiry", "expired", "wrong-task", "http", "userinfo", "redirect"} {
+		t.Run(scenario, func(t *testing.T) {
+			c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" || r.Header.Get("X-Api-Key-Id") != "cli-key" {
+					t.Error("invalid refresh request")
+				}
+				var body map[string]string
+				json.NewDecoder(r.Body).Decode(&body)
+				if body["taskId"] != "recording-task-1" {
+					t.Error("wrong task")
+				}
+				data := map[string]any{"taskId": "recording-task-1", "signedUrl": signedURL, "expiresAt": time.Now().Add(time.Hour).UnixMilli()}
+				switch scenario {
+				case "string-expiry":
+					data["expiresAt"] = fmt.Sprint(data["expiresAt"])
+				case "expired":
+					data["expiresAt"] = 1
+				case "wrong-task":
+					data["taskId"] = "other"
+				case "http":
+					data["signedUrl"] = "http://bucket.oss-cn-hangzhou.aliyuncs.com/a"
+				case "userinfo":
+					data["signedUrl"] = "https://user@bucket.oss-cn-hangzhou.aliyuncs.com/a"
+				case "redirect":
+					http.Redirect(w, r, "https://example.invalid", 302)
+					return
+				}
+				reply(w, data)
+			})
+			_, err := c.RecordingDownloadURL(context.Background(), "recording-task-1")
+			wantOK := scenario == "valid" || scenario == "string-expiry"
+			if (err == nil) != wantOK {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}

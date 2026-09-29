@@ -45,6 +45,7 @@ func TestRecordingStatusMatchesDownloadedEvent(t *testing.T) {
 	body, err := json.Marshal(map[string]any{
 		"recordingId": recordingID,
 		"ossUrl":      audio.URL + "/recording.ogg",
+		"ossTaskId":   "upload-task",
 		"transcript":  map[string]any{"text": "测试转录"},
 	})
 	if err != nil {
@@ -55,6 +56,9 @@ func TestRecordingStatusMatchesDownloadedEvent(t *testing.T) {
 		t.Fatalf("result.write failed: %+v", writeResp)
 	}
 
+	if got := gatewayData(t, writeResp)["ossTaskId"]; got != "upload-task" {
+		t.Fatalf("missing response task: %v", got)
+	}
 	var downloaded recording.StatusEvent
 	timer := time.NewTimer(3 * time.Second)
 	defer timer.Stop()
@@ -71,6 +75,7 @@ func TestRecordingStatusMatchesDownloadedEvent(t *testing.T) {
 	status := gatewayData(t, statusResp)
 	for key, want := range map[string]any{
 		"audio_status": downloaded.AudioStatus,
+		"ossTaskId":    "upload-task",
 		"audioFile":    downloaded.AudioFile,
 		"updatedAt":    downloaded.UpdatedAt,
 	} {
@@ -79,6 +84,9 @@ func TestRecordingStatusMatchesDownloadedEvent(t *testing.T) {
 		}
 	}
 
+	if downloaded.OssTaskID != "upload-task" {
+		t.Fatal("missing event task")
+	}
 	entry, ok := storage.FindByID(recordingID)
 	if !ok || entry.AudioStatus != recording.AudioStatusDownloaded {
 		t.Fatalf("recording was not persisted as downloaded: %+v", entry)

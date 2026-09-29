@@ -224,3 +224,29 @@ func validObjectKey(id, key string) bool {
 	match := objectKeyRE.FindStringSubmatch(key)
 	return len(match) == 2 && match[1] == id
 }
+
+// RecordingDownloadURL refreshes a recording task without imposing migration ID syntax.
+func (c *Client) RecordingDownloadURL(ctx context.Context, id string) (string, error) {
+	if strings.TrimSpace(id) == "" || len(id) > 256 {
+		return "", failure("INVALID_TASK", "录音 taskId 无效")
+	}
+	var result struct {
+		TaskID    string `json:"taskId"`
+		SignedURL string `json:"signedUrl"`
+		ExpiresAt Number `json:"expiresAt"`
+	}
+	if err := c.call(ctx, http.MethodPost, "/download-url", map[string]string{"taskId": id}, &result); err != nil {
+		return "", err
+	}
+	if result.TaskID != id || int64(result.ExpiresAt) <= time.Now().UnixMilli() {
+		return "", failure("CLOUD_RESPONSE_INVALID", "录音签名任务不匹配或已过期")
+	}
+	u, err := validateOSSURL(result.SignedURL)
+	if err != nil {
+		return "", err
+	}
+	if u.Port() != "" || !strings.Contains(u.Hostname(), ".oss-") {
+		return "", failure("CLOUD_URL_INVALID", "录音 OSS 地址无效")
+	}
+	return result.SignedURL, nil
+}
