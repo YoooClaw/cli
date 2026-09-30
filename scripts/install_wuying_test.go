@@ -10,6 +10,16 @@ import (
 
 func TestWuyingInstallerConfiguresCredentialSkillAndDaemon(t *testing.T) {
 	t.Parallel()
+	testWuyingCredentials(t, true)
+}
+
+func TestWuyingInstallerBetaUpgradePreservesCredentials(t *testing.T) {
+	t.Parallel()
+	testWuyingCredentials(t, false)
+}
+
+func testWuyingCredentials(t *testing.T, supplyKey bool) {
+	t.Helper()
 
 	root := t.TempDir()
 	mockBin := filepath.Join(root, "mock-bin")
@@ -62,17 +72,22 @@ exit 0
 
 	secret := "ock-secret-for-wuying"
 	baseArgsLog := filepath.Join(root, "base-args.log")
-	cmd := exec.Command(
-		"sh", mustAbs(t, "install-wuying.sh"),
-		"--api-key", secret,
+	if err := os.WriteFile(keyLog, []byte("existing-key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{mustAbs(t, "install-wuying.sh"),
 		"--skill", "claude",
 		"--profile", "cloud",
 		"--env", "development",
-		"--version", "1.2.3",
+		"--version", "1.2.3-beta.1",
 		"--dir", installDir,
 		"--force",
 		"--modify-path",
-	)
+	}
+	if supplyKey {
+		args = append(args, "--api-key", secret)
+	}
+	cmd := exec.Command("sh", args...)
 	cmd.Env = append(os.Environ(),
 		"HOME="+root,
 		"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -94,7 +109,11 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(storedKey) != secret {
+	expectedKey := "existing-key"
+	if supplyKey {
+		expectedKey = secret
+	}
+	if string(storedKey) != expectedKey {
 		t.Fatalf("stored key = %q, want supplied key", storedKey)
 	}
 
@@ -102,7 +121,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--version 1.2.3", "--dir " + installDir, "--force", "--modify-path"} {
+	for _, want := range []string{"--version 1.2.3-beta.1", "--dir " + installDir, "--force", "--modify-path"} {
 		if !strings.Contains(string(baseArgs), want) {
 			t.Fatalf("base installer did not receive %q:\n%s", want, baseArgs)
 		}
@@ -113,8 +132,10 @@ exit 0
 		t.Fatal(err)
 	}
 	logText := string(commands)
+	if strings.Contains(logText, "auth set-api-key") != supplyKey {
+		t.Fatalf("unexpected credential write (supplyKey=%v):\n%s", supplyKey, logText)
+	}
 	for _, want := range []string{
-		"--profile cloud auth set-api-key -",
 		"--profile cloud config init --non-interactive --from-file",
 		"--profile cloud config set cloud.host openclaw-service-dev.yoooclaw.com",
 		"--profile cloud config set relay.url wss://openclaw-service-dev.yoooclaw.com/message/messages/ws/plugin",
@@ -400,7 +421,7 @@ exit 0
 	}
 }
 
-func TestWuyingInstallerRequiresAPIKeyAndSkill(t *testing.T) {
+func TestWuyingInstallerValidatesOptions(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -408,7 +429,7 @@ func TestWuyingInstallerRequiresAPIKeyAndSkill(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "missing api key", args: []string{"--skill", "claude"}, want: "--api-key 必填"},
+		{name: "blank api key", args: []string{"--skill", "claude", "--api-key", "   "}, want: "--api-key 不能为空"},
 		{name: "missing skill", args: []string{"--api-key", "ock-test"}, want: "--skill 必填"},
 		{name: "invalid env", args: []string{"--api-key", "ock-test", "--skill", "claude", "--env", "staging"}, want: "--env 仅支持"},
 	} {

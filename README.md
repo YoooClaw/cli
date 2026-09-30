@@ -103,7 +103,7 @@ Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` 
 
 ### Unattended WUYING cloud desktop installation
 
-The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. Both `--api-key` and `--skill` are required:
+The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. `--skill` is required. `--api-key` is optional: omit it on upgrade to preserve existing credentials; supply it for first-time account setup or to replace the key:
 
 For Claude / Codex, the script also writes the absolute CLI path and selected profile into the installed YoooClaw Skills, instructing the Agent to use the full command even when `~/.local/bin` is absent from PATH. Reinstalling updates this configuration; existing Agent sessions must reload Skills or start a new session. Other hosts currently receive an absolute-path reminder only.
 
@@ -111,6 +111,10 @@ For Claude / Codex, the script also writes the absolute CLI path and selected pr
 export YOOOCLAW_API_KEY='ock-xxxx'
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
   | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude --env production
+
+# Upgrade to a specific beta without changing credentials
+curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
+  | sh -s -- --skill claude --version 0.12.0-beta.11 --force
 
 # Codex host; replace the binary and refresh installed Skills on reinstall/upgrade
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
