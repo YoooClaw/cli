@@ -410,6 +410,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleGatewayCompat(w, r, path)
 	case strings.HasPrefix(path, "/tunnel/"):
 		s.handleTunnel(w, r, path)
+	case strings.HasPrefix(path, "/local-services/"):
+		s.handleLocalService(w, r, path)
 	default:
 		writeJSON(w, 404, map[string]any{"ok": false, "error": map[string]any{"code": errs.CodeNotFound, "message": "未知路径：" + path}})
 	}
