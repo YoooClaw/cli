@@ -3,6 +3,7 @@
 //	~/.yoooclaw/
 //	  credentials.json            account 级共享凭据（跨 profile 且与插件共享）
 //	  active-profile              当前 active profile 名（文本）
+//	  local-services/<name>.json  本机服务登记（Relay 经 /local-services/<name>/ 转给它）
 //	  profiles/<profile>/
 //	    config.json
 //	    credentials.json          instance 级密文
@@ -45,6 +46,12 @@ func SharedCredentialsPath() string {
 // ActiveProfilePath 返回记录当前 active profile 的文本文件路径。
 func ActiveProfilePath() string {
 	return filepath.Join(RootDir(), "active-profile")
+}
+
+// LocalServicesDir 返回本机服务登记目录：其他程序（如 clawpilot-thread）把自己的
+// 回环地址与令牌写在这里，daemon 据此把 Relay 下行请求转给它们。跨 profile 共享。
+func LocalServicesDir() string {
+	return filepath.Join(RootDir(), "local-services")
 }
 
 // ProfileDir 返回某个 profile 的目录。
