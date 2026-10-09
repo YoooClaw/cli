@@ -188,7 +188,11 @@ curl -fsSL -o "$TMP/install.sh" "$BASE_INSTALLER_URL"
 set -- "$TMP/install.sh"
 [ -n "$VERSION" ] && set -- "$@" --version "$VERSION"
 set -- "$@" --dir "$EFFECTIVE_INSTALL_DIR"
-[ "$FORCE" -eq 1 ] && set -- "$@" --force
+# An existing CLI was already stopped above, so replacing it is the upgrade
+# this installer exists for; the base installer only overwrites with --force.
+if [ "$FORCE" -eq 1 ] || [ -e "$CLI" ]; then
+  set -- "$@" --force
+fi
 if [ "$MODIFY_PATH" -eq 1 ]; then
   set -- "$@" --modify-path
 else
@@ -234,6 +238,16 @@ fi
 info "持久化云端环境: ${CLOUD_ENV}…"
 yc config set cloud.host "$CLOUD_HOST"
 yc config set relay.url "wss://${CLOUD_HOST}/message/messages/ws/plugin"
+
+# A key issued for another environment still installs, but Relay then keeps
+# failing with 403. Probe one read-only cloud API so the mismatch is visible.
+if ! key_check=$(yc --format json lightrule list 2>&1); then
+  case "$key_check" in
+    *'"code":"401"'*)
+      warn "API key 未通过 ${CLOUD_ENV} 环境校验，Relay 将无法连接；请用 --env 指定 key 所属环境，或用 --api-key 传入 ${CLOUD_ENV} 的 key"
+      ;;
+  esac
+fi
 
 info "安装 ${SKILL_AGENT} 宿主的 Agent Skills…"
 skill_args=""

@@ -249,7 +249,10 @@ esac
 exit 2
 `)
 	writeExecutable(t, baseInstaller, `#!/bin/sh
-printf '%s\n' 'replace' >> "$ORDER_LOG"
+case " $* " in
+  *' --force '*) printf '%s\n' 'replace --force' >> "$ORDER_LOG" ;;
+  *) printf '%s\n' 'replace' >> "$ORDER_LOG" ;;
+esac
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '--dir' ]; then install_dir=$2; shift 2; else shift; fi
 done
@@ -261,6 +264,7 @@ case "$*" in
   *'auth set-api-key -'*) IFS= read -r _ ;;
   *'config show'*) exit 0 ;;
   *'daemon status'*) exit 0 ;;
+  *'lightrule list'*) printf '%s\n' '{"error":{"code":"401","message":"Invalid plugin API Key"},"ok":false}'; exit 1 ;;
 esac
 exit 0
 `)
@@ -286,9 +290,12 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "old:--profile default daemon autostart disable\nreplace\n"
+	want := "old:--profile default daemon autostart disable\nreplace --force\n"
 	if string(order) != want {
 		t.Fatalf("upgrade order = %q, want %q", order, want)
+	}
+	if !strings.Contains(string(output), "API key 未通过 production 环境校验") {
+		t.Fatalf("environment/key mismatch was not reported:\n%s", output)
 	}
 }
 
