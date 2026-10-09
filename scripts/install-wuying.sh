@@ -97,6 +97,14 @@ configure_user_service_env() {
     DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
     export DBUS_SESSION_BUS_ADDRESS
   fi
+  # WUYING shells may inherit a bus address this user cannot open. Prefer the
+  # user's own runtime bus when the inherited one is unusable.
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [ -S "$user_runtime_dir/bus" ] || return 0
+  ! systemctl --user show-environment >/dev/null 2>&1 || return 0
+  XDG_RUNTIME_DIR="$user_runtime_dir"
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus"
+  export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 }
 
 if [ -n "$INSTALL_DIR" ]; then
