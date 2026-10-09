@@ -61,8 +61,8 @@ hooks:
 
 | 用户选项 | 每张参考积分 | 脚本档位 |
 | --- | --- | --- |
-| 标准版 | 10.10 | `standard` |
-| 专业版 | 25.25 | `professional` |
+| 标准版 | 10 | `standard` |
+| 专业版 | 25 | `professional` |
 
 用本 skill 的绝对路径替换 `{baseDir}`：
 
@@ -124,9 +124,9 @@ python3 {baseDir}/scripts/image_generate.py generate --tier professional --n 2 -
 
 | 分辨率 | 每秒参考积分 |
 | --- | --- |
-| 480P | 22.73 |
-| 720P | 45.45 |
-| 1080P | 90.9 |
+| 480P | 25 |
+| 720P | 50 |
+| 1080P | 100 |
 
 总积分以估算结果为准。估算与生成均显式传相同的 `--seconds`；脚本分别映射为估算的 `seconds` 和生成的 `parameters.duration`。
 
