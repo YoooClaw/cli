@@ -6,6 +6,7 @@ from client import ApiError, emit
 from image_generate import image_input
 import time
 import urllib.parse
+from execution_guard import TaskState
 
 MODEL = "wan3.0-video-prime"
 DEFAULT_WAIT = 20 * 60
@@ -54,6 +55,9 @@ def task_result(task_id, output, result):
 
 def emit_task(item, args):
     """输出任务状态；成功时附带本地保存结果与可直接粘贴的交付文本。"""
+    state = getattr(args, "_task_state", None)
+    if state:
+        state.update(task_id=item.get("task_id"), status=item.get("status"))
     if item.get("video_url"):
         item.update(client.save_results("video", [item["video_url"]], getattr(args, "prompt", "") or "", args.save_dir))
     emit(item)
@@ -121,7 +125,7 @@ def run(args):
         return 0
     return wait_for_task(task_id, args.wait, args, status)
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description="视频生成与任务查询")
     commands = parser.add_subparsers(dest="command", required=True)
     est = commands.add_parser("estimate", help="查询预计积分")
@@ -140,7 +144,18 @@ def main():
         command.add_argument("--wait", type=wait_seconds, default=DEFAULT_WAIT,
                              help="最多轮询等待秒数，默认 1200（20 分钟）；0 为仅提交/查询一次")
         command.add_argument("--save-dir", default="media-results", help="结果保存目录，默认当前工作目录下的 media-results/")
-    return client.execute(run, parser.parse_args())
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
+    args._task_state = TaskState(args)
+    exit_code = 1
+    try:
+        exit_code = client.execute(run, args)
+        return exit_code
+    finally:
+        args._task_state.update(phase="ended", exit_code=exit_code)
 
 if __name__ == "__main__":
     sys.exit(main())

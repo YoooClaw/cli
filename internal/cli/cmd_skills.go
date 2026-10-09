@@ -17,7 +17,15 @@ func newSkillsCmd() *cobra.Command {
 	installCmd.Flags().Bool("copy", false, "复制（内嵌资源恒为复制，本 flag 仅兼容）")
 	installCmd.Flags().Bool("force", false, "目标已存在同名 Skill 时覆盖")
 
-	c.AddCommand(listCmd, targetsCmd, installCmd)
+	hooksCmd := &cobra.Command{Use: "hooks", Short: "管理 Claude 全局媒体 Hook"}
+	hooksRemove := &cobra.Command{Use: "remove", Short: "移除 CLI 注册的 Claude 媒体 Hook，保留其他 Hook", Args: cobra.NoArgs, RunE: run(func(_ *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
+		if err := skills.ConfigureClaudeMediaHooks("", true); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "removed": "claude-media-hooks"}, nil
+	})}
+	hooksCmd.AddCommand(hooksRemove)
+	c.AddCommand(listCmd, targetsCmd, installCmd, hooksCmd)
 	return c
 }
 
@@ -59,6 +67,11 @@ func skillsInstall(_ *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 	results, installed, err := skills.Install(sel.Target, flagBool(cmd, "force"))
 	if err != nil {
 		return nil, err
+	}
+	if sel.Agent == "claude" {
+		if err := skills.ConfigureClaudeMediaHooks(sel.Target, false); err != nil {
+			return nil, err
+		}
 	}
 	resultsAny := make([]any, 0, len(results))
 	skipped := make([]any, 0)

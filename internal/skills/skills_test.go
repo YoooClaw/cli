@@ -1,13 +1,13 @@
 package skills
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -450,30 +450,44 @@ func TestInstallWritesAbsoluteSkillDirIntoMediaHook(t *testing.T) {
 	if _, _, err := Install(target, false); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(target, "yoooclaw-media-generate", "SKILL.md"))
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	if err := configureClaudeMediaHooks(settings, target, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(settings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(data)
-	if strings.Contains(content, skillDirPlaceholder) {
-		t.Fatal("placeholder left in installed SKILL.md")
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
 	}
-	var command string
-	for _, line := range strings.Split(content, "\n") {
-		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "command: ") {
-			command = strings.TrimPrefix(trimmed, "command: ")
+	count := 0
+	for _, groups := range config["hooks"].(map[string]any) {
+		for _, group := range groups.([]any) {
+			for _, handler := range group.(map[string]any)["hooks"].([]any) {
+				command := handler.(map[string]any)["command"].(string)
+				out, err := exec.Command("sh", "-c", strings.Replace(command, "python3 ", "printf '%s' ", 1)).Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				name := filepath.Base(string(out))
+				want := filepath.ToSlash(filepath.Join(target, "yoooclaw-media-generate", "scripts", name))
+				if string(out) != want {
+					t.Fatalf("hook resolves to %q, want %q", out, want)
+				}
+				if _, err := os.Stat(string(out)); err != nil {
+					t.Fatal(err)
+				}
+				count++
+			}
 		}
 	}
-	unquoted, err := strconv.Unquote(command)
-	if err != nil {
-		t.Fatalf("hook command is not a valid double-quoted YAML string: %s", command)
+	if count != 3 {
+		t.Fatalf("got %d hooks", count)
 	}
-	out, err := exec.Command("sh", "-c", strings.Replace(unquoted, "python3 ", "printf '%s' ", 1)).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.ToSlash(filepath.Join(target, "yoooclaw-media-generate", "scripts", "link_guard.py"))
-	if string(out) != want {
-		t.Fatalf("hook resolves to %q, want %q", out, want)
+	data, _ = os.ReadFile(filepath.Join(target, "yoooclaw-media-generate", "SKILL.md"))
+	if strings.Contains(string(data), "\nhooks:") {
+		t.Fatal("duplicate skill hooks")
 	}
 }
