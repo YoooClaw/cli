@@ -294,6 +294,16 @@ exit 0
 
 func TestWuyingInstallerRemovesOldUnitWhenUserBusDenied(t *testing.T) {
 	t.Parallel()
+	testWuyingOldUnitRepair(t, true)
+}
+
+func TestWuyingInstallerReloadsOldUnitWhoseFileWasRemoved(t *testing.T) {
+	t.Parallel()
+	testWuyingOldUnitRepair(t, false)
+}
+
+func testWuyingOldUnitRepair(t *testing.T, busDenied bool) {
+	t.Helper()
 
 	root := t.TempDir()
 	mockBin := filepath.Join(root, "mock-bin")
@@ -313,20 +323,38 @@ func TestWuyingInstallerRemovesOldUnitWhenUserBusDenied(t *testing.T) {
 	if err := os.Symlink(unitFile, wantsLink); err != nil {
 		t.Fatal(err)
 	}
+	loadedMarker := filepath.Join(root, "unit-loaded")
+	if !busDenied {
+		// The file is already gone but systemd still has the unit loaded.
+		if err := os.Remove(wantsLink); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(unitFile); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(loadedMarker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	writeExecutable(t, filepath.Join(mockBin, "uname"), "#!/bin/sh\necho Linux\n")
-	writeExecutable(t, filepath.Join(mockBin, "systemctl"), "#!/bin/sh\necho 'Failed to connect to bus: Permission denied' >&2\nexit 1\n")
+	systemctlMock := "#!/bin/sh\necho 'Failed to connect to bus: Permission denied' >&2\nexit 1\n"
+	if !busDenied {
+		systemctlMock = "#!/bin/sh\ncase \"$*\" in *daemon-reload*) rm -f \"$LOADED_MARKER\" ;; esac\nexit 0\n"
+	}
+	writeExecutable(t, filepath.Join(mockBin, "systemctl"), systemctlMock)
 	writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '-o' ]; then destination=$2; shift 2; else shift; fi
 done
 cp "$BASE_INSTALLER_FIXTURE" "$destination"
 `)
-	// Mirrors releases <= 0.12.1: disable fails while the unit file exists.
+	// Mirrors releases <= 0.13.0-beta.0: disable fails while the unit file
+	// exists or systemd still has the removed unit loaded.
 	writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
 case "$*" in
   *'daemon autostart disable'*)
-    if [ -e "$UNIT_FILE" ]; then printf '%s\n' 'old:disable-failed' >> "$ORDER_LOG"; exit 1; fi
+    if [ -e "$UNIT_FILE" ] || [ -e "$LOADED_MARKER" ]; then printf '%s\n' 'old:disable-failed' >> "$ORDER_LOG"; exit 1; fi
     printf '%s\n' 'old:disable' >> "$ORDER_LOG"; exit 0 ;;
 esac
 exit 2
@@ -356,6 +384,7 @@ exit 0
 		"FAKE_CLI_FIXTURE="+fakeCLI,
 		"ORDER_LOG="+orderLog,
 		"UNIT_FILE="+unitFile,
+		"LOADED_MARKER="+loadedMarker,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -368,7 +397,7 @@ exit 0
 	if want := "old:disable-failed\nold:disable\nreplace\n"; string(order) != want {
 		t.Fatalf("upgrade order = %q, want %q", order, want)
 	}
-	for _, path := range []string{unitFile, wantsLink} {
+	for _, path := range []string{unitFile, wantsLink, loadedMarker} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("%s still exists or stat failed unexpectedly: %v", path, err)
 		}
