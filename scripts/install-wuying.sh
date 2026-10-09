@@ -6,12 +6,12 @@
 #     | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude --env production
 #
 # Required options:
-#   --api-key <key>  Account API key. It is written to credentials.json via stdin.
 #   --skill <agent>  Skill host passed to `yoooclaw skills install --agent`.
 #                    Current CLI releases support claude and codex. Future adapters
 #                    (for example DeepSeek Harness) work without changing this script.
 #
 # Optional options:
+#   --api-key <key>  Write a new account API key; omitted preserves existing credentials.
 #   --version <v>    Install a specific CLI version (default: this script's release,
 #                    which is always a stable one). Prereleases are only
 #                    installable by naming them here explicitly.
@@ -54,7 +54,10 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --api-key) API_KEY="${2:?--api-key 需要值}"; shift 2 ;;
+    --api-key)
+      API_KEY="${2:?--api-key 需要值}"
+      [ -n "$(printf '%s' "$API_KEY" | tr -d '[:space:]')" ] || err "--api-key 不能为空"
+      shift 2 ;;
     --skill) SKILL_AGENT="${2:?--skill 需要值}"; shift 2 ;;
     --version) VERSION="${2:?--version 需要值}"; shift 2 ;;
     --beta) err "beta 版必须显式指定版本号，例如 --version 0.10.0-beta.3" ;;
@@ -69,7 +72,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$(printf '%s' "$API_KEY" | tr -d '[:space:]')" ] || err "--api-key 必填且不能为空"
 [ -n "$(printf '%s' "$SKILL_AGENT" | tr -d '[:space:]')" ] || err "--skill 必填且不能为空（例如 claude 或 codex）"
 [ -n "$(printf '%s' "$PROFILE" | tr -d '[:space:]')" ] || err "--profile 不能为空"
 case "$CLOUD_ENV" in
@@ -120,13 +122,30 @@ CLI="$EFFECTIVE_INSTALL_DIR/yoooclaw"
 
 configure_user_service_env
 
+# Releases up to 0.12.1 cannot uninstall their systemd --user unit when this
+# shell is denied the user bus (seen on WUYING desktops). Remove the default
+# unit files directly so a retried disable only has to stop the daemon itself.
+remove_unreachable_user_unit() {
+  [ "$(uname -s)" = "Linux" ] || return 1
+  [ -z "${YOOOCLAW_HOME:-}" ] || return 1
+  command -v systemctl >/dev/null 2>&1 || return 1
+  ! systemctl --user show-environment >/dev/null 2>&1 || return 1
+  unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  unit_file="$unit_dir/yoooclaw-daemon.service"
+  [ -e "$unit_file" ] || return 1
+  warn "systemd 用户总线不可用，直接移除旧版自启单元 $unit_file"
+  rm -f "$unit_dir"/*.wants/yoooclaw-daemon.service "$unit_file"
+}
+
 # Stop an older managed/detached installation before replacing its executable.
 # Otherwise the generic installer may restore that runtime mid-upgrade and the
 # WUYING owner handoff sees its Relay lock as a foreign owner.
 if [ -x "$CLI" ]; then
   info "停止旧版 daemon/autostart…"
   if ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
-    err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+    if ! remove_unreachable_user_unit || ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
+      err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+    fi
   fi
 fi
 
@@ -181,9 +200,13 @@ wait_for_daemon() {
   return 1
 }
 
-info "写入 account API key…"
-printf '%s\n' "$API_KEY" | yc auth set-api-key -
-API_KEY=""
+if [ -n "$API_KEY" ]; then
+  info "写入 account API key…"
+  printf '%s\n' "$API_KEY" | yc auth set-api-key -
+  API_KEY=""
+else
+  info "未传入 --api-key，保留现有认证"
+fi
 
 if yc --format json config show >/dev/null 2>&1; then
   info "profile ${PROFILE} 已初始化，保留现有配置"

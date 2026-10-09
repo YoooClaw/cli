@@ -32,8 +32,10 @@ Service-oriented 命令树、三层命令体系、Agent-Native。
 | 🎙️ 录音 Recording     | 统一查询 YoooClaw Capture 与智能硬件录音，并提供硬件 ASR 配置和事件流 | 🟢     |
 | 🖼️ 图片 Image         | 列举与查询图片、本地路径 / 缩略图解析                        | 🟢     |
 | 🌐 网页 Web            | 列举与搜索已同步网页、解析 Markdown 文件与存储目录路径       | 🟢     |
-| 💡 灯效 Light         | 下发灯效指令到硬件（段 / 预设 / 规则三选一），连通性自检     | 🟡     |
+| 💡 灯效 Light         | 下发灯效指令到硬件（段 / 预设 / 规则三选一），或只在硬件屏幕显示文字 | 🟡     |
 | 📐 灯效规则 Lightrule | 「通知 → 灯效」持久规则的增删改查、启用 / 停用               | 🟡     |
+| ✅ 待办 Todo          | 云端待办的查询、创建、修改、完成 / 恢复与删除                 | 🟢     |
+| 📦 迁移 Transfer      | 通过 OSS 任务 ID 或本地包在环境间迁移通知、录音、网页等数据   | 🟢/🟡  |
 | ⏰ 监控 Monitor       | cron 驱动的定时通知监控任务                                  | 🟡     |
 | 🔌 隧道 Tunnel        | Relay 隧道状态、强制重连、本地 ingest 回环自检               | 🟡     |
 | 🛡️ 网关 Gateway       | 模拟手机端调 daemon，校验本地连通与鉴权                      | 🟢/🟡  |
@@ -74,7 +76,7 @@ irm https://artifact.yoooclaw.com/cli/install.ps1 | iex
 默认写入 `%LOCALAPPDATA%\YoooClaw\bin`，安装 `yoooclaw.exe` / `yc.exe`，并自动加入当前用户 PATH。指定版本或覆盖升级：
 
 ```powershell
-& ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.9.1 -Force
+& ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.12.0 -Force
 ```
 
 如果检测到此前通过 `npm i -g @yoooclaw/cli` 安装的旧版本，安装器会先确认新的原生
@@ -105,7 +107,7 @@ Linux Agent 中出现 `yoooclaw: command not found`，但普通终端可用时�
 
 ### 无影云电脑无人值守安装
 
-专用脚本会安装 CLI、写入 account API key、初始化默认配置、为指定 Agent 宿主安装 Skills，并启动 daemon（优先启用登录自启；用户级服务管理器不可用时降级为 detached daemon）。`--api-key` 与 `--skill` 为必填参数：
+专用脚本会安装 CLI、写入 account API key、初始化默认配置、为指定 Agent 宿主安装 Skills，并启动 daemon（优先启用登录自启；用户级服务管理器不可用时降级为 detached daemon）。`--skill` 为必填参数；首次安装需要 `--api-key`，已有凭据的升级可省略（保留现有凭据）：
 
 对 Claude / Codex，脚本还会在已安装的 YoooClaw Skills 中写入本机 CLI 的绝对路径及所选 profile，指导 Agent 使用完整命令，不依赖 `~/.local/bin` 是否在 PATH 中。重复安装会更新这段配置；已有 Agent 会话需重新加载 Skills 或新建会话。其他宿主暂时只输出完整路径提示。
 
@@ -114,9 +116,9 @@ export YOOOCLAW_API_KEY='ock-xxxx'
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
   | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude --env production
 
-# Codex 宿主；重装/升级时覆盖 binary 与已安装 Skills
+# Codex 宿主；重装/升级时覆盖 binary 与已安装 Skills（已有凭据时可省略 --api-key）
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
-  | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill codex --env development --force
+  | sh -s -- --skill codex --env development --force
 ```
 
 当前 CLI 的 `--skill` 支持 `claude`、`codex`；该参数直接传给 CLI 的 Skill adapter，未来加入 DeepSeek Harness 等宿主后安装脚本无需改变。`--env` 支持 `development`、`test`、`production`，默认读取 `PHONE_NOTIFICATIONS_ENV`，未设置时使用 `production`，并持久化到 profile 配置供 systemd 服务使用。live 脚本默认安装发布它的同版本 CLI——由于预发布版不会覆盖 live 脚本和 `latest` 标记，默认装到的一定是正式版；也可显式传 `--version`（安装 beta 的唯一途径）、`--dir`、`--profile` 与 `--modify-path`。脚本不会打印 API key，并通过 stdin 写入权限为 `0600` 的共享凭据文件；建议像示例一样引用环境变量，避免在 shell 历史中留下明文。
@@ -184,7 +186,8 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | `yoooclaw-notification-to-memory` | 从通知提炼个人画像、每日记录与长期记忆，验证持久写入后逐批提交学习进度 |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
 | `yoooclaw-light`                | 通过独立 CLI 播放一次性灯效并管理「通知 → 灯效」持久规则 |
-| `yoooclaw-data-transfer`        | 在两个环境之间导出/导入本地数据包（通知、录音、网页，可选音频/图片），与 OpenClaw 插件 `ntf transfer` 的包互通 |
+| `yoooclaw-todo`                 | 个人待办的查询、创建、修改、完成 / 恢复与删除；泛指日程 / 待办时默认使用，删除前确认 |
+| `yoooclaw-data-transfer`        | 默认通过 OSS 任务 ID、也可用本地包在两个环境之间迁移数据（通知、录音、网页，可选音频/图片），与 OpenClaw 插件 `ntf transfer` 的包互通 |
 | `yoooclaw-tunnel-debug`         | 排查鉴权、daemon、ingest、Relay WebSocket 与手机同步链路（🟡） |
 
 ```bash
@@ -255,6 +258,20 @@ owner 时不会被覆盖。
 `profile use` / `profile delete` 切换时会先等旧 profile 的 daemon 真正释放**账号级
 Relay 消费锁**再继续（防止旧进程还没退干净就把生产消息落错 profile），OS 托管自启
 动的一并跟着停 / 起。
+
+### Linux 自启与凭据重载诊断
+
+运行 `yoooclaw daemon logs --diagnostics --lines 100` 一次汇总 daemon 日志、
+`daemon-supervisor.log`、锁文件/进程身份、自启状态及 Linux 本次启动的服务 journal。
+CLI 不在 PATH 时使用 `/usr/local/bin/yoooclaw` 等实际安装路径。
+
+`service.entry` / `daemon.ready` 标明版本、PID、profile、配置路径及实际监听端口；
+`status.observed` / `reload.request` 对照系统服务状态，并区分锁不存在、无法读取、
+进程死亡、可执行文件不匹配和命令行不匹配；`systemd.command_begin/end` 记录服务操作及失败原因。
+`credentials.reload_applied` 记录重载前后的来源、label、脱敏 SHA-256 指纹和隧道增删重启结果。
+它只代表本地配置已应用，连接成功需随后出现 `connected`；401/403 会单独提示服务端鉴权拒绝。
+日志不输出完整 key、gateway token 或凭据文件内容。若连 `service.entry` 都没有，优先检查汇总中的
+systemd/journal；应用进程尚未运行时无法自行写启动日志。
 
 ## 存储所有权：CLI ↔ Hermes 插件
 
@@ -373,6 +390,9 @@ yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>
 yoooclaw synced-web-page storage-path
+yoooclaw todo list --is-done false --format json             # 云端待办
+yoooclaw transfer export --via oss --format json              # 打包上传迁移数据，返回 taskId
+yoooclaw light send --title "任务完成" --reason "构建已通过"   # 只在硬件屏幕显示文字
 yoooclaw lightrule create --intent "老板发微信时红灯快闪"   # 云端 Agent 编译并保存规则
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
@@ -457,11 +477,23 @@ yoooclaw recording events --since 1h --limit 50
 yoooclaw recording events --id <recording-id> --watch
 ```
 
+音频下载复用阿里云 OSS Go SDK v2 的分片下载（8 MiB 分片、并发 3、Range + ETag 校验）：网络抖动时在本次下载内从断点续传，不再删掉片段从头重下；单个音频上限 5 GiB，本地已有非空音频时直接复用。`recordings.result.write` 可在顶层带可选的 `ossTaskId`（上传服务返回的任务 ID，≤256 字符，必须同时带音频 URL；不是 `transcript.source.taskId` 这个 ASR 任务 ID）：下载遇到 403 时 daemon 用发起写入的 api-key 向云端换一个新签名 URL 再试，api-key 不会发往 OSS；`ossTaskId` 保存到录音索引，并在写入响应、`recording list/status` 与 `recording.status` 事件中回显（无值时省略），新写入不带它时清除旧值。
+
 录音配置与事件分别落在当前 profile 的 `recordings/asr-config.json` 与 `recordings/state/events.jsonl`；`transcripts/` / `summaries/` 文件名约定为 `<YYYYMMDDHH>_<标题>_<id>.md`，按文件名即可时间排序（升级前的旧文件保留原名，不做批量迁移）。经 `/gateway/recordings.*` 写入的录音会打上发起写入的 api-key 对应 `clientLabel`，读侧（`recording list/status/events`）同样按这个标签隔离——通过 Relay 隧道或某个 api-key 接入的客户端只能看到自己名下的录音，本机 loopback / gateway token 请求不受限，`synced-web-page` 与相关端点同理。
 
 ### 数据迁移
 
-`yoooclaw transfer` 以明文数据包在两个环境之间搬运本地数据（换电脑、重装、另一个 profile）：`--out` 以 `.tar.gz`/`.tgz` 结尾时生成单个压缩包（0.12.0 起），其他路径生成包目录。包格式与 OpenClaw 插件的 `ntf transfer` 相同（schema 1），数据包和能力文件双向通用；低于 CLI 0.12.0 / 插件 1.18.0 的目标端只能导入包目录，带 `--target-capabilities` 导出 tar.gz 会报 `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`。压缩不等于加密。
+`yoooclaw transfer` 以明文数据包在两个环境之间搬运本地数据（换电脑、重装、另一个 profile）。默认推荐通过 OSS 任务中转：
+
+```bash
+yoooclaw transfer export --via oss --format json     # 源端：打包 tar.gz 上传，返回 taskId
+yoooclaw transfer import --task <taskId> --format json   # 目标端：自动换取地址、下载、校验并导入（--dry-run 只预览）
+yoooclaw transfer complete --task <taskId> --object-key <objectKey>   # 上传已完成但确认失败时重试，不重新上传
+```
+
+OSS 中转使用当前 profile 的 account API key 与云端环境，源 / 目标必须同账号同环境。上传使用阿里云 OSS SDK 分片续传并在过程中自动续期 STS 凭据，下载带 Range 断点恢复；续传只在本次命令内有效。创建任务消耗配额，失败时不要反复 `export`。云端包由服务端在上传完成 24 小时后自动删除（与是否导入无关），CLI 不提供删除命令；签名下载地址只在命令内部使用。迁移数据包含大量隐私信息，请妥善保管任务 ID 与数据包。
+
+离线场景使用本地包：`--out` 以 `.tar.gz`/`.tgz` 结尾时生成单个压缩包（0.12.0 起），其他路径生成包目录。包格式与 OpenClaw 插件的 `ntf transfer` 相同（schema 1），数据包和能力文件双向通用；低于 CLI 0.12.0 / 插件 1.18.0 的目标端只能导入包目录，带 `--target-capabilities` 导出 tar.gz 会报 `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`。压缩不等于加密。
 
 ```bash
 yoooclaw transfer export --dry-run                                  # 预览范围，无需 daemon
@@ -472,6 +504,25 @@ yoooclaw transfer import --local <localTransferId> --plan <planId>   # 执行预
 ```
 
 导入在拥有存储的目标 daemon 内执行。目标端已有记录永不覆盖：内容不同的记录报 `conflict`，PARTIAL 导入会在 `<profile>/transfers/` 下保留暂存包与 `report.json`。迁入的通知带 `transfer.memoryPolicy="skip-history"` 标记，不进入 `yoooclaw sync`（通知 → 记忆）。不迁移记忆、凭据与配置。
+
+### AI TODO 云端待办（0.11.0）
+
+`yc todo list|get|create|update|delete` 直接管理云端待办，无需 daemon，使用 `--format json` 获取结构化结果。
+
+```sh
+yc --format json todo list --is-done false
+yc --format json todo get 841
+yc --format json todo create --title '会议' --due-at '2026-09-11T15:00:00+08:00' --is-full-day false
+yc --format json todo update 841 --is-done true
+yc --format json todo update 841 --is-done false
+yc --format json todo delete 841 --confirmed
+```
+
+时间指开始时间：定时使用带偏移的 ISO，全天使用日期，无时间传 JSON null。命令支持 `--json-file FILE`（`-` 为 stdin），不能与字段参数混用。CLI 默认查询不限时间的未完成事项；Agent 查询“今天”时应显式传当地日界。
+
+创建返回 `requestKey`；结果未知时只用 `--request-key KEY` 和相同参数重放。部分成功通过 `ok:false`、分阶段结果及非零退出码呈现。`yoooclaw-todo` Skill 说明自然语言路由、创建后的查看入口及删除确认。
+
+所有接口统一位于 `/api/message/todo/agent/`，凭据及环境沿用已有配置。当前联调中无时间创建仍返回业务码 `910001`，不会自动补时间绕过。详见[实施与验证记录](docs/ai-todo-implementation-plan.md)。
 
 ### 数据目录
 
@@ -511,6 +562,9 @@ dist-native/yoooclaw-darwin-arm64 --help
 | [internal/capturerecording](internal/capturerecording) | YoooClaw Capture 录音每日索引与产物事实检查 |
 | [internal/voice](internal/voice)                    | 本地语音输入每日 JSONL 历史只读查询 |
 | [internal/image](internal/image)                    | 图片 OSS 下载与索引 |
+| [internal/ossdownload](internal/ossdownload)        | 录音与迁移共用的 OSS 分片续传下载器 |
+| [internal/transfer](internal/transfer) / [internal/transfercloud](internal/transfercloud) | 数据迁移包导出 / 导入，以及 OSS 任务上传下载 |
+| [internal/aitodo](internal/aitodo)                  | 云端待办 API 客户端与时间语义 |
 | [internal/light](internal/light)                    | 灯效线协议、预设、发送器 |
 | [internal/skills](internal/skills)                  | 内置 Skill 列举 / 安装到 Agent skills 目录 |
 
@@ -519,36 +573,3 @@ dist-native/yoooclaw-darwin-arm64 --help
 ## License
 
 MIT —— 见 [LICENSE](LICENSE)。
-
-### Linux 自启与凭据重载诊断
-
-运行 `yoooclaw daemon logs --diagnostics --lines 100` 一次汇总 daemon 日志、
-`daemon-supervisor.log`、锁文件/进程身份、自启状态及 Linux 本次启动的服务 journal。
-CLI 不在 PATH 时使用 `/usr/local/bin/yoooclaw` 等实际安装路径。
-
-`service.entry` / `daemon.ready` 标明版本、PID、profile、配置路径及实际监听端口；
-`status.observed` / `reload.request` 对照系统服务状态，并区分锁不存在、无法读取、
-进程死亡、可执行文件不匹配和命令行不匹配；`systemd.command_begin/end` 记录服务操作及失败原因。
-`credentials.reload_applied` 记录重载前后的来源、label、脱敏 SHA-256 指纹和隧道增删重启结果。
-它只代表本地配置已应用，连接成功需随后出现 `connected`；401/403 会单独提示服务端鉴权拒绝。
-日志不输出完整 key、gateway token 或凭据文件内容。若连 `service.entry` 都没有，优先检查汇总中的
-systemd/journal；应用进程尚未运行时无法自行写启动日志。
-
-## AI TODO（0.11.0）
-
-`yc todo list|get|create|update|delete` 直接管理云端待办，无需 daemon，使用 `--format json` 获取结构化结果。
-
-```sh
-yc --format json todo list --is-done false
-yc --format json todo get 841
-yc --format json todo create --title '会议' --due-at '2026-09-11T15:00:00+08:00' --is-full-day false
-yc --format json todo update 841 --is-done true
-yc --format json todo update 841 --is-done false
-yc --format json todo delete 841 --confirmed
-```
-
-时间指开始时间：定时使用带偏移的 ISO，全天使用日期，无时间传 JSON null。命令支持 `--json-file FILE`（`-` 为 stdin），不能与字段参数混用。CLI 默认查询不限时间的未完成事项；Agent 查询“今天”时应显式传当地日界。
-
-创建返回 `requestKey`；结果未知时只用 `--request-key KEY` 和相同参数重放。部分成功通过 `ok:false`、分阶段结果及非零退出码呈现。`yoooclaw-todo` Skill 说明自然语言路由、创建后的查看入口及删除确认。
-
-所有接口统一位于 `/api/message/todo/agent/`，凭据及环境沿用已有配置。当前联调中无时间创建仍返回业务码 `910001`，不会自动补时间绕过。详见[实施与验证记录](docs/ai-todo-implementation-plan.md)。

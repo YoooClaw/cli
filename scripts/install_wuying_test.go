@@ -10,6 +10,16 @@ import (
 
 func TestWuyingInstallerConfiguresCredentialSkillAndDaemon(t *testing.T) {
 	t.Parallel()
+	testWuyingCredentials(t, true)
+}
+
+func TestWuyingInstallerBetaUpgradePreservesCredentials(t *testing.T) {
+	t.Parallel()
+	testWuyingCredentials(t, false)
+}
+
+func testWuyingCredentials(t *testing.T, supplyKey bool) {
+	t.Helper()
 
 	root := t.TempDir()
 	mockBin := filepath.Join(root, "mock-bin")
@@ -62,17 +72,22 @@ exit 0
 
 	secret := "ock-secret-for-wuying"
 	baseArgsLog := filepath.Join(root, "base-args.log")
-	cmd := exec.Command(
-		"sh", mustAbs(t, "install-wuying.sh"),
-		"--api-key", secret,
+	if err := os.WriteFile(keyLog, []byte("existing-key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{mustAbs(t, "install-wuying.sh"),
 		"--skill", "claude",
 		"--profile", "cloud",
 		"--env", "development",
-		"--version", "1.2.3",
+		"--version", "1.2.3-beta.1",
 		"--dir", installDir,
 		"--force",
 		"--modify-path",
-	)
+	}
+	if supplyKey {
+		args = append(args, "--api-key", secret)
+	}
+	cmd := exec.Command("sh", args...)
 	cmd.Env = append(os.Environ(),
 		"HOME="+root,
 		"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -94,7 +109,11 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(storedKey) != secret {
+	expectedKey := "existing-key"
+	if supplyKey {
+		expectedKey = secret
+	}
+	if string(storedKey) != expectedKey {
 		t.Fatalf("stored key = %q, want supplied key", storedKey)
 	}
 
@@ -102,7 +121,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--version 1.2.3", "--dir " + installDir, "--force", "--modify-path"} {
+	for _, want := range []string{"--version 1.2.3-beta.1", "--dir " + installDir, "--force", "--modify-path"} {
 		if !strings.Contains(string(baseArgs), want) {
 			t.Fatalf("base installer did not receive %q:\n%s", want, baseArgs)
 		}
@@ -113,8 +132,10 @@ exit 0
 		t.Fatal(err)
 	}
 	logText := string(commands)
+	if strings.Contains(logText, "auth set-api-key") != supplyKey {
+		t.Fatalf("unexpected credential write (supplyKey=%v):\n%s", supplyKey, logText)
+	}
 	for _, want := range []string{
-		"--profile cloud auth set-api-key -",
 		"--profile cloud config init --non-interactive --from-file",
 		"--profile cloud config set cloud.host openclaw-service-dev.yoooclaw.com",
 		"--profile cloud config set relay.url wss://openclaw-service-dev.yoooclaw.com/message/messages/ws/plugin",
@@ -271,6 +292,89 @@ exit 0
 	}
 }
 
+func TestWuyingInstallerRemovesOldUnitWhenUserBusDenied(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mockBin := filepath.Join(root, "mock-bin")
+	installDir := filepath.Join(root, "install-bin")
+	orderLog := filepath.Join(root, "order.log")
+	baseInstaller := filepath.Join(root, "base-install.sh")
+	fakeCLI := filepath.Join(root, "fake-yoooclaw")
+	unitDir := filepath.Join(root, ".config", "systemd", "user")
+	unitFile := filepath.Join(unitDir, "yoooclaw-daemon.service")
+	wantsLink := filepath.Join(unitDir, "default.target.wants", "yoooclaw-daemon.service")
+	mustMkdirAll(t, mockBin)
+	mustMkdirAll(t, installDir)
+	mustMkdirAll(t, filepath.Dir(wantsLink))
+	if err := os.WriteFile(unitFile, []byte("unit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(unitFile, wantsLink); err != nil {
+		t.Fatal(err)
+	}
+
+	writeExecutable(t, filepath.Join(mockBin, "uname"), "#!/bin/sh\necho Linux\n")
+	writeExecutable(t, filepath.Join(mockBin, "systemctl"), "#!/bin/sh\necho 'Failed to connect to bus: Permission denied' >&2\nexit 1\n")
+	writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then destination=$2; shift 2; else shift; fi
+done
+cp "$BASE_INSTALLER_FIXTURE" "$destination"
+`)
+	// Mirrors releases <= 0.12.1: disable fails while the unit file exists.
+	writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
+case "$*" in
+  *'daemon autostart disable'*)
+    if [ -e "$UNIT_FILE" ]; then printf '%s\n' 'old:disable-failed' >> "$ORDER_LOG"; exit 1; fi
+    printf '%s\n' 'old:disable' >> "$ORDER_LOG"; exit 0 ;;
+esac
+exit 2
+`)
+	writeExecutable(t, baseInstaller, `#!/bin/sh
+printf '%s\n' 'replace' >> "$ORDER_LOG"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--dir' ]; then install_dir=$2; shift 2; else shift; fi
+done
+cp "$FAKE_CLI_FIXTURE" "$install_dir/yoooclaw"
+chmod +x "$install_dir/yoooclaw"
+`)
+	writeExecutable(t, fakeCLI, `#!/bin/sh
+case "$*" in
+  *'auth set-api-key -'*) IFS= read -r _ ;;
+esac
+exit 0
+`)
+
+	cmd := exec.Command("sh", mustAbs(t, "install-wuying.sh"), "--skill", "claude", "--dir", installDir)
+	cmd.Env = append(os.Environ(),
+		"HOME="+root,
+		"XDG_CONFIG_HOME=",
+		"YOOOCLAW_HOME=",
+		"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"BASE_INSTALLER_FIXTURE="+baseInstaller,
+		"FAKE_CLI_FIXTURE="+fakeCLI,
+		"ORDER_LOG="+orderLog,
+		"UNIT_FILE="+unitFile,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install with denied user bus failed: %v\n%s", err, output)
+	}
+	order, err := os.ReadFile(orderLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "old:disable-failed\nold:disable\nreplace\n"; string(order) != want {
+		t.Fatalf("upgrade order = %q, want %q", order, want)
+	}
+	for _, path := range []string{unitFile, wantsLink} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed unexpectedly: %v", path, err)
+		}
+	}
+}
+
 func TestWuyingInstallerAcceptsDaemonStartedByPartialAutostart(t *testing.T) {
 	t.Parallel()
 
@@ -400,7 +504,7 @@ exit 0
 	}
 }
 
-func TestWuyingInstallerRequiresAPIKeyAndSkill(t *testing.T) {
+func TestWuyingInstallerValidatesOptions(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -408,7 +512,7 @@ func TestWuyingInstallerRequiresAPIKeyAndSkill(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "missing api key", args: []string{"--skill", "claude"}, want: "--api-key 必填"},
+		{name: "blank api key", args: []string{"--skill", "claude", "--api-key", "   "}, want: "--api-key 不能为空"},
 		{name: "missing skill", args: []string{"--api-key", "ock-test"}, want: "--skill 必填"},
 		{name: "invalid env", args: []string{"--api-key", "ock-test", "--skill", "claude", "--env", "staging"}, want: "--env 仅支持"},
 	} {

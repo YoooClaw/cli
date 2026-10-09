@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ type Service struct {
 // Request 是 daemon /transfer 的请求体（字段与插件本地端点一致）。
 type Request struct {
 	Action          string `json:"action"`
+	CloudTaskID     string `json:"cloudTaskId,omitempty"`
 	File            string `json:"file,omitempty"`
 	LocalTransferID string `json:"localTransferId,omitempty"`
 	PlanID          string `json:"planId,omitempty"`
@@ -65,6 +67,7 @@ type plan struct {
 	TargetWarnings           []string       `json:"targetWarnings"`
 	NotificationMemoryPolicy string         `json:"notificationMemoryPolicy"`
 	Capabilities             map[string]any `json:"capabilities"`
+	CloudTaskID              string         `json:"cloudTaskId,omitempty"`
 }
 
 // Handle 串行执行一个请求（同一时刻只跑一个迁移动作）。
@@ -78,7 +81,12 @@ func (s *Service) Handle(req Request) (any, error) {
 		if req.File == "" {
 			return nil, fail("PACKAGE_REQUIRED")
 		}
-		return s.stage(req.File)
+		if req.CloudTaskID != "" {
+			if _, err := hex.DecodeString(req.CloudTaskID); err != nil || len(req.CloudTaskID) != 32 {
+				return nil, fail("INVALID_TASK")
+			}
+		}
+		return s.stage(req.File, req.CloudTaskID)
 	case "import":
 		return s.importPlan(req.LocalTransferID, req.PlanID, req.Resume)
 	}
@@ -236,7 +244,7 @@ func stagePackage(source, local string) (*Manifest, error) {
 
 // stage 校验包、只复制清单列出的资源到私有 staging 目录，再生成预览计划。
 // --file 永远只到预览为止，合并必须走 --local + --plan。
-func (s *Service) stage(file string) (any, error) {
+func (s *Service) stage(file, taskID string) (any, error) {
 	if err := fsutil.EnsureDir(s.Dir, fsutil.DirMode); err != nil {
 		return nil, err
 	}
@@ -259,8 +267,10 @@ func (s *Service) stage(file string) (any, error) {
 	if err != nil {
 		return cleanup(err)
 	}
+	p.CloudTaskID = taskID
 	planID := sha(canonical(map[string]any{
-		"package": toAny(verified), "decisions": toAny(p.Decisions), "targetVersion": p.TargetVersion,
+		"cloudTaskId": taskID,
+		"package":     toAny(verified), "decisions": toAny(p.Decisions), "targetVersion": p.TargetVersion,
 		"warnings": toAny(p.Warnings), "targetWarnings": toAny(p.TargetWarnings),
 		"notificationMemoryPolicy": p.NotificationMemoryPolicy, "capabilities": toAny(p.Capabilities),
 	}))
@@ -270,6 +280,7 @@ func (s *Service) stage(file string) (any, error) {
 	}
 	return map[string]any{
 		"localTransferId": localID, "planId": planID, "decisions": p.Decisions,
+		"cloudTaskId":   taskID,
 		"targetVersion": p.TargetVersion, "warnings": p.Warnings, "targetWarnings": p.TargetWarnings,
 		"notificationMemoryPolicy": p.NotificationMemoryPolicy, "capabilities": p.Capabilities,
 		"nextCommand": "yoooclaw transfer import --local " + localID + " --plan " + planID,
@@ -374,7 +385,8 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 	}
 	result := map[string]any{
 		"state": state, "planId": stored.PlanID, "localTransferId": localID, "results": results,
-		"warnings": m.Warnings, "targetWarnings": fresh.TargetWarnings, "reportPath": reportPath,
+		"cloudTaskId": stored.Plan.CloudTaskID,
+		"warnings":    m.Warnings, "targetWarnings": fresh.TargetWarnings, "reportPath": reportPath,
 	}
 	if err := writePrivateJSON(reportPath, result); err != nil {
 		return nil, err

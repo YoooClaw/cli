@@ -285,3 +285,50 @@ func TestExportValidatesScopeAndOutput(t *testing.T) {
 		t.Fatal("dry-run must not write the origin marker")
 	}
 }
+
+func TestCloudImportRetainsProvenanceAndLocalStagingPolicy(t *testing.T) {
+	const taskID = "0123456789abcdef0123456789abcdef"
+	for _, scenario := range []string{"success", "partial", "local"} {
+		t.Run(scenario, func(t *testing.T) {
+			src, dst := newEnv(t), newEnv(t)
+			seedSource(t, src.roots)
+			pkg := exportAll(t, src.roots)
+			if scenario == "partial" {
+				runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+				if _, _, err := dst.svc.Recordings.Rename("r1", "preserve target title"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id := taskID
+			if scenario == "local" {
+				id = ""
+			}
+			raw, err := dst.svc.Handle(Request{Action: "preview", File: pkg, CloudTaskID: id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			preview := raw.(map[string]any)
+			// Simulate a later command / daemon restart: cloud provenance must survive.
+			svc := &Service{Dir: dst.svc.Dir, Roots: dst.roots, Notifications: dst.svc.Notifications, Recordings: dst.svc.Recordings}
+			result := runPlan(t, svc, preview)
+			if scenario == "partial" {
+				if result["state"] != "PARTIAL" {
+					t.Fatalf("partial cleanup: %v", result)
+				}
+				if _, err := os.Stat(result["reportPath"].(string)); err != nil {
+					t.Fatal("partial staging lost")
+				}
+				return
+			}
+			if result["state"] != "SUCCEEDED" {
+				t.Fatalf("state: %v", result)
+			}
+			if result["cloudCleanup"] != nil || result["cloudTaskId"] != id {
+				t.Fatalf("unexpected cloud result: %v", result)
+			}
+			if result["staging"] != "cleaned" {
+				t.Fatal("successful import did not clean local staging")
+			}
+		})
+	}
+}

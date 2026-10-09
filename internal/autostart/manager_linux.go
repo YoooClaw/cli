@@ -247,7 +247,15 @@ func (m *platformManager) Restart() error {
 }
 func (m *platformManager) Uninstall() error {
 	if err := m.Stop(); err != nil {
-		return err
+		if m.Available() == nil {
+			return err
+		}
+		// The user manager is unreachable from this shell (for example a
+		// restricted cloud-desktop session denies the user bus). Remove the
+		// registration from disk so it cannot come back at next login; the
+		// caller stops the running daemon through its lock, and a SIGTERM
+		// exit is clean, so Restart=on-failure does not resurrect it.
+		return m.removeOffline(err)
 	}
 	status, err := m.Status()
 	if err != nil {
@@ -256,11 +264,19 @@ func (m *platformManager) Uninstall() error {
 	if !status.Installed && !status.Loaded {
 		return nil
 	}
-	if out, err := m.command("disable", m.unit); err != nil {
-		return fmt.Errorf("systemctl disable 失败: %s", strings.TrimSpace(string(out)))
+	if status.Installed {
+		if out, err := m.command("disable", m.unit); err != nil {
+			return fmt.Errorf("systemctl disable 失败: %s", strings.TrimSpace(string(out)))
+		}
 	}
-	if err := os.Remove(m.path); err != nil && !os.IsNotExist(err) {
-		return err
+	// A unit file removed behind systemd's back (manually, or by the offline
+	// path) stays loaded until daemon-reload, and `disable` then fails because
+	// the file is gone. Drop leftovers directly and let the reload unload it.
+	links, _ := filepath.Glob(filepath.Join(filepath.Dir(m.path), "*.wants", m.unit))
+	for _, path := range append(links, m.path) {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	if out, err := m.command("daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl daemon-reload 失败: %s", strings.TrimSpace(string(out)))
@@ -272,5 +288,16 @@ func (m *platformManager) Uninstall() error {
 	if after.Installed || after.Loaded {
 		return fmt.Errorf("systemd 服务卸载后仍有注册: %s", m.unit)
 	}
+	return nil
+}
+
+func (m *platformManager) removeOffline(cause error) error {
+	links, _ := filepath.Glob(filepath.Join(filepath.Dir(m.path), "*.wants", m.unit))
+	for _, path := range append(links, m.path) {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("systemd user manager 不可用，且无法删除 %s: %w", path, err)
+		}
+	}
+	diagnostics.Write(m.root, "warn", "autostart.uninstall_offline", map[string]any{"unit": m.unit, "unitPath": m.path, "wants": links, "cause": diagnostics.SafeError(cause)})
 	return nil
 }

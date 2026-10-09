@@ -32,8 +32,10 @@ Service-oriented command tree, a three-tier command system, Agent-Native.
 | 🎙️ Recording                | Unified queries for YoooClaw Capture and smart-hardware recordings, plus hardware ASR config and events | 🟢     |
 | 🖼️ Image                    | List/query images, resolve local paths / thumbnails                                                        | 🟢     |
 | 🌐 Web                      | List/search captured web pages, resolve Markdown and storage paths                                         | 🟢     |
-| 💡 Light                    | Send light-effect commands to hardware (segment / preset / rule — pick one), connectivity self-check       | 🟡     |
+| 💡 Light                    | Send light-effect commands to hardware (segment / preset / rule — pick one), or show text on the hardware screen only | 🟡     |
 | 📐 Lightrule                | CRUD for persistent "notification → light effect" rules, enable / disable                                  | 🟡     |
+| ✅ Todo                     | Query, create, edit, complete / reopen and delete cloud todos                                               | 🟢     |
+| 📦 Transfer                 | Migrate notifications, recordings, web pages and more between environments via OSS task IDs or local packages | 🟢/🟡  |
 | ⏰ Monitor                  | cron-driven scheduled notification monitoring jobs                                                          | 🟡     |
 | 🔌 Tunnel                   | Relay tunnel status, force reconnect, local ingest loopback self-check                                      | 🟡     |
 | 🛡️ Gateway                  | Simulate phone-side calls into the daemon, verify local connectivity & auth                                 | 🟢/🟡  |
@@ -74,7 +76,7 @@ irm https://artifact.yoooclaw.com/cli/install.ps1 | iex
 It installs `yoooclaw.exe` / `yc.exe` under `%LOCALAPPDATA%\YoooClaw\bin` and adds that directory to the current user's PATH. To pin a version or overwrite an existing installation:
 
 ```powershell
-& ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.9.1 -Force
+& ([scriptblock]::Create((irm https://artifact.yoooclaw.com/cli/install.ps1))) -Version 0.12.0 -Force
 ```
 
 If an older `npm i -g @yoooclaw/cli` installation is detected, the installer first verifies the new native CLI and then runs `npm uninstall -g @yoooclaw/cli`. Pass `-KeepNpm` to retain it. An npm cleanup failure never rolls back a verified native installation.
@@ -103,7 +105,7 @@ Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` 
 
 ### Unattended WUYING cloud desktop installation
 
-The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. Both `--api-key` and `--skill` are required:
+The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. `--skill` is required. `--api-key` is optional: omit it on upgrade to preserve existing credentials; supply it for first-time account setup or to replace the key:
 
 For Claude / Codex, the script also writes the absolute CLI path and selected profile into the installed YoooClaw Skills, instructing the Agent to use the full command even when `~/.local/bin` is absent from PATH. Reinstalling updates this configuration; existing Agent sessions must reload Skills or start a new session. Other hosts currently receive an absolute-path reminder only.
 
@@ -111,6 +113,10 @@ For Claude / Codex, the script also writes the absolute CLI path and selected pr
 export YOOOCLAW_API_KEY='ock-xxxx'
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
   | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude --env production
+
+# Upgrade to a specific beta without changing credentials
+curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
+  | sh -s -- --skill claude --version 0.12.0-beta.11 --force
 
 # Codex host; replace the binary and refresh installed Skills on reinstall/upgrade
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
@@ -182,7 +188,8 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 | `yoooclaw-notification-to-memory` | Distills notifications into personal, daily, and long-term agent memory; commits each batch only after verified persistence |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
 | `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
-| `yoooclaw-data-transfer`        | Exports/imports a local data package (notifications, recordings, web pages, optional audio/images) between environments; packages interoperate with the OpenClaw plugin `ntf transfer` |
+| `yoooclaw-todo`                 | Query, create, edit, complete / reopen and delete personal todos; default for generic schedule / todo requests, confirms before deletion |
+| `yoooclaw-data-transfer`        | Migrates data via OSS task IDs or local packages (notifications, recordings, web pages, optional audio/images) between environments; packages interoperate with the OpenClaw plugin `ntf transfer` |
 | `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
 
 ```bash
@@ -258,6 +265,19 @@ for the old profile's daemon to actually release the **account-level Relay
 consumer lock** before proceeding (so a not-yet-exited old process can't keep
 writing production messages into a profile you've switched away from); an
 OS-managed autostart service is stopped/started along with it.
+
+### Linux startup and credential reload diagnostics
+
+Run `yoooclaw daemon logs --diagnostics --lines 100` to collect daemon and supervisor
+logs, lock/process identity, autostart state, and the Linux service journal for this
+boot. Use the installed executable's absolute path if it is absent from PATH.
+`service.entry` / `daemon.ready` identify the version, PID, profile and paths;
+`status.observed` / `reload.request` explain stale locks and compare systemd state.
+`credentials.reload_applied` records credential sources, labels, short SHA-256
+fingerprints and tunnel changes without logging keys or tokens. Applying credentials
+does not confirm a connection: look for the subsequent `connected` or 401/403 logs.
+If no `service.entry` exists, inspect the collected systemd/journal records: an
+application cannot log before the OS has launched it.
 
 ## Storage ownership: CLI ↔ Hermes plugin
 
@@ -377,6 +397,9 @@ yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>
 yoooclaw synced-web-page storage-path
+yoooclaw todo list --is-done false --format json             # cloud todos
+yoooclaw transfer export --via oss --format json              # pack and upload transfer data, returns a taskId
+yoooclaw light send --title "Task done" --reason "Build passed"   # show text on the hardware screen only
 yoooclaw lightrule create --intent "Flash red when my boss messages me on WeChat"  # Compiled & stored by the cloud service
 yoooclaw monitor create daily-standup --schedule "0 9 * * 1-5" --match-rules '{"keyword":"standup"}'
 ```
@@ -463,6 +486,8 @@ yoooclaw recording events --since 1h --limit 50
 yoooclaw recording events --id <recording-id> --watch
 ```
 
+Audio downloads reuse the Alibaba Cloud OSS Go SDK v2 multipart downloader (8 MiB parts, concurrency 3, Range + ETag validation): a flaky network resumes from the checkpoint within the current download instead of deleting the partial file and starting over; 5 GiB max per audio file, and an existing non-empty local audio file is reused. `recordings.result.write` accepts an optional top-level `ossTaskId` (the upload service's task ID, ≤256 characters, must come with an audio URL; not the ASR task ID in `transcript.source.taskId`): on a 403 the daemon uses the api-key that wrote the recording to fetch a fresh signed URL from the cloud and retries — the api-key is never sent to OSS. `ossTaskId` is stored in the recording index and echoed in the write response, `recording list/status` and `recording.status` events (omitted when absent); a new write without it clears the old value.
+
 Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
 
 ### Data Transfer
@@ -470,6 +495,9 @@ Recording config and events live under the current profile at `recordings/asr-co
 `yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package: a single `.tar.gz` file (since 0.12.0, when `--out` ends in `.tar.gz`/`.tgz`) or a package directory (any other path). The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions; targets older than CLI 0.12.0 / plugin 1.18.0 only read directories, and `--target-capabilities` refuses a tar.gz export for them with `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`. Compression is not encryption.
 
 ```bash
+yoooclaw transfer export --via oss                                 # Upload and return taskId
+yoooclaw transfer import --task <taskId>                            # Download and import; server deletes cloud package after 24 hours
+yoooclaw transfer import --task <taskId> --dry-run                  # Download and preview only
 yoooclaw transfer export --dry-run                                  # Preview scope; no daemon needed
 yoooclaw transfer export --out ~/yoooclaw-pkg.tar.gz [--with-audio] [--with-images] [--with-html] [--from <ISO+TZ>] [--to <ISO+TZ>]
 yoooclaw transfer capabilities --out caps.json                      # On the target (needs the daemon)
@@ -477,7 +505,26 @@ yoooclaw transfer import --file ~/yoooclaw-pkg.tar.gz                # Stage + v
 yoooclaw transfer import --local <localTransferId> --plan <planId>   # Execute the previewed plan [--resume]
 ```
 
+The data-transfer Skill defaults to OSS. Cloud commands use the existing CLI API key (`cli` scope, no extra scope header) and configured cloud environment; source and target keys must belong to the same account. Signed download URLs and STS credentials stay inside the command; users copy only the taskId. Upload and download reuse Alibaba Cloud OSS SDK checkpoints during retries within one invocation. Uploads automatically renew STS credentials via `/file/plugin/refresh` before expiry or after an expired-token error, preserving the original task and multipart checkpoint; no agent-facing refresh command is needed. The server automatically deletes cloud packages 24 hours after upload completion, regardless of import status. The CLI never deletes cloud packages and has no cloud deletion command. Successful imports still clean local staging; PARTIAL/failed imports retain local staging and reports for retry. Migration replies prominently warn: **⚠️ 迁移数据包含大量隐私信息，请妥善保管任务 ID 和数据包，避免向他人分享或泄露。** For interrupted upload confirmation, use `yoooclaw transfer complete --task <taskId> --object-key <objectKey>` from the error instead of creating a new task.
+
 Imports run inside the target daemon, which owns the stores. Existing target records are never overwritten: differing records are reported as `conflict`, and a PARTIAL import keeps its staged package and `report.json` under `<profile>/transfers/`. Imported notifications are tagged `transfer.memoryPolicy="skip-history"` and excluded from `yoooclaw sync` (notification → memory). Memory, credentials and configuration are not transferred.
+
+### AI TODO cloud todos (0.11.0)
+
+`yc todo list|get|create|update|delete` manages cloud todos directly without a daemon. Use `--format json`.
+
+```sh
+yc --format json todo list --is-done false
+yc --format json todo get 841
+yc --format json todo create --title "Meeting" --due-at "2026-09-11T15:00:00+08:00" --is-full-day false
+yc --format json todo update 841 --is-done true
+yc --format json todo update 841 --is-done false
+yc --format json todo delete 841 --confirmed
+```
+
+Times are START times: ISO with explicit offsets, all-day dates, or JSON null for undated items. All commands accept `--json-file FILE` (`-` for stdin); field flags cannot be mixed with JSON. CLI list defaults to unfinished across all time; agents supply local day boundaries for natural-language today queries. Creation returns a `requestKey`; replay only the same request with `--request-key KEY` after an unknown outcome. Partial success remains `ok:false` with per-stage outcomes and a nonzero exit code. The `yoooclaw-todo` skill documents user-facing routing and confirmations.
+
+Endpoints share `/api/message/todo/agent/`; API Key and environment use existing configuration. The latest recorded backend rejected undated creation with `910001`; no silent time substitution is performed. See [implementation plan](docs/ai-todo-implementation-plan.md) for the contract and verification.
 
 ### Data Directory
 
@@ -517,6 +564,9 @@ Full documentation lives at [yc-docs/src/cli](https://github.com/YoooClaw/yc-doc
 | [internal/capturerecording](internal/capturerecording)  | read-only daily indexes and artifact checks for YoooClaw Capture recordings |
 | [internal/voice](internal/voice)                        | read-only daily JSONL queries for local voice-input history |
 | [internal/image](internal/image)                        | image OSS download and indexing |
+| [internal/ossdownload](internal/ossdownload)            | resumable OSS multipart downloader shared by recordings and transfer |
+| [internal/transfer](internal/transfer) / [internal/transfercloud](internal/transfercloud) | transfer package export / import, and OSS task upload / download |
+| [internal/aitodo](internal/aitodo)                      | cloud todo API client and time semantics |
 | [internal/light](internal/light)                        | light-effect wire protocol, presets, sender |
 | [internal/skills](internal/skills)                      | built-in Skill listing / installation into agent skills directories |
 
@@ -525,33 +575,3 @@ All release artifacts are generated from the Go source via `scripts/build-go.sh`
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-### Linux startup and credential reload diagnostics
-
-Run `yoooclaw daemon logs --diagnostics --lines 100` to collect daemon and supervisor
-logs, lock/process identity, autostart state, and the Linux service journal for this
-boot. Use the installed executable's absolute path if it is absent from PATH.
-`service.entry` / `daemon.ready` identify the version, PID, profile and paths;
-`status.observed` / `reload.request` explain stale locks and compare systemd state.
-`credentials.reload_applied` records credential sources, labels, short SHA-256
-fingerprints and tunnel changes without logging keys or tokens. Applying credentials
-does not confirm a connection: look for the subsequent `connected` or 401/403 logs.
-If no `service.entry` exists, inspect the collected systemd/journal records: an
-application cannot log before the OS has launched it.
-
-## AI TODO (0.11.0)
-
-`yc todo list|get|create|update|delete` manages cloud todos directly without a daemon. Use `--format json`.
-
-```sh
-yc --format json todo list --is-done false
-yc --format json todo get 841
-yc --format json todo create --title "Meeting" --due-at "2026-09-11T15:00:00+08:00" --is-full-day false
-yc --format json todo update 841 --is-done true
-yc --format json todo update 841 --is-done false
-yc --format json todo delete 841 --confirmed
-```
-
-Times are START times: ISO with explicit offsets, all-day dates, or JSON null for undated items. All commands accept `--json-file FILE` (`-` for stdin); field flags cannot be mixed with JSON. CLI list defaults to unfinished across all time; agents supply local day boundaries for natural-language today queries. Creation returns a `requestKey`; replay only the same request with `--request-key KEY` after an unknown outcome. Partial success remains `ok:false` with per-stage outcomes and a nonzero exit code. The `yoooclaw-todo` skill documents user-facing routing and confirmations.
-
-Endpoints share `/api/message/todo/agent/`; API Key and environment use existing configuration. The latest recorded backend rejected undated creation with `910001`; no silent time substitution is performed. See [implementation plan](docs/ai-todo-implementation-plan.md) for the contract and verification.
