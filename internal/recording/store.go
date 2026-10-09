@@ -4,6 +4,7 @@ package recording
 
 import (
 	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -49,11 +50,12 @@ type Metadata struct {
 	Location        any      `json:"location,omitempty"`
 	OssAudioURL     string   `json:"oss_audio_url"`
 	OssSrtURL       string   `json:"oss_srt_url,omitempty"`
-	Markers         []Marker `json:"markers,omitempty"`
+	Markers         []Marker `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
 }
 
 // Entry 是一条录音索引项。
 type Entry struct {
+	OssTaskID          string   `json:"ossTaskId,omitempty"`
 	ID                 string   `json:"id"`
 	ClientLabel        string   `json:"clientLabel,omitempty"`
 	Metadata           Metadata `json:"metadata"`
@@ -69,6 +71,14 @@ type Entry struct {
 	LastError          string   `json:"lastError,omitempty"`
 	IngestedAt         string   `json:"ingestedAt"`
 	UpdatedAt          string   `json:"updatedAt"`
+	// Transfer 只在经 `yoooclaw transfer import` 迁入的录音上出现，记录原始来源。
+	Transfer *TransferMark `json:"transfer,omitempty"`
+}
+
+// TransferMark 记录迁入条目的原始来源（与 phone-notifications 插件字段一致）。
+type TransferMark struct {
+	Origin   string `json:"origin"`
+	RecordID string `json:"recordId"`
 }
 
 type indexWrapper struct {
@@ -442,9 +452,13 @@ func (s *Storage) SetAudioFile(recordingID, filename string) error {
 }
 
 // SetResultAudioPending 持久化 result.write 携带的最新 OSS URL；已有本地音频
-// 时直接复用，否则标记为待下载。
-func (s *Storage) SetResultAudioPending(recordingID, ossURL string) error {
+// 时直接复用，否则标记为待下载。传 taskID（包括空串）替换任务关联；
+// 恢复已有下载时省略 taskID，保留原关联。
+func (s *Storage) SetResultAudioPending(recordingID, ossURL string, taskID ...string) error {
 	return s.updateEntry(recordingID, func(entry *Entry) {
+		if len(taskID) > 0 {
+			entry.OssTaskID = taskID[0]
+		}
 		nextURL := strings.TrimSpace(ossURL)
 		entry.Metadata.OssAudioURL = nextURL
 		if entry.AudioFile != "" {
@@ -555,6 +569,41 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 	}
 	return true, nil
 }
+
+// ImportEntry 在索引锁内合并一条迁入录音（供 transfer 包使用）。
+//
+// merge 拿到当前条目（不存在为 nil），返回要写入的新条目；返回 nil 表示不改动。
+// 正在接收/转写或下载音频的录音拒绝迁入（TARGET_BUSY），避免与进行中的流程互相覆盖。
+func (s *Storage) ImportEntry(recordingID string, merge func(current *Entry) (*Entry, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := s.findIndexLocked(recordingID)
+	var current *Entry
+	if idx >= 0 {
+		copied := s.index.Recordings[idx]
+		if copied.Status == StatusReceiving || copied.Status == StatusTranscribing || copied.AudioStatus == AudioStatusDownloading {
+			return errTargetBusy
+		}
+		current = &copied
+	}
+	next, err := merge(current)
+	if err != nil || next == nil {
+		return err
+	}
+	previous := append([]Entry(nil), s.index.Recordings...)
+	if idx >= 0 {
+		s.index.Recordings[idx] = *next
+	} else {
+		s.index.Recordings = append(s.index.Recordings, *next)
+	}
+	if err := s.saveIndexLocked(); err != nil {
+		s.index.Recordings = previous
+		return err
+	}
+	return nil
+}
+
+var errTargetBusy = errors.New("TARGET_BUSY")
 
 // ListMissingAudio 返回索引中有 OSS URL、但本地文件为空或已经丢失的录音。
 func (s *Storage) ListMissingAudio() []Entry {

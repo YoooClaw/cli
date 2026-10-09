@@ -103,7 +103,7 @@ Direct-install supported platforms: `darwin-arm64` / `darwin-x64` / `linux-x64` 
 
 ### Unattended WUYING cloud desktop installation
 
-The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. Both `--api-key` and `--skill` are required:
+The dedicated installer installs the CLI, writes the account API key, initializes the default config, installs Skills for the selected Agent host, and starts the daemon. It prefers login autostart and falls back to a detached daemon when no user service manager is available. `--skill` is required. `--api-key` is optional: omit it on upgrade to preserve existing credentials; supply it for first-time account setup or to replace the key:
 
 For Claude / Codex, the script also writes the absolute CLI path and selected profile into the installed YoooClaw Skills, instructing the Agent to use the full command even when `~/.local/bin` is absent from PATH. Reinstalling updates this configuration; existing Agent sessions must reload Skills or start a new session. Other hosts currently receive an absolute-path reminder only.
 
@@ -111,6 +111,10 @@ For Claude / Codex, the script also writes the absolute CLI path and selected pr
 export YOOOCLAW_API_KEY='ock-xxxx'
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
   | sh -s -- --api-key "$YOOOCLAW_API_KEY" --skill claude --env production
+
+# Upgrade to a specific beta without changing credentials
+curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
+  | sh -s -- --skill claude --version 0.12.0-beta.11 --force
 
 # Codex host; replace the binary and refresh installed Skills on reinstall/upgrade
 curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
@@ -177,10 +181,12 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 
 | Skill                           | Description |
 | ------------------------------- | ----------- |
+| `yoooclaw-media-generate`     | Generates images and videos up to 30 seconds with Python 3; reads `MODEL_PROXY_API_KEY` from `~/.config/yoooclaw/credentials` |
 | `yoooclaw-context-query`        | The sole query Skill for fresh notifications, voice input, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
 | `yoooclaw-notification-to-memory` | Distills notifications into personal, daily, and long-term agent memory; commits each batch only after verified persistence |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
 | `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
+| `yoooclaw-data-transfer`        | Migrates data via OSS task IDs or local packages (notifications, recordings, web pages, optional audio/images) between environments; packages interoperate with the OpenClaw plugin `ntf transfer` |
 | `yoooclaw-tunnel-debug`         | Debugs auth, daemon, ingest, Relay WebSocket, and phone-side synchronization failures (🟡) |
 
 ```bash
@@ -462,6 +468,25 @@ yoooclaw recording events --id <recording-id> --watch
 ```
 
 Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
+
+### Data Transfer
+
+`yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package: a single `.tar.gz` file (since 0.12.0, when `--out` ends in `.tar.gz`/`.tgz`) or a package directory (any other path). The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions; targets older than CLI 0.12.0 / plugin 1.18.0 only read directories, and `--target-capabilities` refuses a tar.gz export for them with `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`. Compression is not encryption.
+
+```bash
+yoooclaw transfer export --via oss                                 # Upload and return taskId
+yoooclaw transfer import --task <taskId>                            # Download and import; server deletes cloud package after 24 hours
+yoooclaw transfer import --task <taskId> --dry-run                  # Download and preview only
+yoooclaw transfer export --dry-run                                  # Preview scope; no daemon needed
+yoooclaw transfer export --out ~/yoooclaw-pkg.tar.gz [--with-audio] [--with-images] [--with-html] [--from <ISO+TZ>] [--to <ISO+TZ>]
+yoooclaw transfer capabilities --out caps.json                      # On the target (needs the daemon)
+yoooclaw transfer import --file ~/yoooclaw-pkg.tar.gz                # Stage + verify + preview, never merges (archive or directory)
+yoooclaw transfer import --local <localTransferId> --plan <planId>   # Execute the previewed plan [--resume]
+```
+
+The data-transfer Skill defaults to OSS. Cloud commands use the existing CLI API key (`cli` scope, no extra scope header) and configured cloud environment; source and target keys must belong to the same account. Signed download URLs and STS credentials stay inside the command; users copy only the taskId. Upload and download reuse Alibaba Cloud OSS SDK checkpoints during retries within one invocation. Uploads automatically renew STS credentials via `/file/plugin/refresh` before expiry or after an expired-token error, preserving the original task and multipart checkpoint; no agent-facing refresh command is needed. The server automatically deletes cloud packages 24 hours after upload completion, regardless of import status. The CLI never deletes cloud packages and has no cloud deletion command. Successful imports still clean local staging; PARTIAL/failed imports retain local staging and reports for retry. Migration replies prominently warn: **⚠️ 迁移数据包含大量隐私信息，请妥善保管任务 ID 和数据包，避免向他人分享或泄露。** For interrupted upload confirmation, use `yoooclaw transfer complete --task <taskId> --object-key <objectKey>` from the error instead of creating a new task.
+
+Imports run inside the target daemon, which owns the stores. Existing target records are never overwritten: differing records are reported as `conflict`, and a PARTIAL import keeps its staged package and `report.json` under `<profile>/transfers/`. Imported notifications are tagged `transfer.memoryPolicy="skip-history"` and excluded from `yoooclaw sync` (notification → memory). Memory, credentials and configuration are not transferred.
 
 ### Data Directory
 

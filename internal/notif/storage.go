@@ -567,3 +567,44 @@ func appendLine(path, line string) {
 	defer f.Close()
 	_, _ = f.WriteString(line + "\n")
 }
+
+// DateKeyOf 返回时间戳落入的日文件桶（本机时区）。迁移侧必须用它分批，
+// 不能自己再实现一份，否则两份实现一旦漂移就会把一批通知写进错误的日文件。
+func DateKeyOf(timestamp string) (string, bool) {
+	ts, ok := ParseTime(timestamp)
+	if !ok {
+		return "", false
+	}
+	return ts.In(time.Local).Format("2006-01-02"), true
+}
+
+// ImportDay 在存储锁内把迁入条目合并进 dateKey 当天（供 transfer 包使用）。
+//
+// merge 拿到当天现有条目与 admit：admit(e) 在 e 与当天（含本批已接纳条目）
+// 内容键重复时返回 false——复用正常 ingress 的 default/legacy 等价规则；
+// 否则接纳 e 并返回 true。merge 返回错误时本批一条都不落盘。
+func (s *Storage) ImportDay(dateKey string, merge func(existing []StoredNotification, admit func(StoredNotification) bool) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing := s.loadDay(dateKey)
+	day := &staged{}
+	admit := func(e StoredNotification) bool {
+		if s.hasContentKey(dateKey, existing, e) {
+			return false
+		}
+		ck := contentKey(e)
+		s.contentKeySet(dateKey, existing)[ck] = true
+		day.entries = append(day.entries, e)
+		day.contentKys = append(day.contentKys, ck)
+		return true
+	}
+	err := merge(append([]StoredNotification(nil), existing...), admit)
+	if err == nil {
+		err = s.flushDay(dateKey, day)
+	}
+	if err != nil {
+		s.invalidateDay(dateKey)
+	}
+	s.evictColdDays(map[string]*staged{dateKey: day})
+	return err
+}

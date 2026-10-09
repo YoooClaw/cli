@@ -1,0 +1,13 @@
+# Export data
+
+1. Select notifications, recordings and saved webpages by default; clarify only genuinely missing scope. Audio requires `--with-audio`; images require `--with-images`; HTML archives require `--with-html`.
+2. Run `yoooclaw transfer export --dry-run --format json` with scope options. `--include` accepts comma-separated `notifications,recordings,web-pages,images`; `--from` and `--to` are timezone-qualified timestamps (e.g. `2026-01-01T00:00:00+08:00`), inclusive/exclusive respectively. The preview returns `records`, `recordsByType`, `bytes` and `warnings`.
+3. If the user supplies a target capability file (from `yoooclaw transfer capabilities --out <file>` or the plugin's `ntf transfer capabilities --out <file>`), add `--target-capabilities <file>`. Without that file, continue without adding a routine compatibility disclaimer.
+4. By default, run `yoooclaw transfer export --via oss --format json` with the same scope options. The command packs a tar.gz file, creates one cloud task, uploads using the Alibaba Cloud OSS SDK, and confirms completion. Return its taskId and the short import phrase from SKILL.md. A returned taskId confirms upload, not import on the target.
+5. If upload confirmation failed after the bytes were sent, use the returned `yoooclaw transfer complete --task <taskId> --object-key <objectKey>` command. Do not automatically repeat export/create: creating tasks consumes quota. Network retries resume SDK checkpoints within the same invocation; restarting a terminated command does not recover its checkpoint.
+
+For explicitly local/offline transfer, run `yoooclaw transfer export --out <new-path>.tar.gz --format json` instead. The path must not exist or be inside source data directories. `.tar.gz`/`.tgz` creates one file; other paths create directories. Targets older than CLI 0.12.0 / plugin 1.18.0 only accept directories. Report the local path and counts. Do not upload this local-only export.
+
+Export writes one marker file, `.transfer-origin`, into each source data directory so multi-hop transfers keep their original source identity. It is the only source-side write, and `--dry-run` does not make it. Source records are never modified or removed.
+
+If source data changes during export, unstable resources are reported. An unreadable day or index file is skipped and reported rather than failing the whole export; a later export/import can supplement missing data without duplicating existing records. Very large scopes are refused at export time (`YOOOCLAW_TRANSFER_PACKAGE_TOO_MANY_RECORDS`, `YOOOCLAW_TRANSFER_MANIFEST_TOO_LARGE`) instead of producing a package the target would reject — narrow the scope with `--include`, `--from` and `--to`.

@@ -481,15 +481,29 @@ try {
     Add-InstallDirToPath $InstallDir
     $installationCommitted = $true
 
-    if ($npmCliInstalled) {
-        $npmRemoved = Remove-NpmCli $npmCommand
-        if (-not $npmRemoved) {
-            Write-WarningMessage "The new native commands take precedence in PATH; the leftover npm package will not block their use."
-        }
-    }
     Write-Info "Installed: $target"
     Write-Info "Installed: $alias"
-    Write-Info "yoooclaw $installedVersion ready"
+    Write-Info "yoooclaw $installedVersion binary verified; checking task migration."
+
+    # Keep the old npm package until task migration has succeeded. Surface the
+    # structured error instead of hiding it behind an installation success.
+    $migrationOutput = @(& $target daemon autostart migrate --repair-permissions --format json)
+    $migrationExitCode = $LASTEXITCODE
+    $migrationOutput | ForEach-Object { Write-Host $_ }
+    if ($migrationExitCode -ne 0) {
+        throw "Native CLI installed, but task migration failed. Old npm package and user data were preserved; installation is not complete."
+    }
+    $migrationResult = ($migrationOutput -join "`n") | ConvertFrom-Json
+    # Skipped migrations omit optional fields. StrictMode forbids direct access
+    # to missing PSCustomObject properties; absence must mean unconfirmed.
+    $taskMigrationConfirmed = $false
+    foreach ($field in @('migrated', 'repaired')) {
+        $property = $migrationResult.PSObject.Properties[$field]
+        if ($null -ne $property -and $property.Value -is [bool] -and $property.Value -eq $true) {
+            $taskMigrationConfirmed = $true
+        }
+    }
+    Write-Info "Daemon login-autostart state checked."
 
     $activateOwner = $Activate -or ($env:YOOOCLAW_ACTIVATE_OWNER -eq "cli")
     if ($activateOwner) {
@@ -508,11 +522,14 @@ try {
         Write-Info "Current Relay owner was preserved. Use -Activate to switch it to the standalone CLI."
     }
 
-    if (Invoke-CliQuiet $target @("daemon", "autostart", "migrate", "--format", "json")) {
-        Write-Info "Daemon login-autostart state checked."
+    if ($npmCliInstalled -and $taskMigrationConfirmed) {
+        $npmRemoved = Remove-NpmCli $npmCommand
+        if (-not $npmRemoved) {
+            Write-WarningMessage "The new native commands take precedence in PATH; the leftover npm package was retained."
+        }
     }
-    else {
-        Write-WarningMessage "Could not migrate daemon login autostart; run 'yoooclaw daemon autostart enable' later."
+    elseif ($npmCliInstalled) {
+        Write-WarningMessage "Task migration was skipped; old npm package retained to avoid removing an existing task target."
     }
     $handoffPending = $false
 }

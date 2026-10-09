@@ -15,9 +15,12 @@ import (
 	"time"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/wintask"
 )
 
 type platformManager struct{ root, id, task string }
+
+var repairLegacyTask = wintask.Migrate
 
 // Task Scheduler accepts Stop synchronously but can keep reporting Running
 // while it tears down the task instance. Three seconds was too short on some
@@ -185,6 +188,12 @@ func (m *platformManager) Install(spec Spec) error {
 	folder, taskName := m.folderAndName()
 	out, err := taskSchedulerCOM("install", folder, taskName, name)
 	if err != nil {
+		if spec.RepairPermissions && m.task == `\YoooClaw\yoooclaw-daemon` && strings.Contains(strings.ToLower(string(out)), "0x80070005") {
+			if repairErr := repairLegacyTask(spec.RootDir, spec.Executable, taskXML(spec, userSID, launcher)); repairErr != nil {
+				return fmt.Errorf("旧任务迁移未完成：%w（原注册错误：%s）", repairErr, commandError(out, err))
+			}
+			return nil
+		}
 		return fmt.Errorf("创建计划任务失败: %s", commandError(out, err))
 	}
 	return nil

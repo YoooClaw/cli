@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,50 @@ import (
 	"strings"
 	"testing"
 )
+
+// Execute the actual installer fragment under strict PowerShell, including
+// responses that omit optional fields. No installation or task changes.
+func TestWindowsMigrationOptionalFields(t *testing.T) {
+	shell, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		shell, err = exec.LookPath("pwsh")
+	}
+	if err != nil {
+		t.Skip("requires PowerShell")
+	}
+	raw, err := os.ReadFile(mustAbs(t, "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	start := strings.Index(script, "    $taskMigrationConfirmed = $false")
+	end := strings.Index(script, `    Write-Info "Daemon login-autostart state checked."`)
+	if start < 0 || end < start {
+		t.Fatal("migration confirmation fragment not found")
+	}
+	for _, tc := range []struct {
+		json string
+		want bool
+	}{
+		{`{"ok":true,"migrated":false,"reason":"uninitialized"}`, false},
+		{`{"ok":true,"migrated":false,"desired":"disabled"}`, false},
+		{`{"ok":true}`, false},
+		{`{"ok":true,"migrated":true}`, true},
+		{`{"ok":true,"repaired":true}`, true},
+		{`{"migrated":false,"repaired":true}`, true},
+		{`{"migrated":false,"repaired":false}`, false},
+		{`{"migrated":"true","repaired":null}`, false},
+	} {
+		want := "$false"
+		if tc.want {
+			want = "$true"
+		}
+		command := "Set-StrictMode -Version 2.0; $ErrorActionPreference='Stop'; $migrationResult = '" + tc.json + "' | ConvertFrom-Json;\n" + script[start:end] + fmt.Sprintf("\nif ($taskMigrationConfirmed -ne %s) { throw 'unexpected confirmation' }", want)
+		if out, err := exec.Command(shell, "-NoProfile", "-NonInteractive", "-Command", command).CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", tc.json, err, out)
+		}
+	}
+}
 
 func TestInstallScriptResolvesGitHubVersionPortably(t *testing.T) {
 	t.Parallel()
@@ -332,6 +377,14 @@ func TestWindowsInstallerMigratesNpmAfterNativeVerification(t *testing.T) {
 	verifiedAt := strings.Index(script, `if ($installedVersion -ne $resolvedVersion)`)
 	committedAt := strings.Index(script, `$installationCommitted = $true`)
 	removeAt := strings.Index(script, `$npmRemoved = Remove-NpmCli $npmCommand`)
+	migrateAt := strings.Index(script, `& $target daemon autostart migrate --repair-permissions --format json`)
+	restoreAt := strings.Index(script, `Restore-Daemons $target $stoppedProfiles`)
+	if migrateAt < committedAt || restoreAt < migrateAt || removeAt < restoreAt {
+		t.Fatal("migration must precede daemon restore and npm cleanup")
+	}
+	if !strings.Contains(script, `throw "Native CLI installed, but task migration failed.`) {
+		t.Fatal("migration failure must not report installation success")
+	}
 	if verifiedAt < 0 || committedAt < 0 || removeAt < 0 {
 		t.Fatalf("install.ps1 is missing npm migration ordering markers")
 	}
@@ -342,23 +395,32 @@ func TestWindowsInstallerMigratesNpmAfterNativeVerification(t *testing.T) {
 
 func TestInstallScriptUpdateRestoresRunningCLIOwner(t *testing.T) {
 	t.Parallel()
+	for _, platform := range []string{"Darwin", "Linux", "Linux-no-bus"} {
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
 
-	root := t.TempDir()
-	mockBin := filepath.Join(root, "mock-bin")
-	installDir := filepath.Join(root, "install-bin")
-	commandLog := filepath.Join(root, "commands.log")
-	mustMkdirAll(t, mockBin)
-	mustMkdirAll(t, installDir)
-	mustMkdirAll(t, filepath.Join(root, ".yoooclaw", "profiles", "default"))
+			root := t.TempDir()
+			mockBin := filepath.Join(root, "mock-bin")
+			installDir := filepath.Join(root, "install-bin")
+			commandLog := filepath.Join(root, "commands.log")
+			mustMkdirAll(t, mockBin)
+			mustMkdirAll(t, installDir)
+			mustMkdirAll(t, filepath.Join(root, ".yoooclaw", "profiles", "default"))
 
-	writeExecutable(t, filepath.Join(mockBin, "uname"), `#!/bin/sh
+			writeExecutable(t, filepath.Join(mockBin, "uname"), `#!/bin/sh
 case "$1" in
-  -s) printf 'Darwin\n' ;;
+  -s) printf '%s\n' "$MOCK_OS" ;;
   -m) printf 'arm64\n' ;;
   *) exit 2 ;;
 esac
 `)
-	writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
+			writeExecutable(t, filepath.Join(mockBin, "systemctl"), `#!/bin/sh
+printf 'systemctl:%s\n' "$*" >> "$COMMAND_LOG"
+[ "$MOCK_BUS" = available ] && exit 0
+printf 'Failed to connect to bus: No medium found\n' >&2
+exit 1
+`)
+			writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
 printf 'old:%s\n' "$*" >> "$COMMAND_LOG"
 case "$*" in
   *'daemon status'*) exit 0 ;;
@@ -366,7 +428,7 @@ case "$*" in
 esac
 printf '0.7.3\n'
 `)
-	writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
+			writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
 case "$*" in
   *api.github.com*)
     printf '%s\n' '[{"tag_name":"cli-v0.8.1"}]'
@@ -393,34 +455,61 @@ case "$*" in
 esac
 `)
 
-	cmd := exec.Command("sh", mustAbs(t, "install.sh"), "--dir", installDir, "--force")
-	cmd.Env = append(os.Environ(),
-		"HOME="+root,
-		"SHELL=/bin/zsh",
-		"COMMAND_LOG="+commandLog,
-		"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("install.sh update failed: %v\n%s", err, output)
-	}
-	logBytes, err := os.ReadFile(commandLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logText := string(logBytes)
-	for _, want := range []string{
-		"old:--profile default daemon status",
-		"old:--profile default daemon stop",
-		"new:--profile default daemon autostart enable",
-		"new:daemon autostart migrate --format json",
-	} {
-		if !strings.Contains(logText, want) {
-			t.Fatalf("update did not preserve CLI owner (%q missing):\n%s", want, logText)
-		}
-	}
-	if strings.Contains(logText, "owner activate cli") {
-		t.Fatalf("normal update unexpectedly switched owner:\n%s", logText)
+			cmd := exec.Command("sh", mustAbs(t, "install.sh"), "--dir", installDir, "--force")
+			mockOS, mockBus := platform, "available"
+			if platform == "Linux-no-bus" {
+				mockOS, mockBus = "Linux", "unavailable"
+			}
+			cmd.Env = append(os.Environ(),
+				"MOCK_OS="+mockOS, "MOCK_BUS="+mockBus,
+				"HOME="+root,
+				"SHELL=/bin/zsh",
+				"COMMAND_LOG="+commandLog,
+				"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			)
+			output, err := cmd.CombinedOutput()
+			if platform == "Linux-no-bus" {
+				if err == nil || !strings.Contains(string(output), "保留旧 daemon 和二进制") {
+					t.Fatalf("expected safe abort: %v\n%s", err, output)
+				}
+				logBytes, readErr := os.ReadFile(commandLog)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if strings.Contains(string(logBytes), "daemon stop") {
+					t.Fatalf("stopped healthy daemon: %s", logBytes)
+				}
+				oldBytes, readErr := os.ReadFile(filepath.Join(installDir, "yoooclaw"))
+				if readErr != nil || !strings.Contains(string(oldBytes), "0.7.3") {
+					t.Fatal("old binary was replaced")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("install.sh update failed: %v\n%s", err, output)
+			}
+			logBytes, err := os.ReadFile(commandLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logText := string(logBytes)
+			for _, want := range []string{
+				"old:--profile default daemon status",
+				"old:--profile default daemon stop",
+				"new:--profile default daemon autostart enable",
+				"new:daemon autostart migrate --format json",
+			} {
+				if !strings.Contains(logText, want) {
+					t.Fatalf("update did not preserve CLI owner (%q missing):\n%s", want, logText)
+				}
+			}
+			if strings.Contains(logText, "owner activate cli") {
+				t.Fatalf("normal update unexpectedly switched owner:\n%s", logText)
+			}
+			if platform == "Linux" && strings.Index(logText, "systemctl:--user show-environment") > strings.Index(logText, "daemon stop") {
+				t.Fatal("preflight ran after stop")
+			}
+		})
 	}
 }
 

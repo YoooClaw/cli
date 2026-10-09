@@ -23,10 +23,11 @@ const (
 
 // Spec describes the command installed into the native service manager.
 type Spec struct {
-	RootDir       string
-	Executable    string
-	Arguments     []string
-	SupervisorLog string
+	RepairPermissions bool // Explicit installer opt-in to a task-only UAC repair.
+	RootDir           string
+	Executable        string
+	Arguments         []string
+	SupervisorLog     string
 }
 
 // Status is the normalized state returned by every platform manager.

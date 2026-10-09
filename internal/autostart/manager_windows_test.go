@@ -22,6 +22,43 @@ type fakeTaskScheduler struct {
 	installXML   string
 }
 
+func TestLegacyMigrationRepairGating(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		optIn, want  bool
+	}{
+		{"denied-opt-in", "HRESULT: 0x80070005", true, true},
+		{"denied-no-opt-in", "HRESULT: 0x80070005", false, false},
+		{"policy-block", "This program is blocked by group policy", true, false},
+		{"generic-error", "unexpected failure", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old, oldRepair := taskSchedulerCOM, repairLegacyTask
+			t.Cleanup(func() { taskSchedulerCOM, repairLegacyTask = old, oldRepair })
+			called := false
+			taskSchedulerCOM = func(action string, _ ...string) ([]byte, error) {
+				if action == "identity" {
+					return []byte("S-1-5-21-test"), nil
+				}
+				return []byte(tc.output), errors.New("failed")
+			}
+			repairLegacyTask = func(root, exe, xml string) error {
+				called = true
+				if !strings.Contains(xml, "LeastPrivilege") {
+					t.Fatal("elevated task")
+				}
+				return nil
+			}
+			m := newWindowsTestManager(t)
+			m.task = `\YoooClaw\yoooclaw-daemon`
+			err := m.Install(Spec{RootDir: m.root, Executable: `C:\native\yoooclaw.exe`, RepairPermissions: tc.optIn})
+			if called != tc.want || (err == nil) != tc.want {
+				t.Fatalf("called=%v error=%v", called, err)
+			}
+		})
+	}
+}
+
 func stubTaskSchedulerCOM(t *testing.T, fake *fakeTaskScheduler) {
 	t.Helper()
 	original := taskSchedulerCOM

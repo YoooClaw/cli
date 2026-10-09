@@ -54,6 +54,13 @@ func newClient(p paths.Paths, token string) *Client {
 	}
 }
 
+// WithTimeout 返回使用指定超时的副本（迁移导入等长耗时请求用）。
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	copied := *c
+	copied.timeout = d
+	return &copied
+}
+
 // Request 调 daemon；localhost 连接失败（refused/reset/EOF）报 DAEMON_NOT_RUNNING，
 // 让生命周期监管可以清理陈旧 lock 并重启 daemon。**超时除外**：超时只说明 daemon
 // 忙或慢，进程多半还活着，报 DAEMON_UNRESPONSIVE——监管方拿到它应该退避重试，

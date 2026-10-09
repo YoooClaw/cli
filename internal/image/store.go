@@ -6,6 +6,7 @@ package image
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,6 +42,14 @@ type Entry struct {
 	Status      string   `json:"status"`
 	LastError   *string  `json:"lastError,omitempty"`
 	SyncedAt    *string  `json:"syncedAt,omitempty"`
+	// Transfer 只在经 `yoooclaw transfer import` 迁入的图片上出现，记录原始来源。
+	Transfer *TransferMark `json:"transfer,omitempty"`
+}
+
+// TransferMark 记录迁入条目的原始来源（与 phone-notifications 插件字段一致）。
+type TransferMark struct {
+	Origin   string `json:"origin"`
+	RecordID string `json:"recordId"`
 }
 
 // Logger 是图片写侧依赖的最小日志接口。
@@ -87,6 +96,46 @@ func upsert(imagesDir string, entry Entry) error {
 		entries[idx] = entry
 	} else {
 		entries = append(entries, entry)
+	}
+	if err := fsutil.EnsureDir(imagesDir, fsutil.DirMode); err != nil {
+		return err
+	}
+	return writeIndex(imagesDir, entries)
+}
+
+// ImportEntry 在索引写锁内合并一条迁入图片（供 transfer 包使用）。
+//
+// merge 拿到当前条目（不存在为 nil），返回要写入的新条目；返回 nil 表示不改动。
+// 仍在后台下载的图片拒绝迁入（TARGET_BUSY），避免下载完成时覆盖迁入结果。
+func ImportEntry(imagesDir, imageID string, merge func(current *Entry) (*Entry, error)) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	entries := ReadIndex(imagesDir)
+	if raw, err := os.ReadFile(filepath.Join(imagesDir, "index.json")); err == nil && !json.Valid(raw) {
+		// 索引损坏时不能按空处理，否则写回会丢掉原有条目。
+		return errors.New("INVALID_TARGET_INDEX")
+	}
+	idx := -1
+	var current *Entry
+	for i := range entries {
+		if entries[i].ImageID == imageID {
+			idx = i
+			copied := entries[i]
+			current = &copied
+			break
+		}
+	}
+	if current != nil && current.Status == "syncing" {
+		return errors.New("TARGET_BUSY")
+	}
+	next, err := merge(current)
+	if err != nil || next == nil {
+		return err
+	}
+	if idx >= 0 {
+		entries[idx] = *next
+	} else {
+		entries = append(entries, *next)
 	}
 	if err := fsutil.EnsureDir(imagesDir, fsutil.DirMode); err != nil {
 		return err

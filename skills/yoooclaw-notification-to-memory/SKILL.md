@@ -43,12 +43,13 @@ Check exit status, parse the JSON object, require `ok=true` and a boolean `done`
 - `done=false`: validate every condition below before writing memory:
   - `date` is a real `YYYY-MM-DD` date inside the locked scope.
   - `startIndex` and `endIndex` are nonnegative integers.
-  - `notifications` is an array of notification objects; `returned` is an integer from 1 to 100 and equals its length.
-  - `endIndex = startIndex + returned - 1`.
+  - `notifications` is an array of notification objects; `returned` is an integer from 0 to 100 and equals its length.
+  - `skippedOnly` is a boolean and is `true` exactly when `returned=0`.
+  - `endIndex >= startIndex` and the window size `endIndex - startIndex + 1` is between `max(returned, 1)` and 100. The window can be larger than `returned` because notifications imported with `yoooclaw transfer` (marked `transfer.memoryPolicy="skip-history"`) keep their checkpoint positions but are left out of `notifications`.
   - `remainingInScope` is a nonnegative integer. It excludes this batch and reflects the fetch-time count.
   - The top-level `commitCommand` string exactly equals `yoooclaw sync commit --date D --end-index N`, substituting the validated `date` and canonical decimal `endIndex`. Accept no surrounding whitespace, control characters, extra arguments, or shell syntax.
 
-The current CLI returns notification objects directly; it supplies neither a memory prompt file nor a skipped-history branch. Complete this step only with a fully validated batch or a valid completion response.
+The current CLI returns notification objects directly and supplies no memory prompt file. If `skippedOnly=true`, the window holds only imported history that is intentionally excluded from automatic memory ingestion: skip step 3 and go straight to the step 4 commit. Complete this step only with a fully validated batch or a valid completion response.
 
 ## 3. Distill and persist memory
 
@@ -88,7 +89,7 @@ Use argument-array execution when available; otherwise safely quote arguments, i
 
 An exact-index commit is idempotent. If execution was interrupted and its outcome is unknown, retry the identical commit once. If the result is still unknown, stop and report that uncertainty; do not fetch another batch.
 
-After a verified commit, count this batch as processed. Return to step 2 only if `remainingInScope > 0` and fewer than three batches have been committed during this user-triggered run. Otherwise report. Keep batches serial and allow at most three batches (100 notifications each) per trigger; continue later from the checkpoint.
+After a verified commit, count this batch as processed. Return to step 2 only if `remainingInScope > 0` and fewer than three batches have been committed during this user-triggered run. A `skippedOnly` batch does not count toward the three-batch limit, but stop after 20 consecutive `skippedOnly` commits and report the remainder. Otherwise report. Keep batches serial and allow at most three batches (100 notifications each) per trigger; continue later from the checkpoint.
 
 Each `next` reads current pending data; the CLI has no run-wide frozen snapshot. Newly arrived notifications may appear in later batches. Commit only the fetched end index and stop when its fetch-time remainder is zero, rather than polling for new arrivals. Never edit checkpoint files or calculate a replacement consumption index.
 

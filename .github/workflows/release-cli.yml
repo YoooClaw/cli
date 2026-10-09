@@ -447,7 +447,7 @@ jobs:
           fi
 
       - name: Upload artifacts to Alibaba OSS
-        timeout-minutes: 10
+        timeout-minutes: 40
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
