@@ -122,13 +122,30 @@ CLI="$EFFECTIVE_INSTALL_DIR/yoooclaw"
 
 configure_user_service_env
 
+# Releases up to 0.12.1 cannot uninstall their systemd --user unit when this
+# shell is denied the user bus (seen on WUYING desktops). Remove the default
+# unit files directly so a retried disable only has to stop the daemon itself.
+remove_unreachable_user_unit() {
+  [ "$(uname -s)" = "Linux" ] || return 1
+  [ -z "${YOOOCLAW_HOME:-}" ] || return 1
+  command -v systemctl >/dev/null 2>&1 || return 1
+  ! systemctl --user show-environment >/dev/null 2>&1 || return 1
+  unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  unit_file="$unit_dir/yoooclaw-daemon.service"
+  [ -e "$unit_file" ] || return 1
+  warn "systemd 用户总线不可用，直接移除旧版自启单元 $unit_file"
+  rm -f "$unit_dir"/*.wants/yoooclaw-daemon.service "$unit_file"
+}
+
 # Stop an older managed/detached installation before replacing its executable.
 # Otherwise the generic installer may restore that runtime mid-upgrade and the
 # WUYING owner handoff sees its Relay lock as a foreign owner.
 if [ -x "$CLI" ]; then
   info "停止旧版 daemon/autostart…"
   if ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
-    err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+    if ! remove_unreachable_user_unit || ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
+      err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+    fi
   fi
 fi
 

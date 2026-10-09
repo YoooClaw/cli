@@ -292,6 +292,89 @@ exit 0
 	}
 }
 
+func TestWuyingInstallerRemovesOldUnitWhenUserBusDenied(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mockBin := filepath.Join(root, "mock-bin")
+	installDir := filepath.Join(root, "install-bin")
+	orderLog := filepath.Join(root, "order.log")
+	baseInstaller := filepath.Join(root, "base-install.sh")
+	fakeCLI := filepath.Join(root, "fake-yoooclaw")
+	unitDir := filepath.Join(root, ".config", "systemd", "user")
+	unitFile := filepath.Join(unitDir, "yoooclaw-daemon.service")
+	wantsLink := filepath.Join(unitDir, "default.target.wants", "yoooclaw-daemon.service")
+	mustMkdirAll(t, mockBin)
+	mustMkdirAll(t, installDir)
+	mustMkdirAll(t, filepath.Dir(wantsLink))
+	if err := os.WriteFile(unitFile, []byte("unit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(unitFile, wantsLink); err != nil {
+		t.Fatal(err)
+	}
+
+	writeExecutable(t, filepath.Join(mockBin, "uname"), "#!/bin/sh\necho Linux\n")
+	writeExecutable(t, filepath.Join(mockBin, "systemctl"), "#!/bin/sh\necho 'Failed to connect to bus: Permission denied' >&2\nexit 1\n")
+	writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then destination=$2; shift 2; else shift; fi
+done
+cp "$BASE_INSTALLER_FIXTURE" "$destination"
+`)
+	// Mirrors releases <= 0.12.1: disable fails while the unit file exists.
+	writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
+case "$*" in
+  *'daemon autostart disable'*)
+    if [ -e "$UNIT_FILE" ]; then printf '%s\n' 'old:disable-failed' >> "$ORDER_LOG"; exit 1; fi
+    printf '%s\n' 'old:disable' >> "$ORDER_LOG"; exit 0 ;;
+esac
+exit 2
+`)
+	writeExecutable(t, baseInstaller, `#!/bin/sh
+printf '%s\n' 'replace' >> "$ORDER_LOG"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--dir' ]; then install_dir=$2; shift 2; else shift; fi
+done
+cp "$FAKE_CLI_FIXTURE" "$install_dir/yoooclaw"
+chmod +x "$install_dir/yoooclaw"
+`)
+	writeExecutable(t, fakeCLI, `#!/bin/sh
+case "$*" in
+  *'auth set-api-key -'*) IFS= read -r _ ;;
+esac
+exit 0
+`)
+
+	cmd := exec.Command("sh", mustAbs(t, "install-wuying.sh"), "--skill", "claude", "--dir", installDir)
+	cmd.Env = append(os.Environ(),
+		"HOME="+root,
+		"XDG_CONFIG_HOME=",
+		"YOOOCLAW_HOME=",
+		"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"BASE_INSTALLER_FIXTURE="+baseInstaller,
+		"FAKE_CLI_FIXTURE="+fakeCLI,
+		"ORDER_LOG="+orderLog,
+		"UNIT_FILE="+unitFile,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install with denied user bus failed: %v\n%s", err, output)
+	}
+	order, err := os.ReadFile(orderLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "old:disable-failed\nold:disable\nreplace\n"; string(order) != want {
+		t.Fatalf("upgrade order = %q, want %q", order, want)
+	}
+	for _, path := range []string{unitFile, wantsLink} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed unexpectedly: %v", path, err)
+		}
+	}
+}
+
 func TestWuyingInstallerAcceptsDaemonStartedByPartialAutostart(t *testing.T) {
 	t.Parallel()
 
