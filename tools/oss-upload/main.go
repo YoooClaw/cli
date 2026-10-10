@@ -3,6 +3,7 @@
 // 用法（在仓库任意目录下）：
 //
 //	go -C tools/oss-upload run . [--version 0.6.0] [--only install|artifacts] [--dry-run]
+//	go -C tools/oss-upload run . --test-build --version 0.12.3-test.42
 //
 // 环境变量（可放 .env，进程环境优先）：
 //
@@ -31,6 +32,11 @@
 //
 // 预发布版本只写 <prefix>/v<ver>/** 归档，不碰任何 live key、也不写渠道标记：
 // 默认安装路径永远解析到最新正式版，装 beta 必须显式指定版本号。
+//
+// --test-build 用于 release/** 分支推送后的测试环境发布：版本号由 CI 生成
+// （<目标版本>-test.<run>，不要求等于 package.json），并且无论是否预发布都刷新
+// live 安装脚本与 latest 标记，让测试桶里的一键安装始终指向最新测试构建。
+// 该模式必须显式给出 OSS_BUCKET / OSS_PUBLIC_URL，且不能是正式环境默认值。
 package main
 
 import (
@@ -329,21 +335,36 @@ func isPrerelease(version string) bool {
 	return strings.Contains(version, "-")
 }
 
-// installerUploadKeys 返回一个安装脚本本次要写入的 OSS key。正式版同时刷新
-// live 与版本归档；预发布版只写归档，避免 beta 顶掉 live 脚本，让不带版本号的
-// curl 一键安装意外装到预发布版。
-func installerUploadKeys(prefix, version, filename string) []string {
+// installerUploadKeys 返回一个安装脚本本次要写入的 OSS key。live 为 true 时
+// 同时刷新 live 与版本归档；否则只写归档。正式环境的预发布版传 false，避免 beta
+// 顶掉 live 脚本，让不带版本号的 curl 一键安装意外装到预发布版。
+func installerUploadKeys(prefix, version, filename string, live bool) []string {
 	keys := []string{joinKey(prefix, "v"+version, "installer", filename)}
-	if !isPrerelease(version) {
+	if live {
 		keys = append(keys, joinKey(prefix, filename))
 	}
 	return keys
+}
+
+// validateTestTarget 确保测试构建只会写进显式配置的测试桶，绝不覆盖正式环境的
+// live 安装脚本与 latest 标记。
+func validateTestTarget(bucket, publicURL string) error {
+	bucket = strings.TrimSpace(bucket)
+	publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	if bucket == "" || publicURL == "" {
+		return fmt.Errorf("--test-build 必须显式设置 OSS_BUCKET 与 OSS_PUBLIC_URL")
+	}
+	if bucket == defaultBucket || publicURL == defaultPublicURL {
+		return fmt.Errorf("--test-build 不能指向正式环境（bucket %s / %s）", defaultBucket, defaultPublicURL)
+	}
+	return nil
 }
 
 func main() {
 	versionFlag := flag.String("version", "", "发布版本（默认读 package.json）")
 	only := flag.String("only", "", "只上传某类内容: install | artifacts")
 	dryRun := flag.Bool("dry-run", false, "只打印将要上传的内容，不实际上传")
+	testBuild := flag.Bool("test-build", false, "测试环境构建：版本号可不同于 package.json，始终刷新 live 安装脚本与 latest 标记")
 	flag.Parse()
 
 	if *only != "" && *only != "install" && *only != "artifacts" {
@@ -357,8 +378,14 @@ func main() {
 	if version == "" {
 		version = packageVersion(root)
 	}
-	pkgVersion := packageVersion(root)
-	if version != pkgVersion {
+	if *testBuild {
+		if *versionFlag == "" {
+			fatalf("--test-build 需要显式 --version")
+		}
+		if err := validateTestTarget(os.Getenv("OSS_BUCKET"), os.Getenv("OSS_PUBLIC_URL")); err != nil {
+			fatalf("%v", err)
+		}
+	} else if pkgVersion := packageVersion(root); version != pkgVersion {
 		fatalf("--version %s 与 package.json %s 不一致", version, pkgVersion)
 	}
 
@@ -367,8 +394,13 @@ func main() {
 	installBaseURL := publicURL + "/" + strings.Trim(prefix, "/")
 	distDir := envOr("DIST_DIR", filepath.Join(root, "dist-native"))
 	prerelease := isPrerelease(version)
+	// live 决定是否刷新 live 安装脚本与 latest 标记（安装脚本只认 latest）。
+	live := !prerelease || *testBuild
 	channel := "latest"
-	if prerelease {
+	switch {
+	case *testBuild:
+		channel = "test"
+	case prerelease:
 		channel = "beta"
 	}
 
@@ -403,7 +435,7 @@ func main() {
 	fmt.Println()
 
 	if *only == "" || *only == "install" {
-		if prerelease {
+		if !live {
 			logf("预发布版本：只写 v%s 归档，跳过 live 安装脚本与渠道标记", version)
 		}
 		for _, filename := range []string{"install.sh", "install.ps1", "install-wuying.sh"} {
@@ -413,7 +445,7 @@ func main() {
 			} else {
 				rendered = renderInstaller(root, filename, installBaseURL)
 			}
-			for _, key := range installerUploadKeys(prefix, version, filename) {
+			for _, key := range installerUploadKeys(prefix, version, filename, live) {
 				u.put(key, rendered, contentTypeFor(filename), strings.TrimPrefix(key, prefix+"/"))
 			}
 		}
@@ -462,13 +494,13 @@ func main() {
 			contentTypeFor("oss-manifest.json"),
 			"oss-manifest.json",
 		)
-		if !prerelease {
-			u.put(joinKey(prefix, channel), []byte(version+"\n"), "text/plain; charset=utf-8", channel)
+		if live {
+			u.put(joinKey(prefix, "latest"), []byte(version+"\n"), "text/plain; charset=utf-8", "latest")
 		}
 	}
 
 	fmt.Println()
-	if prerelease {
+	if !live {
 		okf("installer 归档: %s/installer/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
 		okf("预发布版本未改动 live 安装脚本与 latest 标记；安装需显式 --version %s", version)
 	} else {
@@ -477,8 +509,8 @@ func main() {
 		okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
 	}
 	okf("artifacts: %s/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
-	if !prerelease {
-		okf("%s marker: %s", channel, urlForKey(publicURL, joinKey(prefix, channel)))
+	if live {
+		okf("latest marker: %s", urlForKey(publicURL, joinKey(prefix, "latest")))
 	}
 	okf("OSS upload complete")
 	fmt.Println()
