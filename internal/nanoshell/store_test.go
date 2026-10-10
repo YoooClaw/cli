@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -20,7 +21,7 @@ func testZIP(t *testing.T, id string, version int, extra string) []byte {
 	for _, entry := range []struct {
 		name string
 		data []byte
-	}{{"game.nsp/manifest.json", m}, {"game.nsp/app.wasm", []byte{0, 97, 115, 109, 1, 0, 0, 0, 0, 2, 0, byte(version)}}} {
+	}{{"game.nsp/manifest.json", m}, {"game.nsp/app.wasm", []byte{0, 97, 115, 109, 1, 0, 0, 0}}} {
 		w, e := z.Create(entry.name)
 		if e != nil {
 			t.Fatal(e)
@@ -70,12 +71,8 @@ func TestPublishListDownload(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, program, err := ProgramFromZIP(b)
-	if err != nil {
-		t.Fatal(err)
-	}
 	got, e := base64.StdEncoding.DecodeString(d.Data)
-	if e != nil || !bytes.Equal(got, program) || digest(got) != d.PackageID || d.Size != len(program) || d.ContentType != "application/wasm" || d.FileName != "app.wasm" {
+	if e != nil || !bytes.Equal(got, b) || digest(got) != d.PackageID || d.Size != len(b) {
 		t.Fatal(d, e)
 	}
 	for _, scope := range []string{"phone-b", "default", "legacy"} {
@@ -93,7 +90,7 @@ func TestPublishListDownload(t *testing.T) {
 	if _, e = s.Download("phone-b", first.PackageID); e != nil {
 		t.Fatal(e)
 	}
-	target := filepath.Join(s.Root, recordID("phone-a", "com.game", 1), "app.wasm")
+	target := filepath.Join(s.Root, recordID("phone-a", "com.game", 1), "package.zip")
 	os.WriteFile(target, []byte("corrupt"), 0600)
 	if _, e = s.Download("phone-a", first.PackageID); Code(e) != "PACKAGE_CORRUPTED" {
 		t.Fatal(e)
@@ -182,27 +179,34 @@ func TestPackageValidation(t *testing.T) {
 	}
 }
 
-func TestSameProgramDifferentAppsRequiresSelector(t *testing.T) {
+func TestLegacyProgramRecordsStayIntact(t *testing.T) {
 	s := Store{t.TempDir()}
-	a, e := s.Publish(put(t, testZIP(t, "com.first", 1, "")), "phone")
+	legacy := filepath.Join(s.Root, strings.TrimPrefix(recordID("phone-a", "com.game", 1), "zip-"))
+	if e := os.MkdirAll(legacy, 0700); e != nil {
+		t.Fatal(e)
+	}
+	old := []byte("old program-only record")
+	os.WriteFile(filepath.Join(legacy, "app.wasm"), old, 0600)
+	os.WriteFile(filepath.Join(legacy, "metadata.json"), []byte("old metadata"), 0600)
+	list, e := s.List("phone-a", 20, "")
+	if e != nil || len(list.Items) != 0 {
+		t.Fatal(list, e)
+	}
+	raw := testZIP(t, "com.game", 1, "")
+	published, e := s.Publish(put(t, raw), "phone-a")
 	if e != nil {
 		t.Fatal(e)
 	}
-	b, e := s.Publish(put(t, testZIP(t, "com.second", 1, "")), "phone")
+	download, e := s.Download("phone-a", published.PackageID)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if a.PackageID != b.PackageID {
-		t.Fatal("program hash must not depend on manifest")
+	got, _ := base64.StdEncoding.DecodeString(download.Data)
+	if !bytes.Equal(got, raw) || download.ContentType != "application/zip" {
+		t.Fatal("not ZIP")
 	}
-	if _, e = s.Download("phone", a.PackageID); Code(e) != "INVALID_PARAMS" {
-		t.Fatal(e)
-	}
-	d, e := s.Download("phone", a.PackageID, Selector{AppID: "com.second", Version: 1})
-	if e != nil || d.AppID != "com.second" {
-		t.Fatal(d, e)
-	}
-	if _, e = s.Download("other", a.PackageID, Selector{AppID: "com.second", Version: 1}); Code(e) != "PACKAGE_NOT_FOUND" {
-		t.Fatal(e)
+	preserved, e := os.ReadFile(filepath.Join(legacy, "app.wasm"))
+	if e != nil || !bytes.Equal(preserved, old) {
+		t.Fatal("legacy record changed")
 	}
 }

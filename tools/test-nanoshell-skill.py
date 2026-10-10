@@ -91,10 +91,10 @@ with tempfile.TemporaryDirectory(prefix="nanoshell-skill-test-") as tmp:
             return result.stdout
         first = cli_call("nanoshell", "publish", "--package", str(archive), "--client", "phone-a")
         import hashlib
-        assert hashlib.sha256((root / "dist/counter.nsp/app.wasm").read_bytes()).hexdigest() in first
+        assert hashlib.sha256(released).hexdigest() in first
         second = cli_call("nanoshell", "publish", "--package", str(archive), "--client", "phone-a")
         assert '"duplicated":true' in second.replace(" ", "")
-        assert hashlib.sha256((root / "dist/counter.nsp/app.wasm").read_bytes()).hexdigest() in cli_call("nanoshell", "list", "--client", "phone-a")
+        assert hashlib.sha256(released).hexdigest() in cli_call("nanoshell", "list", "--client", "phone-a")
         assert (home / "profiles/default/nanoshell").is_dir()
     source = root / "guest/wasm/counter.c"
     original = source.read_bytes()

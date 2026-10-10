@@ -14,6 +14,8 @@ import subprocess
 import sys
 import time
 import urllib.request
+import io
+import zipfile
 
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument('--cli', required=True)
@@ -63,12 +65,13 @@ cli = [a.cli, '--profile', 'smoke', '--format', 'json']
 for p in [home / 'credentials.json', profile / 'credentials.json']:
     p.chmod(0o600)
 wasm = (project / 'dist/counter.nsp/app.wasm').read_bytes()
-package_id = hashlib.sha256(wasm).hexdigest()
+archive = (project / 'release/counter.zip').read_bytes()
+package_id = hashlib.sha256(archive).hexdigest()
 run(cli + ['nanoshell', 'publish', '--package', str(project / 'release/counter.zip'), '--client', 'smoke-phone'])
 second = run(cli + ['nanoshell', 'publish', '--package', str(project / 'release/counter.zip'), '--client', 'smoke-phone'])
 assert '"duplicated":true' in second.replace(' ', '')
 assert package_id in run(cli + ['nanoshell', 'list', '--client', 'smoke-phone'])
-assert any((profile / 'nanoshell').glob('*/app.wasm'))
+assert any((profile / 'nanoshell').glob('zip-*/package.zip'))
 print('Published real program, duplicate publication and list passed', flush=True)
 relay = socket.socket()
 relay.bind(('127.0.0.1', 0))
@@ -143,16 +146,19 @@ try:
     listing = rpc('nanoshell.apps.list', {})
     assert listing['ok'] and len(listing['payload']['items']) == 1, listing
     item = listing['payload']['items'][0]
-    assert item['packageId'] == package_id and item['packageBytes'] == len(wasm)
-    download = rpc('nanoshell.apps.download', {k: item[k] for k in ['appId', 'version', 'packageId']})
+    assert item['packageId'] == package_id and item['packageBytes'] == len(archive)
+    download = rpc('nanoshell.apps.download', {'packageId': item['packageId']})
     assert download['ok'], download
     data = download['payload']
     decoded = base64.b64decode(data['data'], validate=True)
-    assert decoded == wasm and data['size'] == len(wasm)
-    assert data['fileName'] == 'app.wasm' and data['contentType'] == 'application/octet-stream'
-    assert decoded[:4] == b'NSP1' and struct.unpack('<I', decoded[8:12])[0] == len(decoded) - 16
+    assert decoded == archive and data['size'] == len(archive)
+    assert data['fileName'] == 'counter.zip' and data['contentType'] == 'application/zip'
+    with zipfile.ZipFile(io.BytesIO(decoded)) as z:
+        assert z.read('counter.nsp/app.wasm') == wasm
+        assert json.loads(z.read('counter.nsp/manifest.json'))['id'] == item['appId']
+    assert wasm[:4] == b'NSP1' and struct.unpack('<I', wasm[8:12])[0] == len(wasm) - 16
     assert hashlib.sha256(decoded).hexdigest() == data['packageId']
-    (root / 'downloaded-app.wasm').write_bytes(decoded)
+    (root / 'downloaded-counter.zip').write_bytes(decoded)
     (root / 'websocket-list.json').write_text(json.dumps(listing, indent=2))
     (root / 'websocket-download.json').write_text(json.dumps(download, indent=2))
     missing = rpc('nanoshell.apps.download', {'packageId': '0' * 64})
@@ -163,8 +169,8 @@ try:
       'Authorization': 'Bearer isolated-smoke-token', 'x-openclaw-relay-internal': '1', 'x-yoooclaw-internal-client-label': 'other-phone'})
     with urllib.request.urlopen(req, timeout=10) as r: other = json.load(r)
     assert other['ok'] and other['data']['items'] == []
-    report = {'status': 'passed', 'cliVersion': run([a.cli, '--version']).strip(), 'programBytes': len(wasm),
-      'packageId': package_id, 'prefix': 'NSP1', 'contentType': data['contentType'],
+    report = {'status': 'passed', 'cliVersion': run([a.cli, '--version']).strip(), 'programBytes': len(wasm), 'packageBytes': len(archive),
+      'packageId': package_id, 'format': 'ZIP containing NSP1 program', 'contentType': data['contentType'],
       'checks': ['Chrome gameplay', 'SDK build/release', 'CLI publish/list', 'duplicate publication',
                  'real CLI WebSocket list/download', 'byte equality and SHA-256', 'NSP1 preserved', 'error envelopes', 'client isolation'],
       'scope': 'Cloud machine, actual CLI and Chrome, loopback Relay fixture; production Relay/App/hardware not tested'}

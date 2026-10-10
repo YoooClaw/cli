@@ -30,13 +30,11 @@ func (s *server) handleNanoshellGateway(w http.ResponseWriter, r *http.Request, 
 	case "/gateway/nanoshell.apps.download":
 		var p struct {
 			PackageID string `json:"packageId"`
-			AppID     string `json:"appId"`
-			Version   int    `json:"version"`
 		}
 		if !decodeNanoshellBody(w, r, &p) {
 			return
 		}
-		value, err = store.Download(auth.scope(), p.PackageID, nanoshell.Selector{AppID: p.AppID, Version: p.Version})
+		value, err = store.Download(auth.scope(), p.PackageID)
 	}
 	if err != nil {
 		gatewayErr(w, nanoshell.Code(err), err.Error())
