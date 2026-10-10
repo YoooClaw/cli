@@ -584,4 +584,4 @@ yoooclaw nanoshell list --client phone-a
 yoooclaw nanoshell storage-path
 ```
 
-程序保存在当前 profile 的 `nanoshell/` 目录，与 `notifications/`、`recordings/` 平级。App 经现有 WebSocket 调用 `nanoshell.apps.list` 和 `nanoshell.apps.download`；下载返回整个 ZIP 的 Base64，包 ID 为 ZIP 的 SHA-256。接口、权限和错误处理详见 [App 接口文档](docs/nanoshell-app-websocket-api.md)。
+程序保存在当前 profile 的 `nanoshell/` 目录，与 `notifications/`、`recordings/` 平级。App 经现有 WebSocket 调用 `nanoshell.apps.list` 和 `nanoshell.apps.download`；下载返回完整 app.wasm 的 Base64（保留 NSP1 头），包 ID 为程序文件的 SHA-256。接口、权限和错误处理详见 [App 接口文档](docs/nanoshell-app-websocket-api.md)。

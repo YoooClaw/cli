@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,6 +22,13 @@ import (
 
 func publishNanoshell(t *testing.T, s *server) ([]byte, string) {
 	t.Helper()
+	wasm := append([]byte{0, 97, 115, 109, 1, 0, 0, 0, 0, 0xf5, 0x5f, 0}, make([]byte, 12276)...)
+	program := make([]byte, 16)
+	copy(program, "NSP1")
+	program[4] = 3
+	program[6] = 6
+	binary.LittleEndian.PutUint32(program[8:12], uint32(len(wasm)))
+	program = append(program, wasm...)
 	build := func(comment string) []byte {
 		var b bytes.Buffer
 		z := zip.NewWriter(&b)
@@ -30,8 +38,8 @@ func publishNanoshell(t *testing.T, s *server) ([]byte, string) {
 			b []byte
 		}{
 			{"game.nsp/manifest.json", []byte(`{"id":"com.game","name":"Game","version":1,"entry":"app.wasm"}`)},
-			{"game.nsp/app.wasm", []byte{0, 97, 115, 109, 1, 0, 0, 0}},
-			{"game.nsp/README-INSTALL.txt", bytes.Repeat([]byte("x"), 120*1024)},
+			{"game.nsp/app.wasm", program},
+			{"game.nsp/README-INSTALL.txt", bytes.Repeat([]byte("x"), 100*1024)},
 		} {
 			w, err := z.CreateHeader(&zip.FileHeader{Name: e.n, Method: zip.Store})
 			if err != nil {
@@ -52,7 +60,11 @@ func publishNanoshell(t *testing.T, s *server) ([]byte, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return raw, result.PackageID
+	_, extracted, err := nanoshell.ProgramFromZIP(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return extracted, result.PackageID
 }
 func TestNanoshellGatewayScopeAndErrors(t *testing.T) {
 	srv, ts := newTestServer(t, "")
@@ -138,7 +150,11 @@ func TestNanoshellWebSocketWholePackage(t *testing.T) {
 			return
 		}
 		decoded, e := base64.StdEncoding.DecodeString(data)
-		if e != nil || !bytes.Equal(decoded, raw) || pkg["packageId"] != id || pkg["size"] != float64(nanoshell.MaxPackageBytes) {
+		if pkg["fileName"] != "app.wasm" || pkg["contentType"] != "application/octet-stream" {
+			done <- fmt.Errorf("wrong program type")
+			return
+		}
+		if e != nil || !bytes.Equal(decoded, raw) || pkg["packageId"] != id || pkg["size"] != float64(len(raw)) {
 			done <- fmt.Errorf("whole package mismatch")
 			return
 		}

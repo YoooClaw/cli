@@ -20,7 +20,7 @@ func testZIP(t *testing.T, id string, version int, extra string) []byte {
 	for _, entry := range []struct {
 		name string
 		data []byte
-	}{{"game.nsp/manifest.json", m}, {"game.nsp/app.wasm", []byte{0, 97, 115, 109, 1, 0, 0, 0}}} {
+	}{{"game.nsp/manifest.json", m}, {"game.nsp/app.wasm", []byte{0, 97, 115, 109, 1, 0, 0, 0, 0, 2, 0, byte(version)}}} {
 		w, e := z.Create(entry.name)
 		if e != nil {
 			t.Fatal(e)
@@ -70,8 +70,12 @@ func TestPublishListDownload(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	_, program, err := ProgramFromZIP(b)
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, e := base64.StdEncoding.DecodeString(d.Data)
-	if e != nil || !bytes.Equal(got, b) || digest(got) != d.PackageID || d.Size != len(b) {
+	if e != nil || !bytes.Equal(got, program) || digest(got) != d.PackageID || d.Size != len(program) || d.ContentType != "application/wasm" || d.FileName != "app.wasm" {
 		t.Fatal(d, e)
 	}
 	for _, scope := range []string{"phone-b", "default", "legacy"} {
@@ -89,7 +93,7 @@ func TestPublishListDownload(t *testing.T) {
 	if _, e = s.Download("phone-b", first.PackageID); e != nil {
 		t.Fatal(e)
 	}
-	target := filepath.Join(s.Root, recordID("phone-a", "com.game", 1), "package.zip")
+	target := filepath.Join(s.Root, recordID("phone-a", "com.game", 1), "app.wasm")
 	os.WriteFile(target, []byte("corrupt"), 0600)
 	if _, e = s.Download("phone-a", first.PackageID); Code(e) != "PACKAGE_CORRUPTED" {
 		t.Fatal(e)
@@ -174,6 +178,31 @@ func TestPackageValidation(t *testing.T) {
 	w.Write([]byte("x"))
 	z.Close()
 	if _, _, e := Validate(b.Bytes()); Code(e) != "PACKAGE_CORRUPTED" {
+		t.Fatal(e)
+	}
+}
+
+func TestSameProgramDifferentAppsRequiresSelector(t *testing.T) {
+	s := Store{t.TempDir()}
+	a, e := s.Publish(put(t, testZIP(t, "com.first", 1, "")), "phone")
+	if e != nil {
+		t.Fatal(e)
+	}
+	b, e := s.Publish(put(t, testZIP(t, "com.second", 1, "")), "phone")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if a.PackageID != b.PackageID {
+		t.Fatal("program hash must not depend on manifest")
+	}
+	if _, e = s.Download("phone", a.PackageID); Code(e) != "INVALID_PARAMS" {
+		t.Fatal(e)
+	}
+	d, e := s.Download("phone", a.PackageID, Selector{AppID: "com.second", Version: 1})
+	if e != nil || d.AppID != "com.second" {
+		t.Fatal(d, e)
+	}
+	if _, e = s.Download("other", a.PackageID, Selector{AppID: "com.second", Version: 1}); Code(e) != "PACKAGE_NOT_FOUND" {
 		t.Fatal(e)
 	}
 }

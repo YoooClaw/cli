@@ -13,7 +13,7 @@
 | 方法 | 用途 |
 | --- | --- |
 | `nanoshell.apps.list` | 查询当前用户可访问的已发布程序列表 |
-| `nanoshell.apps.download` | 按安装包 ID 获取完整 ZIP 安装包 |
+| `nanoshell.apps.download` | 按程序 SHA-256 获取完整 `app.wasm` 文件 |
 
 无需单独建立 NanoShell WebSocket 连接。连接地址、认证和目标 CLI 的选择沿用 App 当前接入方式，本文不新增连接参数。
 
@@ -96,11 +96,11 @@
 | --- | --- |
 | `appId` | 稳定的应用标识，例如 `com.example.flappy`；同一应用升级后保持不变 |
 | `version` | 应用版本，正整数；发布更新时递增 |
-| `packageId` | 最终 ZIP 原始字节的 SHA-256，小写、64 位十六进制字符串；标识一个不可变的安装包 |
+| `packageId` | 完整 `app.wasm` 文件字节（包括 NSP1 头）的 SHA-256，小写、64 位十六进制字符串；标识一个不可变的安装包 |
 
-同一个 ZIP 重复发布时 `packageId` 相同；不同字节的 ZIP 使用不同 ID。同一应用的同一版本不允许被替换成另一份包，修订时必须提高 `version`。
+程序字节相同时 `packageId` 相同，不受 ZIP 压缩方式、文件时间或 README 变化影响。同一应用的同一版本不允许被替换成另一份包，修订时必须提高 `version`。
 
-`packageId` 同时用于下载定位、缓存去重和完整性校验，不再增加单独的 MD5。列表、下载响应和实际 ZIP 的哈希必须一致。
+`packageId` 同时用于下载定位、缓存去重和完整性校验，不再增加单独的 MD5。列表、下载响应和实际 `app.wasm` 的哈希必须一致。
 
 相同包 ID 不代表任何用户都可访问。服务端会校验当前连接身份的访问权限，App 无需在请求中传 `userId` 或 `clientLabel`。
 
@@ -157,7 +157,7 @@
 | `items[].name` | string | 展示名称 |
 | `items[].version` | integer | 当前发布版本 |
 | `items[].packageId` | string | 下载和校验使用的完整 SHA-256 |
-| `items[].packageBytes` | integer | ZIP 原始字节数，不是 Base64 字符数，也不是 Wasm 大小 |
+| `items[].packageBytes` | integer | 完整程序文件字节数，包括已有 NSP1 头，不是 ZIP 大小或 Base64 字符数 |
 | `items[].publishedAt` | string | 当前版本首次发布的 UTC 时间，RFC 3339 格式 |
 | `nextCursor` | string | 下一页游标；`""` 表示没有下一页 |
 
@@ -174,6 +174,8 @@
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `packageId` | string | 是 | 列表返回的完整安装包 ID |
+| `appId` | string | 否，建议传 | 列表中的应用 ID；与 version 一起定位对应元数据 |
+| `version` | integer | 否，建议传 | 列表中的版本，指定时必须同时传 appId |
 
 ```json
 {
@@ -181,10 +183,14 @@
   "id": "ns-download-001",
   "method": "nanoshell.apps.download",
   "params": {
+    "appId": "com.example.flappy",
+    "version": 1,
     "packageId": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 ```
+
+相同程序可能被不同应用或版本复用，因此 App 建议同时提交列表中的 `appId`、`version` 和 `packageId`。仅传 `packageId` 时，唯一匹配可正常下载；匹配到多个应用/版本时返回 `INVALID_PARAMS`，不会随机选取元数据。响应结构保持不变。
 
 ### 成功响应
 
@@ -197,11 +203,11 @@
     "appId": "com.example.flappy",
     "version": 1,
     "packageId": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "fileName": "flappy.zip",
-    "contentType": "application/zip",
+    "fileName": "app.wasm",
+    "contentType": "application/octet-stream",
     "encoding": "base64",
     "size": 10240,
-    "data": "此处为ZIP原始字节编码后的完整Base64字符串"
+    "data": "此处为完整app.wasm文件（含NSP1头）的Base64字符串"
   }
 }
 ```
@@ -214,46 +220,27 @@
 | `version` | integer | 安装包版本 |
 | `packageId` | string | 必须等于请求的包 ID，同时作为 SHA-256 校验值 |
 | `fileName` | string | 建议保存名称，仅作展示；不能直接作为不受约束的文件路径 |
-| `contentType` | string | 固定为 `application/zip` |
+| `contentType` | string | 带 NSP1 头时为 `application/octet-stream`；裸 Wasm 为 `application/wasm` |
 | `encoding` | string | 固定为 `base64` |
-| `size` | integer | 解码后 ZIP 的字节数，应与列表中的 `packageBytes` 一致 |
+| `size` | integer | 解码后完整程序文件的字节数，应与列表中的 `packageBytes` 一致 |
 | `data` | string | 标准 Base64，使用 `+`、`/` 和所需的 `=` 填充，无换行，无 `data:` 前缀 |
 
-v1 一次响应返回整个 ZIP，不提供分片、断点续传或下载进度事件。界面可以显示“正在下载”，不能根据此协议显示实时百分比。
+v1 一次响应返回整个 `app.wasm` 文件，不提供分片、断点续传或下载进度事件。界面可以显示“正在下载”，不能根据此协议显示实时百分比。
 
-首版 ZIP 最大为 **128 KiB（131072 字节）**，Base64 最长为 174764 个字符。上线前必须验证 Relay、App 和 CLI 均允许至少 256 KiB 的完整 JSON 消息；本地 WebSocket 转发集成测试已覆盖 128 KiB ZIP；尚未验证线上 Relay 的消息上限。ZIP 传输上限不改变硬件的 Wasm 容量限制。
+当前设备程序上限为裸 Wasm **12288 字节**，带 16 字节 NSP1 头时完整文件为 **12304 字节**；完整程序的 Base64 最长为 16408 个字符。本地 WebSocket 集成测试覆盖带头的最大程序；上线前仍需 App 与线上 Relay 联调。发布命令允许的 ZIP 上限为 128 KiB，与下载数据大小是两个概念。
 
 ### App 校验与保存顺序
 
 1. 检查响应 `id`、`ok`、`encoding`，以及 `packageId` 是否等于所请求的值。
 2. 检查 `size` 和 Base64 长度没有超过约定上限，再解码到临时文件或有界缓冲区。
 3. 验证解码后的字节数等于 `size`，且与列表中的 `packageBytes` 一致。
-4. 对解码后的 ZIP 原始字节计算 SHA-256，转为小写十六进制，必须等于 `packageId`。不要对 Base64 文本计算哈希。
-5. 校验 ZIP 结构和 manifest；其中的应用 ID、版本必须与列表及下载响应一致。
-6. 全部通过后再标记“已下载”，并进入现有硬件安装流程。
+4. 对解码后的完整程序文件计算 SHA-256，转为小写十六进制，必须等于 `packageId`。不要对 Base64 文本计算哈希。
+5. 核对响应中的 `appId`、`version` 与选中列表项一致。文件前 4 字节若为 `NSP1`，保留完整 16 字节头，并核对头中 payload 长度与实际字节一致；不要裁掉头或重新编译。
+6. 全部通过后保存为 `app.wasm`，再进入现有硬件安装流程。App 无需解压 ZIP。
 
-安装包结构：
+云电脑实测的 flappy、flappy-game、fishing、rec3click 四个程序均带 NSP1 头，因此正常下载响应使用 `application/octet-stream`。文件名虽为 `.wasm`，并不代表从第一个字节起就是裸 Wasm。
 
-```text
-flappy.zip
-└── flappy.nsp/
-    ├── manifest.json
-    ├── app.wasm
-    └── README-INSTALL.txt
-```
-
-`README-INSTALL.txt` 为可选说明文件。App 必须读取 manifest，不能根据 `flappy` 目录名推断 `appId`。
-
-```json
-{
-  "id": "com.example.flappy",
-  "name": "小鸟飞行",
-  "version": 1,
-  "entry": "app.wasm"
-}
-```
-
-ZIP 必须仅包含一个 `.nsp` 应用目录，拒绝绝对路径、`..` 路径穿越和符号链接；解压时也要限制文件数量及总大小。测试报告不放在设备安装 ZIP 中。
+应用名称来自列表的 `name`，应用 ID 和版本来自列表/下载响应。如果硬件安装流程还需要 manifest，由 App 使用这些元数据及 `entry: "app.wasm"` 组织；不能把程序文件单独写入任意位置就假定已经安装。硬件安装协议仍待与 App 联调确认。
 
 下载接口只负责将包交给 App。**下载成功不代表已安装到硬件**，App 应分别显示下载、传输、安装结果。向硬件发送哪些文件及使用什么传输协议，沿用硬件安装接口，不属于这两个接口的范围。
 
@@ -298,10 +285,10 @@ ZIP 必须仅包含一个 `.nsp` 应用目录，拒绝绝对路径、`..` 路径
 - 分页、下拉刷新、前台恢复查询正常；并发响应能按请求 ID 正确匹配。
 - 同应用升级后列表显示最新版本；重复发布相同包不增加重复项。
 - 列表选择的 `packageId` 与下载返回内容一致，下载期间发布新版不会换包。
-- 包可解码、长度匹配、SHA-256 匹配、manifest 匹配，能够交给硬件安装流程。
+- 程序可解码、长度匹配、SHA-256 匹配、应用 ID 和版本匹配，能够交给硬件安装流程。
 - 断线、超时、包不存在、无权限和损坏场景不会被当作下载成功。
 - 不同客户端不能查询或下载彼此未授权的包。
-- 128 KiB ZIP 能通过真实 Relay 完整传输；超过约定上限时返回明确错误。
+- 12304 字节、带 NSP1 头的程序能通过真实 Relay 完整传输；超过约定上限时返回明确错误。
 - App 重启后可以重新查询；合法本地缓存可以复用。
 
 ## 9. 联调准备：生成并发布测试包
@@ -318,4 +305,4 @@ yoooclaw --profile default nanoshell list --client phone-a
 
 发布返回应用元数据与 `duplicated`：同客户端、同应用版本、同包重复发布为 `true`；同版本不同包返回 `VERSION_CONFLICT`，需要提升应用版本后重新构建和验收。不同客户端可分别发布同一包，权限相互独立。客户端 label 为 `default` 时也严格按归属隔离。
 
-CLI 随包提供 `nanoshell-app-builder` skill，可用已有 `skills install` 命令安装。程序 ZIP 与 skill ZIP 是不同的文件；下载接口返回程序 ZIP。
+CLI 随包提供 `nanoshell-app-builder` skill，可用已有 `skills install` 命令安装。CLI 发布命令接收程序 ZIP 并提取 `app.wasm` 入库；App 下载接口只返回程序字节，不返回 ZIP、manifest.json 或 README。
