@@ -45,8 +45,9 @@ jobs:
       - name: Build npm distribution (current platform)
         run: scripts/build-go.sh --current
 
+      # release/** 推送由 deploy-test 发「测试环境已发布」通知，这里只覆盖 master 归档。
       - name: Notify Feishu (build complete)
-        if: success() && github.event_name == 'push'
+        if: success() && github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/release/')
         env:
           HOOK: ${{ secrets.FEISHU_WEBHOOK_2 }}
         run: |
@@ -239,3 +240,158 @@ jobs:
           finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
+
+  # ── deploy-test：release/** 推送通过全部校验后，自动发布到测试环境 ─────────
+  # 正式 / beta 发布只由当前 release 分支上的 cli-v* tag 触发（release-cli.yml）；
+  # 合回 master 仅为代码归档，不发任何环境。
+  #
+  # 仓库公开、Actions 日志公开：测试桶名、域名、地域与 AK 全部放在 GitHub
+  # Environment `test` 的 secrets 里（日志自动打码），workflow 里不写任何测试环境值。
+  deploy-test:
+    needs: [verify, windows-installer]
+    # release.sh 的 bump 提交（"cli-<版本>"）只改版本号，紧随其后的 tag 会走生产
+    # 发布，这里跳过，避免同一份代码再发一遍测试环境。
+    if: >-
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/release/') &&
+      !startsWith(github.event.head_commit.message, 'cli-')
+    runs-on: ubuntu-latest
+    environment: test
+    # 测试桶只有一个 latest 标记：跨分支串行，避免旧构建后写覆盖新构建。
+    concurrency:
+      group: cli-test-deploy
+      cancel-in-progress: false
+    env:
+      OSS_PREFIX: cli
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/oss-upload/go.sum
+
+      # 测试版本号：<release 分支版本>-test.<run_number>（分支已是预发布版本时用
+      # .test.<n> 续接）。run_number 单调递增，保证每次推送都是独立、可指定安装的版本，
+      # 且按 SemVer 排在同名正式版之前。分支名不是合法版本号时回退到 package.json。
+      - name: Resolve test version
+        run: |
+          BASE="${GITHUB_REF_NAME#release/}"
+          if ! printf '%s\n' "$BASE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+            BASE="$(node -p "require('./package.json').version")"
+          fi
+          case "$BASE" in
+            *-*) VERSION="${BASE}.test.${GITHUB_RUN_NUMBER}" ;;
+            *)   VERSION="${BASE}-test.${GITHUB_RUN_NUMBER}" ;;
+          esac
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "::notice::测试版本 $VERSION"
+
+      - name: Build native binaries
+        run: |
+          scripts/build-go.sh "$VERSION"
+          cd dist-native
+          sha256sum yoooclaw-* > checksums.txt
+          cat checksums.txt
+
+      - name: Smoke test Linux binary
+        run: |
+          VERSION_OUT="$(./dist-native/yoooclaw-linux-x64 --version)"
+          if [ "$VERSION_OUT" != "$VERSION" ]; then
+            echo "::error::linux native --version 输出 $VERSION_OUT，期望 $VERSION"
+            exit 1
+          fi
+
+      - name: Upload to test OSS
+        timeout-minutes: 40
+        env:
+          OSS_REGION: ${{ secrets.OSS_REGION }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          OSS_PUBLIC_URL: ${{ secrets.OSS_PUBLIC_URL }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          missing=()
+          for key in OSS_REGION OSS_BUCKET OSS_PUBLIC_URL OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET; do
+            [ -n "${!key}" ] || missing+=("$key")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::缺少 test environment secrets: ${missing[*]}"
+            exit 1
+          fi
+          go -C tools/oss-upload run . --test-build --version "$VERSION"
+
+      - name: Notify Feishu (测试环境已发布)
+        if: success()
+        env:
+          HOOK: ${{ secrets.FEISHU_WEBHOOK_2 }}
+          OSS_PUBLIC_URL: ${{ secrets.OSS_PUBLIC_URL }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::warning::FEISHU_WEBHOOK_2 未配置，跳过测试发布通知"
+            exit 0
+          fi
+
+          if [ -n "$BEFORE_SHA" ] &&
+             ! printf '%s' "$BEFORE_SHA" | grep -Eq '^0+$' &&
+             git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            RANGE="${BEFORE_SHA:0:12}..${GITHUB_SHA:0:12}"
+            LOG_ARGS=("${BEFORE_SHA}..${GITHUB_SHA}")
+          else
+            RANGE="最近 20 条"
+            LOG_ARGS=(-20 "$GITHUB_SHA")
+          fi
+          CHANGES=$(git log --no-merges --pretty=format:'%H' "${LOG_ARGS[@]}" | while read -r h; do
+            subj=$(git log -1 --pretty=format:'%s' "$h")
+            if grep -Eq '^(cli-)?[0-9]+\.[0-9]+\.[0-9]+([-.].*)?$' <<< "$subj"; then
+              continue
+            fi
+            printf '• %s\n' "$subj"
+            git log -1 --pretty=format:'%b' "$h" \
+              | grep -v -i -E '^(Co-Authored-By|Signed-off-by|Co-developed-by|Reviewed-by):' \
+              | sed '/^[[:space:]]*$/d' \
+              | sed 's/^/    /'
+          done)
+          [ -z "$CHANGES" ] && CHANGES="（无业务改动）"
+
+          BASE_URL="${OSS_PUBLIC_URL%/}/${OSS_PREFIX}"
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TEXT="🧪 @yoooclaw/cli v${VERSION} 已发布到测试环境
+
+          🌿 分支：${GITHUB_REF_NAME}
+          🔖 Commit：${GITHUB_SHA:0:12}
+
+          📥 macOS / Linux（最新测试构建）：
+          curl -fsSL ${BASE_URL}/install.sh | sh -s -- --force
+
+          📥 macOS / Linux（固定本次版本）：
+          curl -fsSL ${BASE_URL}/install.sh | sh -s -- --version ${VERSION} --force
+
+          📥 Windows PowerShell：
+          & ([scriptblock]::Create((irm '${BASE_URL}/install.ps1'))) -Version ${VERSION} -Force
+
+          📝 改动（${RANGE}）：
+          ${CHANGES}
+
+          🔎 ${RUN_URL}"
+          PAYLOAD=$(jq -nc --arg t "$TEXT" '{msg_type:"text", content:{text:$t}}')
+
+          if ! resp=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$HOOK"); then
+            echo "::warning::Feishu webhook 推送失败（curl 请求错误）"
+            exit 0
+          fi
+          code=$(printf '%s' "$resp" | jq -r '.code // .StatusCode // empty')
+          if [ "$code" != "0" ]; then
+            echo "::warning::Feishu webhook 推送被拒绝（响应: ${resp}）"
+            exit 0
+          fi
+          echo "::notice::Feishu 测试发布通知已送达"

@@ -87,12 +87,14 @@ func TestInstallerUploadKeysSkipLiveOnPrerelease(t *testing.T) {
 		name     string
 		version  string
 		filename string
+		live     bool
 		want     []string
 	}{
 		{
 			name:     "stable refreshes live and archive",
 			version:  "0.10.0",
 			filename: "install-wuying.sh",
+			live:     true,
 			want: []string{
 				"cli/v0.10.0/installer/install-wuying.sh",
 				"cli/install-wuying.sh",
@@ -110,11 +112,21 @@ func TestInstallerUploadKeysSkipLiveOnPrerelease(t *testing.T) {
 			filename: "install.sh",
 			want:     []string{"cli/v0.11.0-beta.1/installer/install.sh"},
 		},
+		{
+			name:     "test build refreshes live even when prerelease",
+			version:  "0.12.3-test.42",
+			filename: "install.sh",
+			live:     true,
+			want: []string{
+				"cli/v0.12.3-test.42/installer/install.sh",
+				"cli/install.sh",
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := installerUploadKeys("cli", tc.version, tc.filename)
+			got := installerUploadKeys("cli", tc.version, tc.filename, tc.live)
 			if len(got) != len(tc.want) {
 				t.Fatalf("installerUploadKeys() = %v, want %v", got, tc.want)
 			}
@@ -139,5 +151,31 @@ func TestIsPrerelease(t *testing.T) {
 		if got := isPrerelease(version); got != want {
 			t.Errorf("isPrerelease(%q) = %v, want %v", version, got, want)
 		}
+	}
+}
+
+func TestValidateTestTarget(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		bucket    string
+		publicURL string
+		wantErr   bool
+	}{
+		{name: "explicit test target", bucket: "example-test", publicURL: "https://test.example.com", wantErr: false},
+		{name: "missing bucket", bucket: "", publicURL: "https://test.example.com", wantErr: true},
+		{name: "missing public URL", bucket: "example-test", publicURL: " ", wantErr: true},
+		{name: "production bucket", bucket: defaultBucket, publicURL: "https://test.example.com", wantErr: true},
+		{name: "production URL with trailing slash", bucket: "example-test", publicURL: defaultPublicURL + "/", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateTestTarget(tc.bucket, tc.publicURL)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateTestTarget(%q, %q) error = %v, wantErr %v", tc.bucket, tc.publicURL, err, tc.wantErr)
+			}
+		})
 	}
 }
