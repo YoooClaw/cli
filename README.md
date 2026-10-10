@@ -575,3 +575,15 @@ All release artifacts are generated from the Go source via `scripts/build-go.sh`
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### NanoShell hardware screen apps
+
+The bundled `nanoshell-app-builder` skill builds and tests device apps. After user preview approval, publish the installation ZIP to a configured API-key client:
+
+```bash
+yoooclaw nanoshell publish --package /absolute/path/game.zip --client phone-a
+yoooclaw nanoshell list --client phone-a
+yoooclaw nanoshell storage-path
+```
+
+Packages live in the active profile's `nanoshell/` directory beside `notifications/` and `recordings/`. The existing WebSocket RPC transport exposes `nanoshell.apps.list` and `nanoshell.apps.download`; downloads return the complete app.wasm as Base64 (preserving any NSP1 header), identified by the program file’s SHA-256. See the [App API contract](docs/nanoshell-app-websocket-api.md).

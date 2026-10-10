@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NanoShell Web Preview</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="preview.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>NanoShell Web Preview</h1>
+      <p class="sub">与真机同一套 <strong>wasm + ns ABI</strong>，分辨率 <strong>240×120</strong>。
+        真机两键：<strong>OK</strong>（语音）/ <strong>BACK</strong>（电源）。</p>
+    </header>
+
+    <div id="isoBanner" class="iso-banner" hidden></div>
+
+    <section class="stage">
+      <canvas id="screen" width="240" height="120" aria-label="240x120 device screen"></canvas>
+      <div id="keyFlash" class="key-flash" aria-live="polite"></div>
+      <div id="drop" class="drop">
+        <p>拖入 <strong>app.wasm</strong>（与 SD 包相同）</p>
+        <p class="hint">Enter / 点 OK = 确认 · Esc = 返回 · 按住 OK = 长按</p>
+        <input id="file" type="file" accept=".wasm,application/wasm" hidden />
+      </div>
+    </section>
+
+    <section class="catalog" aria-label="demo catalog">
+      <h2>可运行应用（wasm）</h2>
+      <p class="cat-hint">必须用 <code>python3 tools/web-preview/serve.py</code> 打开本页，按键才能进游戏。</p>
+      <div id="demoList" class="demo-list">加载中…</div>
+    </section>
+
+    <section class="bar">
+      <button type="button" id="btnStop" disabled>停止</button>
+      <span id="status" class="status">就绪</span>
+    </section>
+
+    <section class="keys" aria-label="device keys">
+      <button type="button" data-key="5" class="key-ok">OK 按住</button>
+      <button type="button" data-key="6" class="key-back">BACK</button>
+    </section>
+
+    <section id="hardware" class="hardware" aria-label="硬件模拟">
+      <h2>硬件模拟</h2>
+      <p class="cat-hint">跟随应用展示灯光与振动。这里不会控制真实硬件。</p>
+      <div class="hardware-grid">
+        <div class="hardware-card"><h3>RGB 灯组</h3><div class="leds" aria-label="三组 RGB 灯"><i class="sim-led"></i><i class="sim-led"></i><i class="sim-led"></i></div><p id="ledStatus">灯光关闭</p></div>
+        <div class="hardware-card"><h3>振动马达</h3><span id="motorIndicator" aria-hidden="true">≈</span><p id="motorStatus">马达停止</p></div>
+      </div>
+      <div class="hardware-grid" style="margin-top:12px"><div class="hardware-card"><h3>录音模拟 · 不采集麦克风</h3><p id="recorderStatus">未录音 · 0.0 秒</p></div><div class="hardware-card"><h3>屏幕状态</h3><p id="displayStatus">亮屏 · 亮度 200/255</p></div></div>
+      <div class="hardware-card battery-row"><label for="battery">电量 <output id="batteryValue">87%</output></label><input id="battery" type="range" min="0" max="100" value="87"><label for="charge">充电状态</label><select id="charge"><option value="0">未充电</option><option value="1">充电中</option><option value="2">已充满</option></select></div>
+      <details><summary>模拟手机通知</summary><div class="hardware-fields"><label>标题<input id="notifyTitle" value="新消息" maxlength="198"></label><label>正文<input id="notifyBody" placeholder="输入通知内容" maxlength="198"></label><button id="sendNotify" type="button">发送通知</button></div></details>
+      <details><summary>模拟蓝牙数据</summary><div class="hardware-fields"><label class="inline-label"><input id="bleConnected" type="checkbox" checked>手机已连接（模拟）</label><label>手机 → 应用（十六进制）<input id="bleInput" placeholder="例如 01 ff 20" maxlength="540"></label><button id="sendBle" type="button">发送数据</button><label>应用 → 手机<output id="bleOutput">暂无数据</output></label></div></details>
+      <p id="hardwareFeedback" role="status" class="cat-hint"></p>
+      <details><summary>调用记录</summary><pre id="hardwareLog">等待应用调用</pre></details>
+    </section>
+
+    <footer>
+      <p><code>python3 tools/web-preview/serve.py</code> →
+        <code>以启动日志中的地址为准</code>（请使用自带的预览服务）</p>
+    </footer>
+  </main>
+  <script type="module" src="preview.js"></script>
+</body>
+</html>

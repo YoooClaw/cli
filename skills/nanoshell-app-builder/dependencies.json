@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "wasi_sdk": {
+    "version": "34.0",
+    "platforms": {
+      "linux-x86_64": {
+        "archive": "wasi-sdk-34.0-x86_64-linux.tar.gz",
+        "sha256": "b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4",
+        "urls": [
+          "https://yoooclaw-artifacts.oss-cn-hangzhou.aliyuncs.com/sdk/wasi-sdk-34.0-x86_64-linux.tar.gz",
+          "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz"
+        ]
+      },
+      "linux-aarch64": {
+        "archive": "wasi-sdk-34.0-arm64-linux.tar.gz",
+        "sha256": "f7e243dff54d60bcc576e94d6166b69f410f2500ae4a9ceef34315be10e77971",
+        "urls": [
+          "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-arm64-linux.tar.gz"
+        ]
+      },
+      "darwin-arm64": {
+        "archive": "wasi-sdk-34.0-arm64-macos.tar.gz",
+        "sha256": "9c59398106b417f8f14913380fdf0097a8cc0ff4af9eb3ce0065a859e88d49e9",
+        "urls": [
+          "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-arm64-macos.tar.gz"
+        ]
+      },
+      "darwin-x86_64": {
+        "archive": "wasi-sdk-34.0-x86_64-macos.tar.gz",
+        "sha256": "87d27fa8adc68dee59bfbf2e22a6d34ef717c34d6bf1d8af2a56fc929d9ce0eb",
+        "urls": [
+          "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-macos.tar.gz"
+        ]
+      }
+    }
+  },
+  "playwright": {
+    "version": "1.64.0"
+  }
+}
