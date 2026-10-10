@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -22,7 +23,6 @@ import (
 
 const MaxPackageBytes = 128 * 1024
 const MaxExpandedBytes = 256 * 1024
-const MaxProgramBytes = 12288 + 16
 
 var hashRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var appRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -83,7 +83,7 @@ type Store struct{ Root string }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 func recordID(label, app string, version int) string {
-	return digest([]byte(fmt.Sprintf("%s\x00%s\x00%d", label, app, version)))
+	return "zip-" + digest([]byte(fmt.Sprintf("%s\x00%s\x00%d", label, app, version)))
 }
 
 // readRegular never reads an unbounded or symlinked input.
@@ -208,7 +208,8 @@ func (s Store) records(scope string) ([]record, error) {
 		if strings.HasPrefix(e.Name(), ".publish-") {
 			continue
 		}
-		if !hashRE.MatchString(e.Name()) || !e.IsDir() {
+		// Legacy program-only records remain untouched and are not advertised as ZIPs.
+		if !strings.HasPrefix(e.Name(), "zip-") || !hashRE.MatchString(strings.TrimPrefix(e.Name(), "zip-")) || !e.IsDir() {
 			continue
 		}
 		raw, err := readRegular(filepath.Join(s.Root, e.Name(), "metadata.json"), 16384)
@@ -235,11 +236,11 @@ func (s Store) Publish(file, label string) (PublishResult, error) {
 	if err != nil {
 		return result, err
 	}
-	m, program, err := ProgramFromZIP(raw)
+	m, name, err := Validate(raw)
 	if err != nil {
 		return result, err
 	}
-	r := record{Item: Item{m.ID, m.Name, m.Version, digest(program), len(program), time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z")}, ClientLabel: label, FileName: "app.wasm"}
+	r := record{Item: Item{m.ID, m.Name, m.Version, digest(raw), len(raw), time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z")}, ClientLabel: label, FileName: name}
 	if err = os.MkdirAll(s.Root, 0700); err != nil {
 		return result, fail("STORAGE_UNAVAILABLE", "cannot create package store")
 	}
@@ -250,10 +251,10 @@ func (s Store) Publish(file, label string) (PublishResult, error) {
 		if e != nil || json.Unmarshal(b, &old) != nil {
 			return result, fail("STORAGE_UNAVAILABLE", "cannot read published version")
 		}
-		if old.PackageID != r.PackageID || old.Name != r.Name {
+		if old.PackageID != r.PackageID {
 			return result, fail("VERSION_CONFLICT", "this app version already has a different package; increase version")
 		}
-		b, e = readRegular(filepath.Join(dest, "app.wasm"), MaxProgramBytes)
+		b, e = readRegular(filepath.Join(dest, "package.zip"), MaxPackageBytes)
 		if e != nil || digest(b) != old.PackageID {
 			return result, fail("PACKAGE_CORRUPTED", "published package is corrupted")
 		}
@@ -270,7 +271,7 @@ func (s Store) Publish(file, label string) (PublishResult, error) {
 	}
 	defer os.RemoveAll(stage)
 	meta, _ := json.Marshal(r)
-	if err = os.WriteFile(filepath.Join(stage, "app.wasm"), program, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(stage, "package.zip"), raw, 0600); err != nil {
 		return result, err
 	}
 	if err = os.WriteFile(filepath.Join(stage, "metadata.json"), meta, 0600); err != nil {
@@ -338,85 +339,37 @@ func (s Store) List(scope string, limit int, token string) (ListResult, error) {
 	}
 	return result, nil
 }
-
-// Selector identifies metadata when distinct apps/versions share identical program bytes.
-type Selector struct {
-	AppID   string
-	Version int
-}
-
-func (s Store) Download(scope, id string, selectors ...Selector) (DownloadResult, error) {
+func (s Store) Download(scope, id string) (DownloadResult, error) {
 	var out DownloadResult
 	if !hashRE.MatchString(id) {
 		return out, fail("INVALID_PARAMS", "packageId must be a lowercase SHA-256")
-	}
-	sel := Selector{}
-	if len(selectors) > 0 {
-		sel = selectors[0]
-	}
-	if sel.AppID != "" && !appRE.MatchString(sel.AppID) || sel.Version < 0 || sel.Version > 0 && sel.AppID == "" {
-		return out, fail("INVALID_PARAMS", "invalid appId/version selector")
 	}
 	records, err := s.records(scope)
 	if err != nil {
 		return out, err
 	}
-	matches := []record{}
 	for _, r := range records {
-		if r.PackageID == id && (sel.AppID == "" || r.AppID == sel.AppID) && (sel.Version == 0 || r.Version == sel.Version) {
-			matches = append(matches, r)
+		if r.PackageID != id {
+			continue
 		}
-	}
-	if len(matches) == 0 {
-		return out, fail("PACKAGE_NOT_FOUND", "program not found")
-	}
-	r := matches[0]
-	for _, other := range matches[1:] {
-		if other.AppID != r.AppID || other.Version != r.Version {
-			return out, fail("INVALID_PARAMS", "identical program used by multiple apps or versions; provide appId and version from list")
+		b, e := readRegular(filepath.Join(s.Root, recordID(r.ClientLabel, r.AppID, r.Version), "package.zip"), MaxPackageBytes)
+		if e != nil {
+			if Code(e) == "PACKAGE_TOO_LARGE" {
+				return out, e
+			}
+			return out, fail("PACKAGE_CORRUPTED", "published package is missing or unreadable")
 		}
-	}
-	b, e := readRegular(filepath.Join(s.Root, recordID(r.ClientLabel, r.AppID, r.Version), "app.wasm"), MaxProgramBytes)
-	if e != nil {
-		if Code(e) == "PACKAGE_TOO_LARGE" {
+		if len(b) != r.PackageBytes || digest(b) != id {
+			return out, fail("PACKAGE_CORRUPTED", "package checksum mismatch")
+		}
+		m, _, e := Validate(b)
+		if e != nil {
 			return out, e
 		}
-		return out, fail("PACKAGE_CORRUPTED", "published program missing or unreadable; republish legacy ZIP records")
-	}
-	if len(b) != r.PackageBytes || digest(b) != id {
-		return out, fail("PACKAGE_CORRUPTED", "program checksum mismatch")
-	}
-	contentType := "application/wasm"
-	if bytes.HasPrefix(b, []byte("NSP1")) {
-		contentType = "application/octet-stream"
-	}
-	return DownloadResult{r.AppID, r.Version, id, "app.wasm", contentType, "base64", len(b), base64.StdEncoding.EncodeToString(b)}, nil
-}
-
-// ProgramFromZIP validates the publication archive and returns the complete device
-// file, including any NSP1 header. ZIP container bytes never enter the App response.
-func ProgramFromZIP(raw []byte) (Manifest, []byte, error) {
-	m, _, err := Validate(raw)
-	if err != nil {
-		return m, nil, err
-	}
-	z, _ := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
-	for _, f := range z.File {
-		if strings.HasSuffix(f.Name, "/app.wasm") {
-			r, e := f.Open()
-			if e != nil {
-				return m, nil, e
-			}
-			defer r.Close()
-			b, e := io.ReadAll(io.LimitReader(r, MaxProgramBytes+1))
-			if e != nil {
-				return m, nil, e
-			}
-			if len(b) > MaxProgramBytes {
-				return m, nil, fail("PACKAGE_TOO_LARGE", "program exceeds device limit")
-			}
-			return m, b, nil
+		if m.ID != r.AppID || m.Version != r.Version {
+			return out, fail("PACKAGE_CORRUPTED", "package metadata mismatch")
 		}
+		return DownloadResult{r.AppID, r.Version, id, path.Base(r.FileName), "application/zip", "base64", len(b), base64.StdEncoding.EncodeToString(b)}, nil
 	}
-	return m, nil, fail("PACKAGE_CORRUPTED", "missing app.wasm")
+	return out, fail("PACKAGE_NOT_FOUND", "package not found")
 }

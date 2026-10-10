@@ -30,8 +30,8 @@ yoooclaw --profile "$PROFILE" nanoshell publish --package "$PROJECT/release/$NAM
 
 存储位置默认是 `~/.yoooclaw/profiles/<profile>/nanoshell/`，与 `notifications/`、`recordings/` 平级；遵循 `YOOOCLAW_HOME` 与 profile 配置，不写死 home 路径。目标客户端必须是已有 API-key 的 label，沿用当前会话确定的客户端；无法唯一确定时先询问，不猜测归属、不广播发布。缺少支持该命令的 CLI 时说明尚未完成 App 发布，不伪称 App 已可下载。
 
-发布成功后记录 `appId`、`version`、`packageId`；App 使用 `nanoshell.apps.list` 和 `nanoshell.apps.download` 获取完整程序文件的 Base64。CLI 校验 ZIP 后提取完整 `app.wasm` 入库，程序文件 SHA-256 即 packageId（与发布 ZIP 的 `.sha256` 不同）；同一应用同一版本、相同名称及程序的重复发布幂等，不同程序或名称会被拒绝。更新时保持稳定 `--id`，在 `pipeline.py build` 指定递增的 `--version`，再重新验收和试玩。
+发布成功后记录 `appId`、`version`、`packageId`；App 使用 `nanoshell.apps.list` 和 `nanoshell.apps.download` 获取该包。包哈希即 packageId，同一包重复发布幂等；同一应用同一版本的不同包会被拒绝。更新时保持稳定 `--id`，在 `pipeline.py build` 指定递增的 `--version`，再重新验收和试玩。
 
 发布 ZIP 只含一个 `.nsp` 目录，使用固定时间戳、权限和文件顺序；验收报告留在 `qa/`，不嵌入 ZIP。下载成功与硬件安装成功是两个状态。CLI 必须在线，且 App 连接到相同目标 CLI 和账号。
 
-App 下载不返回 ZIP。云电脑产物带 NSP1 头，CLI 完整保留，返回 `fileName: app.wasm` 和 `contentType: application/octet-stream`；裸 Wasm 才使用 `application/wasm`。不要剥离 NSP1 头。不同应用/版本若复用同一程序，下载请求同时指定列表里的 appId 和 version。
+从程序直传测试版升级后，需用项目中原始 `release/<name>.zip` 重新 publish。旧的程序 SHA-256 不再用作下载包 ID，App 必须刷新列表。旧存储记录保留，CLI 不会把旧 app.wasm 冒充 ZIP 返回。
