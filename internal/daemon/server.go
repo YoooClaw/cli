@@ -39,7 +39,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"notifications", "recordings", "images", "lightrules", "multi-apikey", "transfer", "nanoshell-apps"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -385,6 +385,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleIngest(w, r, authCtx, "notifications")
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
+	case (path == "/gateway/nanoshell.apps.list" || path == "/gateway/nanoshell.apps.download") && r.Method == http.MethodPost:
+		s.handleNanoshellGateway(w, r, authCtx)
 	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
 		s.handleRecordingGateway(w, r, authCtx, path)
 	case path == "/images" && r.Method == http.MethodPost:

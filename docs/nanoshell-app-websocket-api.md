@@ -1,10 +1,10 @@
 # NanoShell 程序列表与安装包下载接口
 
-版本：v1 草案
+版本：v1
 
 面向：YoooClaw App 开发者
 
-状态：协议设计待实现，当前 CLI 尚未提供以下两个方法；示例用于约定格式，不是可下载的真实数据。
+状态：CLI 功能分支已实现这两个方法；尚待 App 与线上 Relay 联调。示例用于约定格式，不是可下载的真实数据。
 
 ## 1. 接入方式
 
@@ -70,7 +70,7 @@
 
 ### 与现有接口的格式关系
 
-本草案复用 CLI 已有的 `req/res` RPC 格式，App 成功响应的数据入口为 **`payload`**。
+本接口复用 CLI 已有的 `req/res` RPC 格式，App 成功响应的数据入口为 **`payload`**。
 
 | 项目 | 现有 RPC | 本文约定 |
 | --- | --- | --- |
@@ -85,8 +85,8 @@
 以下属于本次新增业务约定，并非现有所有接口共用的格式：
 
 - 现有 `recordings.list` 返回 `{total, recordings}`，没有游标分页；本文返回 `{items, nextCursor}`。两者外层 RPC 相同，但 App 需要独立的程序列表数据模型，不应直接复用录音列表模型。
-- `packageId`、整包 Base64、分页游标和包大小限制均为本草案新增。
-- 通用的 `INVALID_PARAMS`、`INTERNAL_ERROR` 沿用已有命名；`PACKAGE_*`、`INVALID_CURSOR` 等为本草案新增业务错误码，App 需增加对应处理。
+- `packageId`、整包 Base64、分页游标和包大小限制均为本接口新增。
+- 通用的 `INVALID_PARAMS`、`INTERNAL_ERROR` 沿用已有命名；`PACKAGE_*`、`INVALID_CURSOR` 等为本接口新增业务错误码，App 需增加对应处理。
 
 以上已按 CLI 的 `internal/relay/types.go`、`internal/relay/dispatcher.go`、`internal/daemon/server_light.go` 和 `internal/daemon/server_ingest.go` 核对；尚未核对 App 客户端源码或真实 Relay 联调结果。
 
@@ -221,7 +221,7 @@
 
 v1 一次响应返回整个 ZIP，不提供分片、断点续传或下载进度事件。界面可以显示“正在下载”，不能根据此协议显示实时百分比。
 
-建议首版约定 ZIP 最大为 **128 KiB（131072 字节）**，Base64 最长为 174764 个字符。上线前必须验证 Relay、App 和 CLI 均允许至少 256 KiB 的完整 JSON 消息；这个传输上限目前是草案约定，不是已经验证的线上能力。ZIP 传输上限不改变硬件的 Wasm 容量限制。
+首版 ZIP 最大为 **128 KiB（131072 字节）**，Base64 最长为 174764 个字符。上线前必须验证 Relay、App 和 CLI 均允许至少 256 KiB 的完整 JSON 消息；本地 WebSocket 转发集成测试已覆盖 128 KiB ZIP；尚未验证线上 Relay 的消息上限。ZIP 传输上限不改变硬件的 Wasm 容量限制。
 
 ### App 校验与保存顺序
 
@@ -303,3 +303,19 @@ ZIP 必须仅包含一个 `.nsp` 应用目录，拒绝绝对路径、`..` 路径
 - 不同客户端不能查询或下载彼此未授权的包。
 - 128 KiB ZIP 能通过真实 Relay 完整传输；超过约定上限时返回明确错误。
 - App 重启后可以重新查询；合法本地缓存可以复用。
+
+## 9. 联调准备：生成并发布测试包
+
+CLI 版本需要包含 `nanoshell` 命令。发布仅通过本机命令执行，App 只有本文的两个只读接口。
+
+```bash
+yoooclaw --profile default nanoshell storage-path
+yoooclaw --profile default nanoshell publish --package /absolute/path/flappy.zip --client phone-a
+yoooclaw --profile default nanoshell list --client phone-a
+```
+
+`phone-a` 替换为已有 API-key 的客户端 label。默认存储目录是 `~/.yoooclaw/profiles/default/nanoshell/`，与通知、录音同级，支持已有的 `YOOOCLAW_HOME` 与 profile 设置。CLI 复制包后原项目可移动；不要手工写入该目录。发布需要在 Agent 完成验收且用户认可后执行，CLI 包校验本身不代表用户授权或真机验收。
+
+发布返回应用元数据与 `duplicated`：同客户端、同应用版本、同包重复发布为 `true`；同版本不同包返回 `VERSION_CONFLICT`，需要提升应用版本后重新构建和验收。不同客户端可分别发布同一包，权限相互独立。客户端 label 为 `default` 时也严格按归属隔离。
+
+CLI 随包提供 `nanoshell-app-builder` skill，可用已有 `skills install` 命令安装。程序 ZIP 与 skill ZIP 是不同的文件；下载接口返回程序 ZIP。

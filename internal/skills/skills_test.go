@@ -63,6 +63,7 @@ func TestList(t *testing.T) {
 		t.Errorf("skills should be sorted: %v", names)
 	}
 	want := []string{
+		"nanoshell-app-builder",
 		"yoooclaw-context-query",
 		"yoooclaw-data-transfer",
 		"yoooclaw-light",

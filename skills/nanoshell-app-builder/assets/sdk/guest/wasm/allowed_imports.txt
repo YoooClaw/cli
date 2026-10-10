@@ -1,0 +1,81 @@
+# NanoShell Wasm3 allowed imports (module "ns")
+# Micropixel-style allowlist — keep Guest link surface tiny.
+#
+# Core
+heartbeat
+should_exit
+exit
+delay_ms
+poll_key
+now_ms
+cap_has
+#
+# Draw (immediate + aliases)
+clear
+present
+fill_rect
+fill_round_rect
+fill_circle
+draw_clear
+draw_present
+draw_rect
+draw_round_rect
+draw_circle
+draw_line
+draw_sprite
+draw_text
+draw_text_id
+draw_text_font
+asset_info
+text_measure
+random_u32
+kv_set
+kv_get
+kv_remove
+launch_arg_count
+launch_arg_get
+#
+# UI
+ui_label_create
+ui_button_create
+ui_delete
+ui_set_text_id
+ui_set_pos
+ui_set_size
+ui_set_visible
+ui_set_fg
+ui_set_bg
+ui_hit_test
+ui_pointer
+#
+# Timer / Event
+timer_create
+timer_cancel
+timer_restart
+event_poll
+#
+# Platform (optional)
+rec_get_state
+rec_is_starting
+rec_start
+rec_stop
+rec_pause
+rec_resume
+rec_elapsed_ms
+rec_filename
+rec_add_marker
+screen_is_on
+screen_on
+screen_off
+screen_brightness_get
+screen_brightness_set
+sys_battery
+sys_charge
+ble_send
+ble_recv
+led_effect
+led_off
+vibe
+vibe_pulse
+vibe_stop
+notify_recv

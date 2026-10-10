@@ -1,0 +1,134 @@
+{
+  "sourceCommit": "fa33d9dbff17d86c8e28a55430faa45dc275123f",
+  "profile": "AiNote NanoShell 240x120; ns ABI v1; raw Wasm <=12288 bytes; linear memory <=8192 bytes; guest stack 3072 bytes",
+  "notes": "sourceCommit identifies the upstream base, not a byte-identical checkout. files hashes the shipped bytes; provenance distinguishes upstream, adapted and local-only files. Preview loads dist/*.nsp directly.",
+  "provenance": {
+    "guest/sdk/ns_guest.h": {
+      "kind": "upstream",
+      "upstreamSha256": "dc2be035f388b272480cd1bf9ba2c742893f691e4c4955c9c7fa26145da9dd89"
+    },
+    "guest/sdk/README.md": {
+      "kind": "adapted",
+      "upstreamSha256": "4c69da60b9fa5de80e4e2563beaea6015fb016d334afbc5b5843176d270af931"
+    },
+    "guest/wasm/ns_abi.h": {
+      "kind": "upstream",
+      "upstreamSha256": "5fdb5b331fcaec8838f01f45a2ad1aa216f83c34c715225f1b943ad1f5bbbe0c"
+    },
+    "guest/wasm/minic.c": {
+      "kind": "upstream",
+      "upstreamSha256": "15678da630af0dec6271abcec46066c3376b1e1c2c78f968965c103814c70e65"
+    },
+    "guest/wasm/allowed_imports.txt": {
+      "kind": "upstream",
+      "upstreamSha256": "37b65a8885e87ca42acd0c08324213f73f27aab71e80131561f067ca31c40e62"
+    },
+    "guest/wasm/hello_tiny.c": {
+      "kind": "adapted",
+      "upstreamSha256": "a23453e7c3355050c8ee78c821921ec0b0d736e8e0b96c9eb15a99bcdc40155f"
+    },
+    "guest/wasm/hop.c": {
+      "kind": "upstream",
+      "upstreamSha256": "22a6251484060f043d461af3f9e83a16ce84822cfe292905521685a3ee73b85c"
+    },
+    "guest/wasm/counter.c": {
+      "kind": "upstream",
+      "upstreamSha256": "929180454ca720e10ac40b25ea4018f360e151e4943aab43bd1ae95d88389e4a"
+    },
+    "guest/wasm/snake.c": {
+      "kind": "upstream",
+      "upstreamSha256": "9cc78c7c2e3d92c418808546e8c78fa2edfcd9f133c47916a722a4a6bb6914db"
+    },
+    "guest/wasm/chrono.c": {
+      "kind": "upstream",
+      "upstreamSha256": "623a9d8e591d4d51852099ff49743ba0a5fbe30c8cf3b168e2cbe826f10278d1"
+    },
+    "guest/wasm/pulse.c": {
+      "kind": "upstream",
+      "upstreamSha256": "f9bd9bc72e2e6b0f45e70e15acac65fc4cfc3d611bfb0d03fe4d14b52f6a93c3"
+    },
+    "guest/wasm/quake.c": {
+      "kind": "upstream",
+      "upstreamSha256": "a0d3cf7de8a0698ef49065366b094467feccc5999b845b9b8456fa47dfcc15c1"
+    },
+    "host/include/nanoshell/wasm_limits.h": {
+      "kind": "upstream",
+      "upstreamSha256": "b0b23885071dc0193088483ec66a8303d87449a7cc7a76c784afa3bd0bca87d1"
+    },
+    "docs/guest-capabilities.md": {
+      "kind": "upstream",
+      "upstreamSha256": "82788c34bcc6a2f0eb8c8c2c213249defb421f5778ca969a6c456b06df1c13d0"
+    },
+    "docs/host-api-v1.md": {
+      "kind": "upstream",
+      "upstreamSha256": "ca34cc058b7457f9d87e15efd32f38599d4fed864a121616faf965938c29de18"
+    },
+    "docs/design-notes.md": {
+      "kind": "upstream",
+      "upstreamSha256": "30b3a356d19aaae2e1b6fdfbe53ea938e489daf306018d1dfc40be08f4cd83cd"
+    },
+    "docs/guest-app-guide.md": {
+      "kind": "adapted",
+      "upstreamSha256": "1632b35e91a2fa139391fb1530c200af5efc4badc28e8b0b8a556c2b1adb1da0"
+    },
+    "tools/pack_nsp.py": {
+      "kind": "upstream",
+      "upstreamSha256": "50639b3a415cd4e36b4804bf657cfcacd48c64c4fbff24edaa2a49deb4a1fbbc"
+    },
+    "tools/web-preview/serve.py": {
+      "kind": "adapted",
+      "upstreamSha256": "8ed2c96cac3a2ac3b131d1f12f69cc47a278dc77991d9ef4a3c8241b88ce5ab2"
+    },
+    "tools/web-preview/index.html": {
+      "kind": "adapted",
+      "upstreamSha256": "ac6982d9ad07a8f012d1266d88a415cb54dc0b8898d364343392d718a60a273f"
+    },
+    "tools/web-preview/hardware.js": {
+      "kind": "local-only",
+      "upstreamSha256": null
+    },
+    "tools/web-preview/hardware-worker.js": {
+      "kind": "local-only",
+      "upstreamSha256": null
+    },
+    "tools/web-preview/preview.css": {
+      "kind": "adapted",
+      "upstreamSha256": "467845186c9aa3e5de660fc1e3e6959b78b96da50752f9104245bbed1e10d107"
+    },
+    "tools/web-preview/preview.js": {
+      "kind": "adapted",
+      "upstreamSha256": "89ec11e547ec34f3fc80e3fd1d3ad78e4f8693aa3e8729c84f1b8890089c7241"
+    },
+    "tools/web-preview/ns-worker.js": {
+      "kind": "adapted",
+      "upstreamSha256": "54fca9a3d9050d174bc3ce27421c8bb4d715ff14c35c0ee968f33cb382d5e807"
+    }
+  },
+  "files": {
+    "guest/sdk/ns_guest.h": "dc2be035f388b272480cd1bf9ba2c742893f691e4c4955c9c7fa26145da9dd89",
+    "guest/sdk/README.md": "5847a4345f10d440e019e43245920256b49efad1c42492d253655460c0ee778a",
+    "guest/wasm/ns_abi.h": "5fdb5b331fcaec8838f01f45a2ad1aa216f83c34c715225f1b943ad1f5bbbe0c",
+    "guest/wasm/minic.c": "15678da630af0dec6271abcec46066c3376b1e1c2c78f968965c103814c70e65",
+    "guest/wasm/allowed_imports.txt": "37b65a8885e87ca42acd0c08324213f73f27aab71e80131561f067ca31c40e62",
+    "guest/wasm/hello_tiny.c": "0e8275a1b2bb3ef6c5236881afd953ffab421f105d9bc3079326c64247cafac2",
+    "guest/wasm/hop.c": "22a6251484060f043d461af3f9e83a16ce84822cfe292905521685a3ee73b85c",
+    "guest/wasm/counter.c": "929180454ca720e10ac40b25ea4018f360e151e4943aab43bd1ae95d88389e4a",
+    "guest/wasm/snake.c": "9cc78c7c2e3d92c418808546e8c78fa2edfcd9f133c47916a722a4a6bb6914db",
+    "guest/wasm/chrono.c": "623a9d8e591d4d51852099ff49743ba0a5fbe30c8cf3b168e2cbe826f10278d1",
+    "guest/wasm/pulse.c": "f9bd9bc72e2e6b0f45e70e15acac65fc4cfc3d611bfb0d03fe4d14b52f6a93c3",
+    "guest/wasm/quake.c": "a0d3cf7de8a0698ef49065366b094467feccc5999b845b9b8456fa47dfcc15c1",
+    "host/include/nanoshell/wasm_limits.h": "b0b23885071dc0193088483ec66a8303d87449a7cc7a76c784afa3bd0bca87d1",
+    "docs/guest-capabilities.md": "82788c34bcc6a2f0eb8c8c2c213249defb421f5778ca969a6c456b06df1c13d0",
+    "docs/host-api-v1.md": "ca34cc058b7457f9d87e15efd32f38599d4fed864a121616faf965938c29de18",
+    "docs/design-notes.md": "30b3a356d19aaae2e1b6fdfbe53ea938e489daf306018d1dfc40be08f4cd83cd",
+    "docs/guest-app-guide.md": "21d5507ae5f0b7be017c58ca35c23b585fadff10bb82d17e8064627e6231f17d",
+    "tools/pack_nsp.py": "50639b3a415cd4e36b4804bf657cfcacd48c64c4fbff24edaa2a49deb4a1fbbc",
+    "tools/web-preview/serve.py": "64f6b189ddeb73f1ffc9ba416376c3131966ec28d936d54884f80cd9c0155285",
+    "tools/web-preview/index.html": "be78cf031664e1dd75555f604b65043642227a92e98cba54b27d36dd2f539767",
+    "tools/web-preview/hardware.js": "d18a243bd2044033dd4c3970da3300110b1f5c567dfcc06cf697633cb666897f",
+    "tools/web-preview/hardware-worker.js": "b2a4fee55ee1835f8e66e57637f8017cbfba7723dac0ea750046ff8e84f1b577",
+    "tools/web-preview/preview.css": "5a2a7a2bf1f0d4d01c58a9bd95615324dc68074daccbd771f8507004e83615fb",
+    "tools/web-preview/preview.js": "982445dcdfdd06e02f2fed25f458a4746d1ec8d86a74639b3e05a9dc7d52f590",
+    "tools/web-preview/ns-worker.js": "2d2fb28b64431aba6d17dc8b9e94b750e3affe0cf046f7b818288424c40b3383"
+  }
+}
