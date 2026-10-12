@@ -194,12 +194,12 @@ func (c *Client) request(ctx context.Context, id Identity, path string, body map
 	return nil
 }
 
-var versionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta\.(0|[1-9][0-9]*))?$`)
+var versionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(alpha|beta)\.(0|[1-9][0-9]*))?$`)
 
 func Compare(a, b string) (int, error) {
 	pa, pb := versionPattern.FindStringSubmatch(a), versionPattern.FindStringSubmatch(b)
 	if pa == nil || pb == nil {
-		return 0, fail("INVALID_VERSION", "仅支持 x.y.z 或 x.y.z-beta.N 版本")
+		return 0, fail("INVALID_VERSION", "仅支持 x.y.z、x.y.z-alpha.N 或 x.y.z-beta.N 版本")
 	}
 	cmp := func(x, y string) int {
 		if len(x) < len(y) {
@@ -216,7 +216,7 @@ func Compare(a, b string) (int, error) {
 		}
 	}
 	if pa[4] == pb[4] {
-		return 0, nil
+		return cmp(pa[5], pb[5]), nil
 	}
 	if pa[4] == "" {
 		return 1, nil
@@ -224,7 +224,7 @@ func Compare(a, b string) (int, error) {
 	if pb[4] == "" {
 		return -1, nil
 	}
-	return cmp(pa[4], pb[4]), nil
+	return strings.Compare(pa[4], pb[4]), nil
 }
 func (c *Client) Check(ctx context.Context, id Identity, target string) (*Artifact, error) {
 	if _, err := Compare(id.CurrentVersion, id.CurrentVersion); err != nil {

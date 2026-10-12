@@ -58,15 +58,45 @@ func TestCheckRejectsWrongVersionAndMalformedOffer(t *testing.T) {
 		})
 	}
 }
-func TestSemverBetaOrdering(t *testing.T) {
-	for _, pair := range [][2]string{{"0.12.0-beta.9", "0.12.0-beta.10"}, {"0.12.0-beta.10", "0.12.0"}, {"0.12.0", "0.13.0-beta.0"}} {
-		v, err := Compare(pair[0], pair[1])
-		if err != nil || v >= 0 {
-			t.Fatalf("%v: %d %v", pair, v, err)
+func TestSemverPrereleaseOrdering(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"0.13.0-alpha.421", "0.13.0-alpha.422"},
+		{"0.13.0-alpha.9", "0.13.0-alpha.10"},
+		{"0.13.0-alpha.999", "0.13.0-beta.0"},
+		{"0.13.0-beta.9", "0.13.0-beta.10"},
+		{"0.13.0-beta.10", "0.13.0"},
+		{"0.13.0", "0.13.1-alpha.0"},
+	} {
+		for _, direction := range []int{1, -1} {
+			a, b := pair[0], pair[1]
+			if direction < 0 {
+				a, b = b, a
+			}
+			v, err := Compare(a, b)
+			if err != nil || v*direction >= 0 {
+				t.Fatalf("%s vs %s: %d %v", a, b, v, err)
+			}
+		}
+		v, err := Compare(pair[0], pair[0])
+		if err != nil || v != 0 {
+			t.Fatalf("same version: %d %v", v, err)
 		}
 	}
-	if _, err := Compare("dev", "0.12.0"); err == nil {
-		t.Fatal("accepted dev")
+	for _, version := range []string{"dev", "0.13.0-alpha", "0.13.0-alpha.01", "0.13.0-test.1", "0.13.0-rc.1"} {
+		if _, err := Compare(version, "0.13.0"); err == nil {
+			t.Fatalf("accepted %s", version)
+		}
+	}
+}
+
+func TestCheckAlphaOffer(t *testing.T) {
+	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"success":true,"code":"000000","data":{"updateAvailable":true,"targetVersion":"0.13.0-alpha.422","downloadUrl":"https://example.com/cli","fileSize":3,"fileHash":"`+Hash([]byte("abc"))+`"}}`)
+	})
+	id.CurrentVersion = "0.13.0-alpha.421"
+	offer, err := c.Check(context.Background(), id, "")
+	if err != nil || offer == nil || offer.TargetVersion != "0.13.0-alpha.422" {
+		t.Fatalf("offer=%v err=%v", offer, err)
 	}
 }
 func TestDownloadChecksBytesWithoutCredentialHeader(t *testing.T) {
