@@ -34,6 +34,12 @@ func (s *Scheduler) Tick(ctx context.Context, id Identity, c *Client, now time.T
 		}
 		s.Candidate = candidate
 	}
+	// The new daemon or installer may confirm activation after we loaded the cooldown.
+	if now.Before(s.RetryAfter) {
+		if _, err := os.Stat(filepath.Join(id.Directory(), "install-cooldown.json")); os.IsNotExist(err) {
+			s.RetryAfter = time.Time{}
+		}
+	}
 	if !enabled || !idle || s.Candidate == nil || now.Before(s.RetryAfter) || ctx.Err() != nil {
 		return nil
 	}

@@ -200,3 +200,33 @@ func TestPersistentDeviceIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestSchedulerSeesActivationClearCooldown(t *testing.T) {
+	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "code": "000000", "data": map[string]any{"updateAvailable": true, "targetVersion": "0.14.0", "downloadUrl": "https://example.test/cli", "fileSize": 3, "fileHash": Hash([]byte("abc"))}})
+	})
+	now := time.Now()
+	if err := fsutil.WriteJSON(filepath.Join(id.Directory(), "install-cooldown.json"), now.Add(4*time.Hour), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Scheduler{}
+	launches := 0
+	launch := func(Artifact) error { launches++; return nil }
+	if err := s.Tick(context.Background(), id, c, now, true, true, launch); err != nil {
+		t.Fatal(err)
+	}
+	if launches != 0 {
+		t.Fatal("ignored pending cooldown")
+	}
+	nextCheck := s.NextCheck
+	Activated(Attempt{Identity: id, UpdateID: ID(), Artifact: Artifact{TargetVersion: id.CurrentVersion}})
+	if err := s.Tick(context.Background(), id, c, now.Add(time.Minute), true, true, launch); err != nil {
+		t.Fatal(err)
+	}
+	if launches != 1 {
+		t.Fatal("cached cooldown blocked next update")
+	}
+	if !s.NextCheck.Equal(nextCheck) {
+		t.Fatal("activation changed four-hour check interval")
+	}
+}

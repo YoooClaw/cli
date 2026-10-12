@@ -406,6 +406,10 @@ func Run(ctx context.Context, c *Client, a Attempt, h Hooks) (runErr error) {
 	return nil
 }
 func Activated(a Attempt) {
+	// Only confirmed activation ends the installation cooldown.
+	if err := os.Remove(filepath.Join(a.Identity.Directory(), "install-cooldown.json")); err != nil && !os.IsNotExist(err) {
+		return
+	}
 	e := EventFor(a, "activate", "succeeded", nil)
 	e.ReportID = a.UpdateID + "-activate"
 	e.RunningVersion = a.Artifact.TargetVersion

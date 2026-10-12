@@ -1,6 +1,6 @@
 # 独立 CLI 环境切换与灰度更新实施计划
 
-日期：2026-10-08。负责人：杨学鑫。状态：本地实现及自动化验证已完成，尚未发布；测试区真实升级联调待完成。
+更新日期：2026-10-12。负责人：杨学鑫。状态：CLI 本地自测与 macOS arm64 测试区真实升级主链路联调完成，测试版已发布至 alpha.425；生产未发布。冷却清理修复已通过本地验证，本次随 PR 提交并安排下一 alpha 测试发布；真实升级回归待完成。
 
 ## 已有文档与本期范围
 
@@ -143,7 +143,7 @@ yc env switch development
 
 ### 制品协议：CLI 自动识别平台，服务端匹配单个制品
 
-2026-10-09 按服务端最新确认，系统与架构合并为一个 `platform` 字段，服务端返回匹配 URL，不采用统一版本清单。该约定取代此前两个字段的方案；部署状态仍需联调确认。软件仓库接口说明已整理为 `projects/plugin-rollout/contracts/contracts.md`。
+2026-10-09 按服务端最新确认，系统与架构合并为一个 `platform` 字段，服务端返回匹配 URL，不采用统一版本清单。该约定取代此前两个字段的方案；2026-10-12 已完成 macos-arm64 真实制品匹配联调。软件仓库接口说明已整理为 `projects/plugin-rollout/contracts/contracts.md`。
 
 - CLI `component=CLI`，每次常规检查、下载前和安装前复查均传单个 `platform`，如 `linux-x64`、`linux-arm64`、`macos-arm64`、`windows-x64`，不再发送独立 `arch`。
 - 组合值为 `<系统>-<架构>`；系统为 macos/linux/windows，架构为 arm64/x64。Go darwin 转 macos，amd64 转 x64。模拟运行时按当前可执行文件构建目标选择，不自行迁移架构。
@@ -157,16 +157,16 @@ yc env switch development
 
 - 已实现环境 show/switch、实际主机环境展示、CLI 接管控制锁、请求和录音后台任务忙碌检查。
 - 已实现带组合 platform 的灰度检查、默认 Key 鉴权、beta 数字比较、精确版本复查，以及单制品大小/SHA-256/运行版本校验。复查刷新下载 URL，但不能改变已选制品哈希或大小。
-- 已实现四小时检查、三十秒空闲复查、十分钟无业务请求门槛、失败冷却四小时。自动安装使用既有 `autoUpdate.enabled`，默认开启；仅在 daemon 启动时读取，修改后需重启生效，保留检查/上报及手动安装。二次开发前建议关闭，避免官方版本覆盖自定义构建。不使用 autoUpdate.channel 绕过服务端资格。
+- 已实现四小时检查、三十秒空闲复查、十分钟无业务请求门槛、安装前写入四小时冷却，安装失败或尚未确认生效时保留；新版确认生效后清除，调度器同步释放已缓存的冷却。不改变四小时检查间隔。自动安装使用既有 `autoUpdate.enabled`，默认开启；仅在 daemon 启动时读取，修改后需重启生效，保留检查/上报及手动安装。二次开发前建议关闭，避免官方版本覆盖自定义构建。不使用 autoUpdate.channel 绕过服务端资格。
 - 已实现独立更新进程、安装互斥、替换失败回滚、保留自启方式、离线安装后的生效交接，以及 Claude skill 刷新。保留无影安装器写入 skill 的固定路径配置。
 - 独立原生安装必须经新版官方脚本登记。Hermes 内置路径、npm 路径、进程显式 CLI override，以及 Hermes 主目录 .env 明确引用同一二进制时不替换。Hermes 自定义包装程序或其他配置中间接引用不属于自动识别范围。
 - 已实现脱敏后本地队列、七天/二百条边界、五十条/64 KiB 批次、心跳二十四小时、updateId 关联最终结果和有限重试。阶段日志从安装开始写盘；运行时及 worker 负责补报。
 - 官方安装脚本在已有 CLI 支持上报时使用其临时副本记录阶段，失败时不依赖正在被替换的主程序。首次安装或旧版本不支持上报时不能报告早期阶段；Wuying 外层接管步骤未单独接入阶段报告。官方显式安装不伪装成灰度授权尝试，不提交灰度最终结果接口。
 - 接管控制锁只协调本期 CLI 命令；Hermes 未改用这把锁，不能宣称解决全部跨进程接管竞态。现有 Relay/写者锁仍为运行时归属依据。
 
-### 本次本地验证记录
+### 2026-10-10 本地验证记录（历史快照）
 
-- 分支：`feat/0.13.0-environment-rollout`，2026-10-10 从远端 `release/0.13.0`（4359217）建立；该 release 包含最新远端 master（9201fbe）。原 `feat/cli-environment-rollout` 的本地修改已迁入，代码未提交、未推送。
+- 分支：`feat/0.13.0-environment-rollout`，2026-10-10 从远端 `release/0.13.0`（4359217）建立；该 release 包含最新远端 master（9201fbe）。原 `feat/cli-environment-rollout` 的本地修改已迁入，当时尚未提交、推送；后续测试发布记录见下文。
 - `go test ./...` 通过；update、skills、daemon、recording 的 `-race` 检查通过。
 - Linux amd64、Windows amd64 交叉编译通过；不代表 Windows 安装/重启实机验证通过。
 - 在临时 YOOOCLAW_HOME 中验证三环境切换；真实 OS 文件锁模拟 Hermes 占用时拒绝切换且配置与凭证不变。
@@ -203,4 +203,30 @@ CI 测试发布生成 0.13.0-alpha.<run_number>，上传五种原生二进制并
 
 测试区实测旧 CLI 的 32 位 `deviceId` 导致更新日志接口返回 HTTP 200、`accepted: 0, rejected: 1`；仅替换为 64 位 SHA-256 后返回 `accepted: 1, rejected: 0`。HTTP 成功不等于事件被接收。灰度最终结果接口当时已接收，静默升级本身成功。
 
-本次统一设备标识格式，并兼容本地仍保留的旧队列和更新交接记录。已经被服务端拒收且从本地队列移除的事件无法通过本次修复自动恢复。修复当前仅在源码中，已安装的 alpha.423 需升级后才会使用新格式。测试覆盖新标识生成与持久化、32 位迁移、64 位保留、损坏标识拒绝，以及旧队列与最终结果使用相同标识并保留关联 ID。
+本次统一设备标识格式，并兼容本地仍保留的旧队列和更新交接记录。已经被服务端拒收且从本地队列移除的事件无法通过本次修复自动恢复。修复已随 alpha.424 发布，alpha.424 → alpha.425 的 14 条阶段事件已在 SLS 核对通过。测试覆盖新标识生成与持久化、32 位迁移、64 位保留、损坏标识拒绝，以及旧队列与最终结果使用相同标识并保留关联 ID。
+
+## 五、2026-10-12 CLI 自测与测试区联调结论
+
+**结论：CLI 本期主链路自测与测试区联调完成。** 实测平台为 macOS arm64，测试环境 `openclaw-service-test.yoooclaw.com`，组件 `CLI`、检查参数 `platform=macos-arm64`。不代表所有平台及生产验证完成。
+
+| 验证项 | 结果与证据 |
+|---|---|
+| 测试鉴权、精确制品下发 | 使用具备 CLI 权限的测试凭证后成功；此前 000019 阻塞解除，Key 不写入文档 |
+| CI 上传及灰度草稿 | alpha.424 / releaseId=10，alpha.425 / releaseId=11；两次 verify、Windows 安装脚本验证、deploy-test 全部通过；五平台制品上传，固定测试 latest 已更新。流水线仅登记草稿，平台控制发布 |
+| 真实静默更新 | alpha.422 → alpha.423：15:57:41 开始，15:57:48 新 daemon 启动，Relay 恢复，最终结果接收成功；updateId=`e8c02a906fcc0e94a5b02924faccf671`。此时阶段日志因旧 32 位 deviceId 被拒收，不能用该轮证明日志完整 |
+| 修复版安装 | 16:32 本机官方脚本安装 alpha.424，保留测试环境和 CLI owner，Relay 正常；设备标识迁移为 64 位。安装脚本恢复 daemon 时启用了登录自启 |
+| 修复后真实手动更新 | `yoooclaw update install --version 0.13.0-alpha.425`，16:58:27.538874 至 16:58:35.118529，约 7.58 秒；运行版本与 Relay 正常，最终结果首次发送即被接收 |
+| SLS 阶段完整性 | updateId=`b532008bd34e62c04873959424d41de0`；CSV `12d730-3d43e4be37e148f17b8a21ca75271b39.csv` 共 14 条事件，gate/download/verify/prepare/apply/restart/activate 均有 started、succeeded；14 个不同 reportId，无失败事件，客户端 ts 顺序正常 |
+| 新版生效语义 | activate started：runningVersion=.424、installedVersion=.425；activate succeeded：两者均为 .425。所有事件使用同一 64 位 deviceId，userId/serviceVersion 有值，env 为 macos/arm64/cli/native；CSV 未发现明文 API Key |
+| Claude skills | 静默升级 alpha.423 时刷新；普通脚本安装 alpha.424 未刷新，但 8 个 skills、30 个文件与内置内容一致；手动灰度升级 alpha.425 时 16:58:35 自动刷新 |
+| 自动化验证 | deviceId 修复：`go test ./...` 通过；相关 update/cli 测试、update 竞态及 vet 通过；alpha.424、alpha.425 CI 全部通过 |
+
+发布证据：[alpha.424 CI](https://github.com/YoooClaw/cli/actions/runs/38223481996)、[alpha.425 CI](https://github.com/YoooClaw/cli/actions/runs/38224218755)。对应发布提交为 `5631346`、`d9e956b`，设备标识修复提交 `04aa101`。
+
+### 调度结论与后续边界
+
+- 10 分钟是安装的空闲门槛，不是检查周期。后台启动约一分钟后首查，此后每四小时检查；平台发布不会立即推送触发本地检查，手动检查也不会更新后台候选缓存。
+- alpha.425 仍保留成功安装后的四小时冷却。现已在本地改为确认新版生效后清理磁盘及缓存冷却，失败或未生效保留；update/cli 测试、update 竞态与 vet 通过，本次随 PR 提交并安排下一 alpha 测试发布；尚未完成该修复的真实升级回归。
+- 修复 deviceId 后的完整日志通过手动更新验证；静默更新和日志修复分别有实测证据，尚未完成修复版之间的静默升级 SLS 全链路复验。
+- Linux/macOS x64 的真实安装、Windows 用户环境下静默重启、录音离线补传及 Hermes 并行隔离仍需专项验证；Windows CI 安装脚本通过不等同于这些场景通过。
+- 历史被拒收并删除的事件不能自动补回。本次确认成功日志入库，不代表所有失败类型均完成真实故障注入。

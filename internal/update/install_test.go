@@ -74,6 +74,10 @@ func TestRealBinaryReplacementAndOfflineActivation(t *testing.T) {
 	}
 	a := Attempt{Identity: id, UpdateID: ID(), Trigger: "cli", Target: target, OldHash: Hash(old), CreatedAt: time.Now(), Artifact: Artifact{TargetVersion: "0.13.0", DownloadURL: serverURL + "/binary", FileHash: Hash(binary), FileSize: int64(len(binary))}}
 	_ = fsutil.WriteJSON(JobPath(a), a, 0600)
+	cooldownPath := filepath.Join(id.Directory(), "install-cooldown.json")
+	if err := fsutil.WriteJSON(cooldownPath, time.Now().Add(4*time.Hour), 0600); err != nil {
+		t.Fatal(err)
+	}
 	starts := 0
 	skills := 0
 	err := Run(context.Background(), c, a, Hooks{Inspect: func() (Runtime, error) { return Runtime{}, nil }, Stop: func() error { t.Fatal("stopped offline daemon"); return nil }, Start: func() error { starts++; return nil }, Skills: func() error { skills++; return nil }})
@@ -91,8 +95,15 @@ func TestRealBinaryReplacementAndOfflineActivation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(id.Directory(), a.UpdateID+".result.json")); !os.IsNotExist(err) {
 		t.Fatal("offline install reported activated")
 	}
+	ConfirmPending(id, target) // The old running version cannot confirm activation.
+	if _, err := os.Stat(cooldownPath); err != nil {
+		t.Fatal("unconfirmed install lost cooldown", err)
+	}
 	id.CurrentVersion = "0.13.0"
 	ConfirmPending(id, target)
+	if _, err := os.Stat(cooldownPath); !os.IsNotExist(err) {
+		t.Fatal("activated install retained cooldown", err)
+	}
 	saved, _ = ReadAttempt(JobPath(a))
 	if saved.Ready {
 		t.Fatal("activation record not retired")
@@ -163,6 +174,10 @@ func TestWorkerBusyRevocationAndRestartResults(t *testing.T) {
 			}
 			a := Attempt{Identity: id, UpdateID: ID(), Trigger: "silent", Target: target, OldHash: Hash(old), CreatedAt: time.Now(), Artifact: Artifact{TargetVersion: "0.13.0", DownloadURL: serverURL + "/binary", FileHash: Hash(binary), FileSize: int64(len(binary))}}
 			_ = fsutil.WriteJSON(JobPath(a), a, 0600)
+			cooldownPath := filepath.Join(id.Directory(), "install-cooldown.json")
+			if err := fsutil.WriteJSON(cooldownPath, time.Now().Add(4*time.Hour), 0600); err != nil {
+				t.Fatal(err)
+			}
 			stopped, started := 0, 0
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
@@ -184,6 +199,14 @@ func TestWorkerBusyRevocationAndRestartResults(t *testing.T) {
 				},
 				Skills: func() error { return nil },
 			})
+			_, cooldownErr := os.Stat(cooldownPath)
+			if scenario == "activated" {
+				if !os.IsNotExist(cooldownErr) {
+					t.Fatal("success retained cooldown", cooldownErr)
+				}
+			} else if cooldownErr != nil {
+				t.Fatal("unconfirmed update lost cooldown", cooldownErr)
+			}
 			hash, _ := fileHash(target)
 			if scenario == "busy" || scenario == "revoked" {
 				if stopped != 0 || started != 0 || hash != Hash(old) {
