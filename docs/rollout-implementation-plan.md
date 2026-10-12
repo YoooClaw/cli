@@ -189,3 +189,10 @@ yc env switch development
 CI 测试发布生成 0.13.0-alpha.<run_number>，上传五种原生二进制并同步旧测试入口，然后用 test environment Secret 登记 CLI 草稿。平台键为 macos-arm64/macos-x64/linux-arm64/linux-x64/windows-x64，URL 指向原生二进制。后端计算大小和哈希；流水线不激活草稿。登记失败不自动重试创建。
 
 本地 go test ./...、go test -race -coverprofile、go vet ./...、OSS 上传工具测试、登记脚本 3 项测试及 YAML/alpha 版本生成验证通过。总覆盖率 68.1%，门禁 55%。用户确认服务端已支持 alpha；真实平台登记仍以本次流水线结果为准。客户端测试区鉴权此前仍返回 000019，发布成功不代表客户端已完成更新联调。
+
+#### 本次真实发布结果
+
+- 测试分支 release/0.13.0-alpha.0，代码 aa59976；GitHub CI run 38213396350，版本 0.13.0-alpha.421。
+- verify（含竞态、覆盖率、登记脚本）与 Windows 安装验证通过；五种平台二进制上传成功，固定测试入口和 latest 已更新。
+- 灰度登记失败：OTA00004。对相同请求读取完整业务响应，确认为“CLI平台不在允许的白名单中”。待测试区 cli-platforms 补齐 macos-arm64/macos-x64/linux-arm64/linux-x64/windows-x64 后，使用本次制品重试登记，不重新构建，不虚报草稿已创建。
+- 未安装到本机正式路径，未切换 Hermes owner，未触发生产发布。流水线整体失败仅代表最后登记步骤未完成；不能将 OSS 可下载等同于灰度可用。
