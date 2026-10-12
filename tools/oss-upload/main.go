@@ -3,7 +3,7 @@
 // 用法（在仓库任意目录下）：
 //
 //	go -C tools/oss-upload run . [--version 0.6.0] [--only install|artifacts] [--dry-run]
-//	go -C tools/oss-upload run . --test-build --version 0.12.3-test.42
+//	go -C tools/oss-upload run . --test-build --version 0.12.3-alpha.42
 //
 // 环境变量（可放 .env，进程环境优先）：
 //
@@ -34,7 +34,7 @@
 // 默认安装路径永远解析到最新正式版，装 beta 必须显式指定版本号。
 //
 // --test-build 用于 release/** 分支推送后的测试环境发布：版本号由 CI 生成
-// （<目标版本>-test.<run>，不要求等于 package.json），并且无论是否预发布都刷新
+// （<目标版本>-alpha.<run>，不要求等于 package.json），并且无论是否预发布都刷新
 // live 安装脚本与 latest 标记，让测试桶里的一键安装始终指向最新测试构建。
 // 该模式必须显式给出 OSS_BUCKET / OSS_PUBLIC_URL，且不能是正式环境默认值。
 package main

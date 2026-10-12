@@ -125,7 +125,7 @@ curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
 
 Current CLI releases accept `claude` and `codex` for `--skill`. The value is passed directly to the CLI Skill adapter, so the installer will not need a workflow change when a DeepSeek Harness adapter is added. `--env` accepts `development`, `test`, or `production`; it defaults to `PHONE_NOTIFICATIONS_ENV`, then `production`, and is persisted in the profile for systemd-launched daemons. The live script installs the CLI release that shipped it by default — always a stable one, since prereleases never overwrite the live scripts or the `latest` marker — and also accepts `--version` (the only way to install a prerelease), `--dir`, `--profile`, and `--modify-path`. It never prints the API key and writes it through stdin to the shared `0600` credentials file; reference an environment variable as above to keep the plaintext value out of shell history.
 
-> `yoooclaw update self` gives you the right upgrade command for your installation source and OS (npm → `npm update -g`, native → `install.sh` / `install.ps1`).
+> `yc update check` (`yc update self` is an alias) checks account eligibility through the rollout service. `yc update install` starts a detached installer. An API key is required.
 
 ### Quickstart (Human Users)
 
@@ -575,3 +575,42 @@ All release artifacts are generated from the Go source via `scripts/build-go.sh`
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Switch cloud environment
+
+```bash
+yc env show
+yc env switch test       # production / test / development
+```
+
+This updates the selected shared profile without changing API keys or taking
+ownership from Hermes. A running Hermes owner blocks this command. A running
+CLI daemon must support the activity check; requests and background recording
+downloads defer the switch. An offline profile is saved without starting a daemon.
+Conflicting environment overrides and custom Relay URLs are not silently replaced.
+CLI and Hermes still inherit the shared environment when ownership changes.
+
+### Rollout updates (new in this branch; unreleased)
+
+```sh
+yc update check
+yc update install
+yc update install --version 0.13.0
+```
+
+Standalone daemons check after about one minute and then every four hours. Background installation waits for ten minutes without business requests and no active requests or recording downloads; eligibility and activity are checked again before replacement. Disabling `autoUpdate.enabled` retains checks, reporting and manual installation but disables background installation. Restart the daemon after changing this setting.
+
+Only standalone binaries registered by the official native installer are replaced. Hermes embedded/shared binaries and npm installations are excluded. Updates retain environment, credentials and autostart settings. Claude skills are refreshed when detected, retaining Wuying command bindings. Manual installation works with an offline daemon and still requires rollout eligibility.
+
+`started` means the installer was launched, not that the new version is active. Activation requires a running, connected new daemon; offline installs await its next startup. Phase logs and terminal results share an `updateId`; queues retry for up to seven days and redact errors before persistence. Official scripts report phases when the existing CLI supports reporting; a first install or older CLI cannot report those earlier phases.
+
+### Disable automatic updates for custom builds
+
+Before modifying the source or using a custom build, disable automatic updates to prevent an official release from replacing it. Run these commands for the profile you use:
+
+```sh
+yc config set autoUpdate.enabled false
+yc daemon restart
+```
+
+The setting is read at daemon startup, without periodic reloading. If the daemon is stopped, the next start picks it up. Add `--profile <name>` for a non-default profile. To restore automatic updates, set it to `true` and restart the daemon.

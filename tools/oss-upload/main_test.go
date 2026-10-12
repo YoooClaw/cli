@@ -114,11 +114,11 @@ func TestInstallerUploadKeysSkipLiveOnPrerelease(t *testing.T) {
 		},
 		{
 			name:     "test build refreshes live even when prerelease",
-			version:  "0.12.3-test.42",
+			version:  "0.12.3-alpha.42",
 			filename: "install.sh",
 			live:     true,
 			want: []string{
-				"cli/v0.12.3-test.42/installer/install.sh",
+				"cli/v0.12.3-alpha.42/installer/install.sh",
 				"cli/install.sh",
 			},
 		},
