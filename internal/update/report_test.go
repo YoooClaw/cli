@@ -84,3 +84,50 @@ func TestCommandFailureRedactsBeforeReturning(t *testing.T) {
 		t.Fatal("diagnostic was leaked or lost")
 	}
 }
+
+func TestLegacyQueueUsesCanonicalDeviceID(t *testing.T) {
+	old := strings.Repeat("a", 32)
+	reportID, updateID := ID(), ID()
+	calls := 0
+	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path == ReportPath {
+			var body struct {
+				Events []Event `json:"events"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Events) != 1 {
+				t.Errorf("invalid events: %v", err)
+				w.WriteHeader(400)
+				return
+			}
+			e := body.Events[0]
+			if e.DeviceID != Hash([]byte(old)) || e.ReportID != reportID || e.UpdateID != updateID {
+				t.Error("queue identity changed incorrectly")
+			}
+			_, _ = w.Write([]byte(`{"accepted":1,"rejected":0}`))
+		} else {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["deviceId"] != Hash([]byte(old)) || body["updateId"] != updateID {
+				t.Error(body)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"code":"000000","data":true}`))
+		}
+	})
+	id.DeviceID = old
+	a := Attempt{Identity: id, UpdateID: updateID, Artifact: Artifact{TargetVersion: "0.13.0"}}
+	e := EventFor(a, "activate", "succeeded", nil)
+	if e.DeviceID != Hash([]byte(old)) {
+		t.Fatal("old attempt not normalized")
+	}
+	e.DeviceID = old
+	e.ReportID = reportID
+	if err := fsutil.WriteJSON(filepath.Join(id.Directory(), reportID+".event.json"), e, 0600); err != nil {
+		t.Fatal(err)
+	}
+	Final(a, nil)
+	Flush(context.Background(), c, id)
+	if calls != 2 || len(readEvents(id.Directory())) != 0 {
+		t.Fatalf("calls=%d", calls)
+	}
+}

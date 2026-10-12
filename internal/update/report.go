@@ -76,7 +76,7 @@ func ErrorCode(err error) string {
 }
 func EventFor(a Attempt, stage, result string, err error) Event {
 	id := a.Identity
-	e := Event{ReportID: ID(), UpdateID: a.UpdateID, DeviceID: id.DeviceID, Trigger: a.Trigger, Stage: stage, Result: result, From: id.CurrentVersion, To: a.Artifact.TargetVersion, RunningVersion: id.CurrentVersion, Env: map[string]string{"platform": id.Platform, "arch": id.Arch, "clawKind": "cli", "installProtocol": "native"}, TS: time.Now().UTC()}
+	e := Event{ReportID: ID(), UpdateID: a.UpdateID, DeviceID: canonicalDeviceID(id.DeviceID), Trigger: a.Trigger, Stage: stage, Result: result, From: id.CurrentVersion, To: a.Artifact.TargetVersion, RunningVersion: id.CurrentVersion, Env: map[string]string{"platform": id.Platform, "arch": id.Arch, "clawKind": "cli", "installProtocol": "native"}, TS: time.Now().UTC()}
 	if err != nil {
 		e.ErrorCode = ErrorCode(err)
 		e.ErrorMessage = safe(err.Error())
@@ -162,6 +162,7 @@ func flushEvents(ctx context.Context, c *Client, id Identity) {
 	batch := []Event{}
 	var raw []byte
 	for _, e := range events[:min(50, len(events))] {
+		e.DeviceID = canonicalDeviceID(e.DeviceID)
 		next := append(append([]Event{}, batch...), e)
 		b, _ := json.Marshal(map[string]any{"apiKey": key, "events": next})
 		if len(b) > 64<<10 {

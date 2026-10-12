@@ -3,11 +3,15 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/paths"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,7 +20,7 @@ func fixture(t *testing.T, handler http.HandlerFunc) (Identity, *Client) {
 	t.Helper()
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
-	id := Identity{BaseURL: server.URL, KeyHash: Hash([]byte("fixture")), DeviceID: ID(), CurrentVersion: "0.12.0", Platform: "macos", Arch: "arm64", Profile: "default", Root: t.TempDir()}
+	id := Identity{BaseURL: server.URL, KeyHash: Hash([]byte("fixture")), DeviceID: Hash([]byte(ID())), CurrentVersion: "0.12.0", Platform: "macos", Arch: "arm64", Profile: "default", Root: t.TempDir()}
 	return id, &Client{HTTP: server.Client(), Key: func() (string, error) { return "fixture", nil }}
 }
 func TestCheckPlatformExactVersionAndAuthentication(t *testing.T) {
@@ -142,5 +146,57 @@ func TestSchedulerBusyAndFourHourCooldown(t *testing.T) {
 	_ = restarted.Tick(context.Background(), id, c, now.Add(3*time.Minute), true, true, launch)
 	if launches != 1 {
 		t.Fatal("restart reset install cooldown")
+	}
+}
+
+func TestPersistentDeviceIdentity(t *testing.T) {
+	for _, stored := range []string{"", strings.Repeat("a", 32), strings.Repeat("b", 64), strings.Repeat("z", 32)} {
+		t.Run(stored, func(t *testing.T) {
+			t.Setenv("YOOOCLAW_HOME", t.TempDir())
+			if err := fsutil.WriteJSON(paths.SharedCredentialsPath(), map[string]string{"apiKey": "fixture"}, 0600); err != nil {
+				t.Fatal(err)
+			}
+			p := paths.For("default")
+			if err := config.Save(p, config.Default(p.Credentials)); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(paths.RootDir(), "update", "device-id")
+			if stored != "" {
+				if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(file, []byte(stored), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id, err := NewIdentity(p)
+			if strings.Contains(stored, "z") {
+				if err == nil {
+					t.Fatal("accepted corrupt ID")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !deviceIDPattern.MatchString(id.DeviceID) {
+				t.Fatal(id.DeviceID)
+			}
+			want := stored
+			if len(stored) == 32 {
+				want = Hash([]byte(stored))
+			}
+			if stored != "" && id.DeviceID != want {
+				t.Fatal("unstable migration")
+			}
+			again, err := NewIdentity(p)
+			if err != nil || again.DeviceID != id.DeviceID {
+				t.Fatalf("restart changed identity: %v", err)
+			}
+			raw, _ := os.ReadFile(file)
+			if string(raw) != id.DeviceID {
+				t.Fatal("identity not persisted")
+			}
+		})
 	}
 }

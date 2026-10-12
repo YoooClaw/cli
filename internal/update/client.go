@@ -73,6 +73,18 @@ func Platform(goos, goarch string) (string, string, error) {
 	}
 	return platform, arch, nil
 }
+
+var legacyDeviceIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+var deviceIDPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+// Preserve a deterministic mapping for queued events and attempts from older builds.
+func canonicalDeviceID(id string) string {
+	if legacyDeviceIDPattern.MatchString(id) {
+		return Hash([]byte(id))
+	}
+	return id
+}
+
 func NewIdentity(p paths.Paths) (Identity, error) {
 	cfg, err := config.Load(p)
 	if err != nil {
@@ -99,16 +111,23 @@ func NewIdentity(p paths.Paths) (Identity, error) {
 	idPath := filepath.Join(dir, "device-id")
 	raw, err := os.ReadFile(idPath)
 	if os.IsNotExist(err) {
-		raw = []byte(ID())
+		raw = []byte(Hash([]byte(ID())))
 		err = fsutil.WriteAtomic(idPath, raw, 0600)
 	}
 	if err != nil {
 		return Identity{}, err
 	}
-	if len(strings.TrimSpace(string(raw))) != 32 {
+	stored := strings.TrimSpace(string(raw))
+	deviceID := canonicalDeviceID(stored)
+	if !deviceIDPattern.MatchString(deviceID) {
 		return Identity{}, fail("INVALID_IDENTITY", "更新设备标识损坏")
 	}
-	return Identity{"https://" + config.ResolveCloudHost(cfg), Hash([]byte(key)), strings.TrimSpace(string(raw)), version.Version, platform, arch, p.Profile, root}, nil
+	if deviceID != stored {
+		if err := fsutil.WriteAtomic(idPath, []byte(deviceID), 0600); err != nil {
+			return Identity{}, err
+		}
+	}
+	return Identity{"https://" + config.ResolveCloudHost(cfg), Hash([]byte(key)), deviceID, version.Version, platform, arch, p.Profile, root}, nil
 }
 func (id Identity) Directory() string {
 	return filepath.Join(id.Root, "update", Hash([]byte(id.BaseURL)), id.KeyHash, id.Profile)
@@ -154,7 +173,7 @@ func (c *Client) request(ctx context.Context, id Identity, path string, body map
 		return err
 	}
 	body["component"] = "CLI"
-	body["deviceId"] = id.DeviceID
+	body["deviceId"] = canonicalDeviceID(id.DeviceID)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
