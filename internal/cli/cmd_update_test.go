@@ -3,46 +3,14 @@ package cli
 import (
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/YoooClaw/cli/internal/paths"
+	"github.com/YoooClaw/cli/internal/version"
 	"github.com/spf13/cobra"
 )
-
-func TestNativeTargetNameForWindows(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct {
-		goos, goarch, want string
-	}{
-		{goos: "windows", goarch: "amd64", want: "yoooclaw-win32-x64.exe"},
-		{goos: "darwin", goarch: "arm64", want: "yoooclaw-darwin-arm64"},
-		{goos: "linux", goarch: "amd64", want: "yoooclaw-linux-x64"},
-		{goos: "windows", goarch: "386", want: ""},
-	} {
-		if got := nativeTargetNameFor(tc.goos, tc.goarch); got != tc.want {
-			t.Errorf("nativeTargetNameFor(%q, %q) = %q, want %q", tc.goos, tc.goarch, got, tc.want)
-		}
-	}
-}
-
-func TestUpgradeCommandForNativeInstallers(t *testing.T) {
-	t.Parallel()
-
-	windows := upgradeCommandFor("native", "windows", "amd64", "latest", "1.2.3")
-	for _, want := range []string{"install.ps1", "-Version 1.2.3", "-Force"} {
-		if !strings.Contains(windows, want) {
-			t.Errorf("Windows upgrade command %q does not contain %q", windows, want)
-		}
-	}
-
-	unix := upgradeCommandFor("native", "linux", "amd64", "latest", "1.2.3")
-	for _, want := range []string{"install.sh", "--version 1.2.3", "--force"} {
-		if !strings.Contains(unix, want) {
-			t.Errorf("Unix upgrade command %q does not contain %q", unix, want)
-		}
-	}
-}
 
 type updateRoundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -50,29 +18,36 @@ func (f updateRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error
 	return f(req)
 }
 
-func TestUpdateSelfOmitsHint(t *testing.T) {
-	originalClient := http.DefaultClient
-	http.DefaultClient = &http.Client{Transport: updateRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"dist-tags":{"latest":"9999.0.0"}}`)),
-		}, nil
-	})}
-	t.Cleanup(func() { http.DefaultClient = originalClient })
-
-	cmd := &cobra.Command{}
-	cmd.Flags().Bool("beta", false, "")
-
-	result, err := updateSelf(nil, cmd, nil)
+func TestUpdateSelfUsesRolloutWithPlatform(t *testing.T) {
+	ctx := envTestContext(t)
+	if err := os.WriteFile(paths.SharedCredentialsPath(), []byte(`{"apiKey":"fixture"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldVersion := version.Version
+	version.Version = "0.12.0"
+	t.Cleanup(func() { version.Version = oldVersion })
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = updateRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/ota/client/plugin/check-update" {
+			t.Fatalf("unexpected endpoint: %s", req.URL.Path)
+		}
+		raw, _ := io.ReadAll(req.Body)
+		for _, field := range []string{`"component":"CLI"`, `"platform":`} {
+			if !strings.Contains(string(raw), field) {
+				t.Fatal(string(raw))
+			}
+		}
+		if strings.Contains(string(raw), `"arch":`) {
+			t.Fatal("check request must use one combined platform field")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"success":true,"code":"000000","data":{"updateAvailable":false}}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	result, err := updateSelf(ctx, &cobra.Command{}, nil)
 	if err != nil {
-		t.Fatalf("updateSelf() error = %v", err)
+		t.Fatal(err)
 	}
-	payload, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("updateSelf() result type = %T, want map[string]any", result)
-	}
-	if _, exists := payload["hint"]; exists {
-		t.Fatalf("updateSelf() returned unexpected hint: %v", payload["hint"])
+	if result.(map[string]any)["updateAvailable"] != false {
+		t.Fatal(result)
 	}
 }

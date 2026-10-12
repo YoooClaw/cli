@@ -421,14 +421,37 @@ $handoffPending = $false
 $installationCommitted = $false
 $targetBackedUp = $false
 $aliasBackedUp = $false
+$reportContext = ""
+$reportStage = "download"
+$reportCli = Join-Path $tempRoot "report-cli.exe"
+New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+if (Test-Path -LiteralPath $target) {
+    & $target update _report-begin --help *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Copy-Item -LiteralPath $target -Destination $reportCli
+        $reportOutput = @(& $reportCli update _report-begin $resolvedVersion 2>$null)
+        if ($LASTEXITCODE -eq 0) { $reportContext = ($reportOutput -join "").Trim() }
+    }
+}
+function Report-Update([string] $Stage, [string] $Result) {
+    if (-not [string]::IsNullOrWhiteSpace($reportContext)) {
+        try { & $reportCli update _report $reportContext $Stage $Result *> $null } catch { }
+    }
+}
+
 
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
+    Report-Update "download" "started"
     Write-Info "Downloading $artifactBaseUrl/$Asset"
     Save-WebFile "$artifactBaseUrl/$Asset" $downloaded
 
+    Report-Update "download" "succeeded"
+    $reportStage = "verify"
+    $reportVerifyResult = "skipped"
+    Report-Update "verify" "started"
     Write-Info "Downloading checksums.txt"
     try {
         $checksums = Get-WebText "$artifactBaseUrl/checksums.txt"
@@ -442,6 +465,7 @@ try {
             throw "SHA-256 mismatch: expected $expectedHash, got $actualHash"
         }
         Write-Info "SHA-256 verified: $actualHash"
+        $reportVerifyResult = "succeeded"
     }
     catch {
         # Match install.sh compatibility for old releases that did not publish a
@@ -451,6 +475,10 @@ try {
         }
         Write-WarningMessage "checksums.txt is unavailable; checksum verification was skipped. $($_.Exception.Message)"
     }
+
+    Report-Update "verify" $reportVerifyResult
+    $reportStage = "apply"
+    Report-Update "apply" "started"
 
     # Download and verify before briefly draining existing standalone daemons.
     $oldCli = Find-ExistingCli $target
@@ -477,6 +505,11 @@ try {
     }
     if ($installedVersion -ne $resolvedVersion) {
         throw "Installed version '$installedVersion' does not match requested version '$resolvedVersion'."
+    }
+    & $target update _register --help *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & $target update _register *> $null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to register standalone CLI installation." }
     }
     Add-InstallDirToPath $InstallDir
     $installationCommitted = $true
@@ -505,6 +538,9 @@ try {
     }
     Write-Info "Daemon login-autostart state checked."
 
+    Report-Update "apply" "succeeded"
+    $reportStage = "restart"
+    Report-Update "restart" "started"
     $activateOwner = $Activate -or ($env:YOOOCLAW_ACTIVATE_OWNER -eq "cli")
     if ($activateOwner) {
         Write-Info "Switching Relay owner to the standalone CLI..."
@@ -532,8 +568,10 @@ try {
         Write-WarningMessage "Task migration was skipped; old npm package retained to avoid removing an existing task target."
     }
     $handoffPending = $false
+    if ($activateOwner -or $stoppedProfiles.Count -gt 0) { Report-Update "restart" "succeeded" } else { Report-Update "restart" "skipped" }
 }
 catch {
+    Report-Update $reportStage "failed"
     if (-not $installationCommitted) {
         if (($targetBackedUp -or -not $targetOriginallyExisted) -and (Test-Path -LiteralPath $target)) {
             Remove-Item -LiteralPath $target -Force

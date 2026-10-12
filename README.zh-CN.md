@@ -123,7 +123,7 @@ curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
 
 当前 CLI 的 `--skill` 支持 `claude`、`codex`；该参数直接传给 CLI 的 Skill adapter，未来加入 DeepSeek Harness 等宿主后安装脚本无需改变。`--env` 支持 `development`、`test`、`production`，默认读取 `PHONE_NOTIFICATIONS_ENV`，未设置时使用 `production`，并持久化到 profile 配置供 systemd 服务使用。live 脚本默认安装发布它的同版本 CLI——由于预发布版不会覆盖 live 脚本和 `latest` 标记，默认装到的一定是正式版；也可显式传 `--version`（安装 beta 的唯一途径）、`--dir`、`--profile` 与 `--modify-path`。脚本不会打印 API key，并通过 stdin 写入权限为 `0600` 的共享凭据文件；建议像示例一样引用环境变量，避免在 shell 历史中留下明文。
 
-> `yoooclaw update self` 会按当前安装来源和系统给出对应升级命令（npm 走 `npm update -g`，原生安装走 `install.sh` / `install.ps1`）。
+> `yc update check`（兼容入口 `yc update self`）检查当前账号在灰度平台有资格更新的版本；`yc update install` 交给后台安装进程执行。需要 API Key。
 
 ### 快速开始（人类用户）
 
@@ -573,3 +573,42 @@ dist-native/yoooclaw-darwin-arm64 --help
 ## License
 
 MIT —— 见 [LICENSE](LICENSE)。
+
+### 切换云端环境
+
+```bash
+yc env show
+yc env switch test       # production / test / development
+```
+
+环境保存在当前选中的共享 profile 中，不修改 API Key，也不自动接管。
+Hermes 正在接管时，CLI 拒绝切换，请使用 Hermes 的环境命令。
+当前 CLI daemon 运行时，先检查同步/下载是否忙碌，再重启并确认目标 Relay 连接；
+没有运行进程时只保存配置。旧 daemon 不支持忙碌检查时，需要先更新并重启 daemon。
+环境变量与目标冲突、自定义 Relay 配置不会被静默覆盖。
+CLI 与 Hermes 接管切换后仍沿用共享环境，不是各自独立保存。
+
+### 灰度更新（本分支新增，尚未发布）
+
+```sh
+yc update check
+yc update install
+yc update install --version 0.13.0
+```
+
+独立 daemon 启动约一分钟后检查更新，此后每四小时检查。开启自动更新时，连续十分钟没有业务请求且没有录音下载或活动请求才执行安装，安装前重新检查忙碌和灰度资格。关闭 `autoUpdate.enabled` 只关闭后台安装，保留检查、日志上报和手动安装；修改后需要重启 daemon 才生效。
+
+官方原生安装脚本登记的独立 CLI 才能自动替换；Hermes 内置 CLI、显式共享程序及 npm 安装不参与。更新保留环境、Key、自启配置；有 Claude 时刷新随包 skill，保留无影的固定命令路径。手动更新无需 daemon 在线，也不能绕过灰度资格。
+
+命令返回 `started` 仅代表交给后台执行。新版 daemon 运行并连接后才确认生效；离线安装等待下次启动确认。阶段日志和最终结果通过同一个 `updateId` 关联，本地队列保存七天并重试，日志写入前脱敏。官方脚本从支持上报的旧 CLI 开始可报告安装阶段；首次安装或旧 CLI 不支持上报时，不能补齐之前的早期日志。
+
+### 二次开发时关闭自动更新
+
+如果需要修改源码或使用自行构建的版本，请先关闭自动更新，避免被官方版本覆盖。对实际使用的 profile 执行：
+
+```sh
+yc config set autoUpdate.enabled false
+yc daemon restart
+```
+
+开关在 daemon 启动时读取，不会定时重新读取。若 daemon 尚未运行，保存配置后下次启动即生效；非默认 profile 请为上述命令添加 `--profile <名称>`。恢复自动更新时将 `false` 改为 `true`，再重启 daemon。

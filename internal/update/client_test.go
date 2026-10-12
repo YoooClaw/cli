@@ -1,0 +1,116 @@
+package update
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func fixture(t *testing.T, handler http.HandlerFunc) (Identity, *Client) {
+	t.Helper()
+	server := httptest.NewTLSServer(handler)
+	t.Cleanup(server.Close)
+	id := Identity{BaseURL: server.URL, KeyHash: Hash([]byte("fixture")), DeviceID: ID(), CurrentVersion: "0.12.0", Platform: "macos", Arch: "arm64", Profile: "default", Root: t.TempDir()}
+	return id, &Client{HTTP: server.Client(), Key: func() (string, error) { return "fixture", nil }}
+}
+func TestCheckPlatformExactVersionAndAuthentication(t *testing.T) {
+	calls := 0
+	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != CheckPath || r.Header.Get("X-Api-Key-Id") != "fixture" {
+			t.Error("wrong request")
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["component"] != "CLI" || body["platform"] != "macos-arm64" || body["arch"] != nil {
+			t.Error(body)
+		}
+		if calls == 2 && body["targetVersion"] != "0.13.0" {
+			t.Error("missing exact version")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "code": "000000", "data": map[string]any{"updateAvailable": true, "targetVersion": "0.13.0", "downloadUrl": "https://example.test/cli", "fileSize": 3, "fileHash": Hash([]byte("abc"))}})
+	})
+	offer, err := c.Check(context.Background(), id, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Recheck(context.Background(), id, *offer); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestCheckRejectsWrongVersionAndMalformedOffer(t *testing.T) {
+	for _, response := range []string{
+		`{"success":true,"code":"000000","data":{"updateAvailable":true,"targetVersion":"0.11.0","downloadUrl":"https://x","fileSize":1,"fileHash":"bad"}}`,
+		`{"success":true,"code":"000000","data":{}}`,
+		`{"success":false,"code":"000019","message":"ock-secret-do-not-log"}`,
+	} {
+		t.Run(response[:20], func(t *testing.T) {
+			id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, response) })
+			if _, err := c.Check(context.Background(), id, ""); err == nil {
+				t.Fatal("accepted malformed offer")
+			}
+		})
+	}
+}
+func TestSemverBetaOrdering(t *testing.T) {
+	for _, pair := range [][2]string{{"0.12.0-beta.9", "0.12.0-beta.10"}, {"0.12.0-beta.10", "0.12.0"}, {"0.12.0", "0.13.0-beta.0"}} {
+		v, err := Compare(pair[0], pair[1])
+		if err != nil || v >= 0 {
+			t.Fatalf("%v: %d %v", pair, v, err)
+		}
+	}
+	if _, err := Compare("dev", "0.12.0"); err == nil {
+		t.Fatal("accepted dev")
+	}
+}
+func TestDownloadChecksBytesWithoutCredentialHeader(t *testing.T) {
+	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key-Id") != "" {
+			t.Error("credential leaked")
+		}
+		_, _ = w.Write([]byte("abc"))
+	})
+	a := Artifact{DownloadURL: id.BaseURL, FileSize: 3, FileHash: Hash([]byte("abc"))}
+	if err := c.Download(context.Background(), a, filepath.Join(t.TempDir(), "payload")); err != nil {
+		t.Fatal(err)
+	}
+	a.FileHash = Hash([]byte("bad"))
+	path := filepath.Join(t.TempDir(), "payload")
+	if err := c.Download(context.Background(), a, path); ErrorCode(err) != "HASH_MISMATCH" {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("corrupt payload retained")
+	}
+}
+func TestSchedulerBusyAndFourHourCooldown(t *testing.T) {
+	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "code": "000000", "data": map[string]any{"updateAvailable": true, "targetVersion": "0.13.0", "downloadUrl": "https://example.test/cli", "fileSize": 3, "fileHash": Hash([]byte("abc"))}})
+	})
+	s := &Scheduler{}
+	now := time.Now()
+	launches := 0
+	launch := func(Artifact) error { launches++; return fail("TEST", "failed") }
+	if err := s.Tick(context.Background(), id, c, now, false, true, launch); err != nil {
+		t.Fatal(err)
+	}
+	if launches != 0 {
+		t.Fatal("installed while busy")
+	}
+	_ = s.Tick(context.Background(), id, c, now.Add(time.Minute), true, true, launch)
+	_ = s.Tick(context.Background(), id, c, now.Add(2*time.Minute), true, true, launch)
+	if launches != 1 {
+		t.Fatal(launches)
+	}
+	restarted := &Scheduler{}
+	_ = restarted.Tick(context.Background(), id, c, now.Add(3*time.Minute), true, true, launch)
+	if launches != 1 {
+		t.Fatal("restart reset install cooldown")
+	}
+}

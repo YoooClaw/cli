@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -87,6 +88,7 @@ type indexWrapper struct {
 
 // Storage 是 recordings/ 目录的写侧存储。
 type Storage struct {
+	backgroundJobs    atomic.Int64
 	dir               string
 	audioDir          string
 	transcriptDataDir string
@@ -891,3 +893,6 @@ func ReadEvents(eventsPath string) []Event {
 	}
 	return out
 }
+
+// ActiveDownloads includes queued recovery jobs, not just network requests.
+func (s *Storage) ActiveDownloads() int64 { return s.backgroundJobs.Load() }

@@ -36,6 +36,9 @@ jobs:
           go -C tools/oss-upload test -race ./...
           go -C tools/oss-upload vet ./...
 
+      - name: Verify OTA draft registration
+        run: node --test scripts/register-ota-draft.test.mjs
+
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
@@ -92,7 +95,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = '0.0.0-test.1'
+          $version = '0.0.0-alpha.1'
           $asset = 'yoooclaw-win32-x64.exe'
           $serverRoot = Join-Path $env:RUNNER_TEMP 'yoooclaw-installer-server'
           $versionRoot = Join-Path $serverRoot "v$version"
@@ -279,21 +282,19 @@ jobs:
             go.sum
             tools/oss-upload/go.sum
 
-      # 测试版本号：<release 分支版本>-test.<run_number>（分支已是预发布版本时用
-      # .test.<n> 续接）。run_number 单调递增，保证每次推送都是独立、可指定安装的版本，
-      # 且按 SemVer 排在同名正式版之前。分支名不是合法版本号时回退到 package.json。
+      # 测试包统一为 <基础版本>-alpha.<run_number>，不叠加 beta/test 后缀。
+      # 同一 run 重试沿用版本；生产 beta/正式版由独立发布流程处理。
       - name: Resolve test version
         run: |
-          BASE="${GITHUB_REF_NAME#release/}"
-          if ! printf '%s\n' "$BASE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
-            BASE="$(node -p "require('./package.json').version")"
-          fi
-          case "$BASE" in
-            *-*) VERSION="${BASE}.test.${GITHUB_RUN_NUMBER}" ;;
-            *)   VERSION="${BASE}-test.${GITHUB_RUN_NUMBER}" ;;
-          esac
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "::notice::测试版本 $VERSION"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const match = /^release\/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?:-[0-9A-Za-z.-]+)?$/.exec(process.env.GITHUB_REF_NAME);
+          const run = process.env.GITHUB_RUN_NUMBER;
+          if (!match || !/^[1-9]\d*$/.test(run || '')) throw new Error('Invalid release branch or run number');
+          const version = `${match[1]}-alpha.${run}`;
+          fs.appendFileSync(process.env.GITHUB_ENV, `VERSION=${version}\n`);
+          console.log(`Test version: ${version}`);
+          NODE
 
       - name: Build native binaries
         run: |
@@ -328,6 +329,14 @@ jobs:
             exit 1
           fi
           go -C tools/oss-upload run . --test-build --version "$VERSION"
+
+      - name: Register test OTA draft
+        timeout-minutes: 4
+        env:
+          OTA_DRAFT_URL: https://openclaw-service-test.yoooclaw.com/api/ota/pipeline/plugin/releases
+          OTA_PLUGIN_RELEASE_PIPELINE_TOKEN: ${{ secrets.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN }}
+          OTA_ARTIFACT_BASE_URL: ${{ secrets.OSS_PUBLIC_URL }}/cli
+        run: node scripts/register-ota-draft.mjs
 
       - name: Notify Feishu (测试环境已发布)
         if: success()

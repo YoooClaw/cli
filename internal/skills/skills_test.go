@@ -491,3 +491,29 @@ func TestInstallWritesAbsoluteSkillDirIntoMediaHook(t *testing.T) {
 		t.Fatal("duplicate skill hooks")
 	}
 }
+
+func TestForceInstallPreservesWuyingCommand(t *testing.T) {
+	target := t.TempDir()
+	bundled, err := List()
+	if err != nil || len(bundled) == 0 {
+		t.Fatal(err)
+	}
+	if _, _, err := Install(target, true); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(target, bundled[0].Name, "SKILL.md")
+	block := "<!-- yoooclaw-wuying-command:start -->\n'/custom/yc' --profile 'work'\n<!-- yoooclaw-wuying-command:end -->"
+	if err := os.WriteFile(path, []byte("old content\n"+block), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Install(target, true); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(raw), block) != 1 || strings.Contains(string(raw), "old content") {
+		t.Fatal("lost command binding or kept stale skill")
+	}
+}

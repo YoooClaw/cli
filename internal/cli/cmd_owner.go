@@ -46,6 +46,11 @@ func ownerActivate(ctx *clictx.Context, cmd *cobra.Command, args []string) (any,
 	if args[0] != "cli" {
 		return nil, errs.New(errs.CodeInvalidArgument, "当前只支持激活 cli owner")
 	}
+	release, err := daemon.AcquireControlLock()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	return activateCLIOwner(ctx, flagStr(cmd, "hermes-profile"), !flagBool(cmd, "no-start"))
 }
 

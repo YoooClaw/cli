@@ -184,7 +184,11 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	emitResultStatus(recordingID, storage, logger, opts.NotifyStatus, transcript, summaryText, title)
 
 	if oss != "" && updated.AudioStatus != AudioStatusDownloaded {
-		go downloadResultAudio(recordingID, oss, storage, logger, opts)
+		storage.backgroundJobs.Add(1)
+		go func() {
+			defer storage.backgroundJobs.Add(-1)
+			downloadResultAudio(recordingID, oss, storage, logger, opts)
+		}()
 	}
 
 	return ResultWriteResult{
@@ -459,7 +463,9 @@ func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions
 	if len(entries) == 0 {
 		return 0
 	}
+	storage.backgroundJobs.Add(1)
 	go func() {
+		defer storage.backgroundJobs.Add(-1)
 		for _, entry := range entries {
 			ossURL := strings.TrimSpace(entry.Metadata.OssAudioURL)
 			if ossURL == "" {
