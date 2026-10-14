@@ -6,10 +6,11 @@
 //	├── files/
 //	│   ├── 3f2a91c4-array-prototype-map.md    # YAML frontmatter + 正文
 //	│   └── 3f2a91c4-array-prototype-map.html  # 原始 HTML 存档（可选 sidecar）
+//	├── versions/3f2a91c4/                    # 同一 URL 的历史版本，见 versions.go
 //	└── index.json
 //
-// 文件名由 sha256(canonicalUrl) 的前 8 位决定，重收即覆盖同一文件——
-// 去重靠文件系统，不需要额外逻辑。契约见
+// 文件名由 sha256(canonicalUrl) 的前 8 位决定，files/ 下每个 URL 只有一份最新版；
+// 第二次收藏起旧内容进 versions/（web-page-versions-prd.html）。契约见
 // yc-web-extension/docs/page-context-design.md §2 / §4.1。
 package webpage
 
@@ -73,6 +74,9 @@ type Payload struct {
 	Truncated     bool     `json:"truncated"`
 	LowConfidence bool     `json:"lowConfidence"`
 	Archive       *Archive `json:"archive,omitempty"`
+	// Tracking 是用户在扩展里对这个网页设的追踪开关（on / off）。随每次收藏投递，
+	// 所以设备睡着时改的开关也会跟着离线队列到达；缺省或非法值表示沿用接收端现状。
+	Tracking string `json:"tracking,omitempty"`
 }
 
 // Entry 是 index.json 里的一条网页记录。字段与 TS / Python 两端严格对齐。
@@ -91,6 +95,12 @@ type Entry struct {
 	ClientLabel     string `json:"clientLabel,omitempty"`
 	ArchivePath     string `json:"archivePath,omitempty"`
 	ArchiveBytes    int    `json:"archiveBytes,omitempty"`
+	// 版本字段（web-page-versions-prd §4.6）。captureCount 仍是观察次数，不改成版本数。
+	VersionCount  int    `json:"versionCount,omitempty"`
+	LatestVersion int    `json:"latestVersion,omitempty"`
+	ChainPath     string `json:"chainPath,omitempty"`
+	Tracking      string `json:"tracking,omitempty"`
+	LastChangedAt string `json:"lastChangedAt,omitempty"`
 	// Transfer 只在经 `yoooclaw transfer import` 迁入的网页上出现，记录原始来源。
 	Transfer *TransferMark `json:"transfer,omitempty"`
 }
@@ -141,6 +151,13 @@ type IngestResult struct {
 	ArchivePath  string `json:"archivePath,omitempty"`
 	Replaced     bool   `json:"replaced"`
 	CaptureCount int    `json:"captureCount"`
+	// 版本回执（§5.2）。追踪关闭且没有历史链时整组缺省，扩展退回旧文案。
+	Version        int      `json:"version,omitempty"`
+	VersionCreated *bool    `json:"versionCreated,omitempty"`
+	Unchanged      *bool    `json:"unchanged,omitempty"`
+	ChangedRatio   *float64 `json:"changedRatio,omitempty"`
+	VersionCount   int      `json:"versionCount,omitempty"`
+	Tracking       string   `json:"tracking,omitempty"`
 }
 
 // Logger 是写侧依赖的最小日志接口。
@@ -212,27 +229,38 @@ func Ingest(dir string, payload Payload, clientLabel string, logger Logger) (Ing
 		return IngestResult{}, err
 	}
 
-	// 存档先写：它决定 frontmatter 里的 archive: 一行。失败只丢存档。
-	archivePath, archiveBytes := "", 0
-	if payload.Archive != nil {
-		html, archiveErr := DecodeArchive(*payload.Archive)
-		if archiveErr != nil {
-			logger.Warn("web-page[" + urlHash[:8] + "] 存档丢弃：" + archiveErr.Error())
-		} else {
-			candidate := strings.TrimSuffix(relativePath, ".md") + ".html"
-			if err := fsutil.WriteAtomic(filepath.Join(dir, candidate), html, fsutil.SecretFileMode); err != nil {
-				logger.Warn("web-page[" + urlHash[:8] + "] 存档写入失败：" + err.Error())
-			} else {
-				archivePath, archiveBytes = candidate, len(html)
-			}
+	requested := strings.TrimSpace(payload.Tracking)
+	if !ValidTracking(requested) {
+		requested = ""
+	}
+	if previous != nil && requested != "" {
+		// 显式开关优先于自动判定（§3.2），在判定本次收藏之前生效。
+		updated := *previous
+		updated.Tracking = requested
+		previous = &updated
+	}
+
+	// 第二次收藏起走版本链（§3.2）；追踪显式关掉且从没建过链时，行为与单版本时代一致。
+	if previous != nil && (trackingOf(previous) != TrackingOff || previous.ChainPath != "") {
+		v := versionedIngest{
+			dir: dir, payload: payload, canonical: canonical, capturedAt: capturedAt,
+			clientLabel: clientLabel, urlHash: urlHash, relativePath: relativePath,
+			previous: previous, logger: logger,
 		}
-	} else if previous != nil && previous.ArchivePath != "" {
-		// 本次没带存档：保留上次的，但要跟着新文件名走。
-		renamed := strings.TrimSuffix(relativePath, ".md") + ".html"
-		if renamed == previous.ArchivePath || renameFile(dir, previous.ArchivePath, renamed) == nil {
-			archivePath, archiveBytes = renamed, previous.ArchiveBytes
+		if result, entry, handled, err := v.run(); handled {
+			if err != nil {
+				return IngestResult{}, err
+			}
+			entries[previousIdx] = entry
+			if err := writeIndex(dir, entries); err != nil {
+				return IngestResult{}, err
+			}
+			return result, nil
 		}
 	}
+
+	// 存档先写：它决定 frontmatter 里的 archive: 一行。失败只丢存档。
+	archivePath, archiveBytes := placeArchive(dir, payload.Archive, relativePath, previous, urlHash[:8], logger)
 
 	// 0600：网页正文可能含登录后才可见的个人内容（站内信、账号页、内部 wiki），
 	// 与通知/录音同一数据类别，不按普通配置文件的 0644 落盘。Python 端的
@@ -265,6 +293,7 @@ func Ingest(dir string, payload Payload, clientLabel string, logger Logger) (Ing
 			entry.FirstCapturedAt = capturedAt
 		}
 		entry.CaptureCount = previous.CaptureCount + 1
+		entry.Tracking = previous.Tracking
 		// 标题改了会算出新文件名；删掉旧的，保证一个 URL 只有一个文件。
 		if previous.RelativePath != "" && previous.RelativePath != relativePath {
 			removeFile(dir, previous.RelativePath)
@@ -276,19 +305,65 @@ func Ingest(dir string, payload Payload, clientLabel string, logger Logger) (Ing
 	} else {
 		entries = append(entries, entry)
 	}
-	if err := writeIndex(dir, entries); err != nil {
-		return IngestResult{}, err
-	}
 
 	logger.Info(fmt.Sprintf("web-page[%s] 已落盘：%s（第 %d 次收藏）", urlHash[:8], relativePath, entry.CaptureCount))
-	return IngestResult{
+	result := IngestResult{
 		OK:           true,
 		URLHash:      urlHash,
 		RelativePath: relativePath,
 		ArchivePath:  archivePath,
 		Replaced:     replaced,
 		CaptureCount: entry.CaptureCount,
-	}, nil
+	}
+	if replaced {
+		// 不读 previous：它指向的槽位上面已经被新条目覆盖了。
+		result.Tracking = trackingOf(&entry)
+	} else {
+		entry.Tracking = requested
+		result.Tracking = trackingOf(&entry)
+		switch result.Tracking {
+		case TrackingOn:
+			// 用户第一次收藏就打开了追踪：这一份直接成为链上的 v1。
+			if err := startChain(dir, &entry); err != nil {
+				return IngestResult{}, err
+			}
+			entries[len(entries)-1] = entry
+			fallthrough
+		case TrackingAuto:
+			// 自动模式下首次收藏同样是第 1 版，只是还不建链——绝大多数网页一辈子只会被收这一次。
+			created := true
+			result.Version, result.VersionCreated, result.VersionCount = 1, &created, 1
+		}
+	}
+	if err := writeIndex(dir, entries); err != nil {
+		return IngestResult{}, err
+	}
+	return result, nil
+}
+
+// placeArchive 写入本次带来的 HTML 存档；没带时把上一份挪到跟随 relativePath 的新名字。
+// 存档只跟最新版走（§7），历史版本不保留存档。
+func placeArchive(dir string, archive *Archive, relativePath string, previous *Entry, hash8 string, logger Logger) (string, int) {
+	candidate := strings.TrimSuffix(relativePath, ".md") + ".html"
+	if archive != nil {
+		html, archiveErr := DecodeArchive(*archive)
+		if archiveErr != nil {
+			logger.Warn("web-page[" + hash8 + "] 存档丢弃：" + archiveErr.Error())
+			return "", 0
+		}
+		if err := fsutil.WriteAtomic(filepath.Join(dir, candidate), html, fsutil.SecretFileMode); err != nil {
+			logger.Warn("web-page[" + hash8 + "] 存档写入失败：" + err.Error())
+			return "", 0
+		}
+		return candidate, len(html)
+	}
+	if previous != nil && previous.ArchivePath != "" {
+		// 本次没带存档：保留上次的，但要跟着新文件名走。
+		if candidate == previous.ArchivePath || renameFile(dir, previous.ArchivePath, candidate) == nil {
+			return candidate, previous.ArchiveBytes
+		}
+	}
+	return "", 0
 }
 
 // DecodeArchive 解出原始 HTML 存档：base64 → gunzip → 校验是 UTF-8 文本且以 < 开头。
@@ -399,6 +474,9 @@ func ProjectFields(entries []Entry, fields []string) []map[string]any {
 			"captureCount": entry.CaptureCount, "contentHash": entry.ContentHash,
 			"bytes": entry.Bytes, "clientLabel": entry.ClientLabel,
 			"archivePath": entry.ArchivePath, "archiveBytes": entry.ArchiveBytes,
+			"versionCount": entry.VersionCount, "latestVersion": entry.LatestVersion,
+			"chainPath": entry.ChainPath, "tracking": entry.Tracking,
+			"lastChangedAt": entry.LastChangedAt,
 		}
 		if len(wanted) == 0 {
 			out = append(out, full)

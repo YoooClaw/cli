@@ -19,6 +19,9 @@ import (
 
 const embedRoot = "skills"
 
+// The Wuying installer binds skills to a literal executable/profile, independent of PATH.
+var wuyingCommandRE = regexp.MustCompile(`(?s)<!-- yoooclaw-wuying-command:start -->.*?<!-- yoooclaw-wuying-command:end -->`)
+
 // Bundled 是一个内嵌 Skill 的元数据。
 type Bundled struct {
 	Name        string `json:"name"`
@@ -286,17 +289,35 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 	}
 	for _, s := range skills {
 		dest := filepath.Join(target, s.Name)
+		var commandBlock []byte
 		if fsutil.Exists(dest) {
 			if !force {
 				results = append(results, InstallResult{Name: s.Name, Status: "skipped", Reason: "目标已存在，加 --force 覆盖", Dest: dest})
 				continue
 			}
+			old, _ := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+			commandBlock = wuyingCommandRE.Find(old)
 			if err := os.RemoveAll(dest); err != nil {
 				return nil, nil, err
 			}
 		}
 		if err := extractSkill(s.Name, dest); err != nil {
 			return nil, nil, err
+		}
+		if len(commandBlock) > 0 {
+			path := filepath.Join(dest, "SKILL.md")
+			file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				return nil, nil, err
+			}
+			_, err = file.Write(append([]byte("\n"), commandBlock...))
+			closeErr := file.Close()
+			if err != nil {
+				return nil, nil, err
+			}
+			if closeErr != nil {
+				return nil, nil, closeErr
+			}
 		}
 		results = append(results, InstallResult{Name: s.Name, Status: "installed", Dest: dest})
 		installed = append(installed, s.Name)

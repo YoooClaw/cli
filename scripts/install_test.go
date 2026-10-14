@@ -455,7 +455,7 @@ case "$*" in
 esac
 `)
 
-			cmd := exec.Command("sh", mustAbs(t, "install.sh"), "--dir", installDir, "--force")
+			cmd := exec.Command("sh", mustAbs(t, "install.sh"), "--dir", installDir, "--force", "--skill", "claude")
 			mockOS, mockBus := platform, "available"
 			if platform == "Linux-no-bus" {
 				mockOS, mockBus = "Linux", "unavailable"
@@ -498,6 +498,7 @@ esac
 				"old:--profile default daemon stop",
 				"new:--profile default daemon autostart enable",
 				"new:daemon autostart migrate --format json",
+				"new:skills install --agent claude --force",
 			} {
 				if !strings.Contains(logText, want) {
 					t.Fatalf("update did not preserve CLI owner (%q missing):\n%s", want, logText)
@@ -648,5 +649,13 @@ func writeExecutable(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInstallScriptRejectsBlankSkill(t *testing.T) {
+	t.Parallel()
+	output, err := exec.Command("sh", mustAbs(t, "install.sh"), "--skill", " ").CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "--skill 不能为空") {
+		t.Fatalf("expected blank --skill rejection: %v\n%s", err, output)
 	}
 }

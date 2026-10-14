@@ -115,6 +115,51 @@ func TestLinuxUninstallStopsAndRemovesService(t *testing.T) {
 	}
 }
 
+func TestLinuxUninstallUnloadsUnitWhoseFileWasRemoved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "yoooclaw-test.service")
+	m := &platformManager{root: t.TempDir(), unit: "yoooclaw-test.service", path: path}
+	fake := &fakeSystemd{loaded: true}
+	stubSystemctl(t, m, fake)
+
+	if err := m.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	if fake.disableCalls != 0 || fake.loaded {
+		t.Fatalf("disable calls = %d, still loaded = %v", fake.disableCalls, fake.loaded)
+	}
+}
+
+func TestLinuxUninstallRemovesUnitFilesWhenUserBusDenied(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yoooclaw-test.service")
+	if err := os.WriteFile(path, []byte("unit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wants := filepath.Join(dir, "default.target.wants")
+	if err := os.Mkdir(wants, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(wants, "yoooclaw-test.service")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	m := &platformManager{root: t.TempDir(), unit: "yoooclaw-test.service", path: path}
+	original := systemctl
+	systemctl = func(args ...string) ([]byte, error) {
+		return []byte("Failed to connect to bus: Permission denied"), errors.New("exit status 1")
+	}
+	t.Cleanup(func() { systemctl = original })
+
+	if err := m.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, link} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed unexpectedly: %v", p, err)
+		}
+	}
+}
+
 func TestLinuxBootLinger(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

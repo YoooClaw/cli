@@ -42,6 +42,7 @@ func newSyncedWebPageCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE:  run(webPath),
 	}
+	pathCmd.Flags().String("version", "", "取指定历史版本的文件（默认最新版）")
 	search := &cobra.Command{
 		Use:   "search <keyword>",
 		Short: "在已同步网页的标题、URL 和 Markdown 正文中搜索 🟢",
@@ -58,6 +59,7 @@ func newSyncedWebPageCmd() *cobra.Command {
 	}
 
 	c.AddCommand(list, pathCmd, search, storagePath)
+	c.AddCommand(newSyncedWebPageVersionCmds()...)
 	return c
 }
 
@@ -122,6 +124,10 @@ func webList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 			"relativePath":    entry.RelativePath,
 			"hasArchive":      entry.ArchivePath != "",
 			"clientLabel":     nilIfEmpty(entry.ClientLabel),
+			// 版本字段：versionCount > 1 的网页可以用 versions / diff 查历史。
+			"versionCount":  max(entry.VersionCount, 1),
+			"lastChangedAt": nilIfEmpty(entry.LastChangedAt),
+			"tracking":      nilIfEmpty(entry.Tracking),
 		})
 	}
 	return map[string]any{"ok": true, "total": len(pages), "pages": pages}, nil
@@ -168,7 +174,27 @@ func resolveWebPageFile(dir, relativePath string) (string, bool) {
 	return resolved, true
 }
 
-func webPath(ctx *clictx.Context, _ *cobra.Command, args []string) (any, error) {
+func webPath(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
+	version, err := versionFlag(cmd, "version")
+	if err != nil {
+		return nil, err
+	}
+	if version > 0 {
+		_, files, _, err := webPageHistory(ctx, args[0])
+		if err != nil {
+			return nil, err
+		}
+		file, ok := findVersion(files, version)
+		if !ok {
+			return nil, errs.Newf(errs.CodeNotFound, "版本不存在：v%d", version)
+		}
+		path, ok := resolveWebPageFile(ctx.Paths.WebPages, file.RelativePath)
+		if !ok {
+			return nil, errs.New(errs.CodeStorageUnavailable, "版本文件路径不可用："+args[0])
+		}
+		return map[string]any{"ok": true, "path": path, "version": file.Version, "current": file.Current}, nil
+	}
+
 	entry, ok := findWebPageByHash(webpage.ReadIndex(ctx.Paths.WebPages), args[0])
 	if !ok {
 		return nil, errs.New(errs.CodeNotFound, "网页不存在："+args[0])
@@ -192,6 +218,8 @@ type webSearchMatch struct {
 	Path          string   `json:"path"`
 	MatchedFields []string `json:"matchedFields"`
 	Matches       []string `json:"matches"`
+	VersionCount  int      `json:"versionCount"`
+	LastChangedAt any      `json:"lastChangedAt"`
 }
 
 func matchingWebMetadataFields(entry webpage.Entry, keyword string) []string {
@@ -307,6 +335,8 @@ func searchWebPages(dir string, entries []webpage.Entry, rawKeyword string, limi
 			Path:          path,
 			MatchedFields: matchedFields,
 			Matches:       matches,
+			VersionCount:  max(entry.VersionCount, 1),
+			LastChangedAt: nilIfEmpty(entry.LastChangedAt),
 		})
 	}
 	return results

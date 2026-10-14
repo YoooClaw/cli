@@ -249,7 +249,10 @@ esac
 exit 2
 `)
 	writeExecutable(t, baseInstaller, `#!/bin/sh
-printf '%s\n' 'replace' >> "$ORDER_LOG"
+case " $* " in
+  *' --force '*) printf '%s\n' 'replace --force' >> "$ORDER_LOG" ;;
+  *) printf '%s\n' 'replace' >> "$ORDER_LOG" ;;
+esac
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '--dir' ]; then install_dir=$2; shift 2; else shift; fi
 done
@@ -261,6 +264,7 @@ case "$*" in
   *'auth set-api-key -'*) IFS= read -r _ ;;
   *'config show'*) exit 0 ;;
   *'daemon status'*) exit 0 ;;
+  *'lightrule list'*) printf '%s\n' '{"error":{"code":"401","message":"Invalid plugin API Key"},"ok":false}'; exit 1 ;;
 esac
 exit 0
 `)
@@ -286,9 +290,124 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "old:--profile default daemon autostart disable\nreplace\n"
+	want := "old:--profile default daemon autostart disable\nreplace --force\n"
 	if string(order) != want {
 		t.Fatalf("upgrade order = %q, want %q", order, want)
+	}
+	if !strings.Contains(string(output), "API key 未通过 production 环境校验") {
+		t.Fatalf("environment/key mismatch was not reported:\n%s", output)
+	}
+}
+
+func TestWuyingInstallerRemovesOldUnitWhenUserBusDenied(t *testing.T) {
+	t.Parallel()
+	testWuyingOldUnitRepair(t, true)
+}
+
+func TestWuyingInstallerReloadsOldUnitWhoseFileWasRemoved(t *testing.T) {
+	t.Parallel()
+	testWuyingOldUnitRepair(t, false)
+}
+
+func testWuyingOldUnitRepair(t *testing.T, busDenied bool) {
+	t.Helper()
+
+	root := t.TempDir()
+	mockBin := filepath.Join(root, "mock-bin")
+	installDir := filepath.Join(root, "install-bin")
+	orderLog := filepath.Join(root, "order.log")
+	baseInstaller := filepath.Join(root, "base-install.sh")
+	fakeCLI := filepath.Join(root, "fake-yoooclaw")
+	unitDir := filepath.Join(root, ".config", "systemd", "user")
+	unitFile := filepath.Join(unitDir, "yoooclaw-daemon.service")
+	wantsLink := filepath.Join(unitDir, "default.target.wants", "yoooclaw-daemon.service")
+	mustMkdirAll(t, mockBin)
+	mustMkdirAll(t, installDir)
+	mustMkdirAll(t, filepath.Dir(wantsLink))
+	if err := os.WriteFile(unitFile, []byte("unit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(unitFile, wantsLink); err != nil {
+		t.Fatal(err)
+	}
+	loadedMarker := filepath.Join(root, "unit-loaded")
+	if !busDenied {
+		// The file is already gone but systemd still has the unit loaded.
+		if err := os.Remove(wantsLink); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(unitFile); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(loadedMarker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeExecutable(t, filepath.Join(mockBin, "uname"), "#!/bin/sh\necho Linux\n")
+	systemctlMock := "#!/bin/sh\necho 'Failed to connect to bus: Permission denied' >&2\nexit 1\n"
+	if !busDenied {
+		systemctlMock = "#!/bin/sh\ncase \"$*\" in *daemon-reload*) rm -f \"$LOADED_MARKER\" ;; esac\nexit 0\n"
+	}
+	writeExecutable(t, filepath.Join(mockBin, "systemctl"), systemctlMock)
+	writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then destination=$2; shift 2; else shift; fi
+done
+cp "$BASE_INSTALLER_FIXTURE" "$destination"
+`)
+	// Mirrors releases <= 0.13.0-beta.0: disable fails while the unit file
+	// exists or systemd still has the removed unit loaded.
+	writeExecutable(t, filepath.Join(installDir, "yoooclaw"), `#!/bin/sh
+case "$*" in
+  *'daemon autostart disable'*)
+    if [ -e "$UNIT_FILE" ] || [ -e "$LOADED_MARKER" ]; then printf '%s\n' 'old:disable-failed' >> "$ORDER_LOG"; exit 1; fi
+    printf '%s\n' 'old:disable' >> "$ORDER_LOG"; exit 0 ;;
+esac
+exit 2
+`)
+	writeExecutable(t, baseInstaller, `#!/bin/sh
+printf '%s\n' 'replace' >> "$ORDER_LOG"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--dir' ]; then install_dir=$2; shift 2; else shift; fi
+done
+cp "$FAKE_CLI_FIXTURE" "$install_dir/yoooclaw"
+chmod +x "$install_dir/yoooclaw"
+`)
+	writeExecutable(t, fakeCLI, `#!/bin/sh
+case "$*" in
+  *'auth set-api-key -'*) IFS= read -r _ ;;
+esac
+exit 0
+`)
+
+	cmd := exec.Command("sh", mustAbs(t, "install-wuying.sh"), "--skill", "claude", "--dir", installDir)
+	cmd.Env = append(os.Environ(),
+		"HOME="+root,
+		"XDG_CONFIG_HOME=",
+		"YOOOCLAW_HOME=",
+		"PATH="+mockBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"BASE_INSTALLER_FIXTURE="+baseInstaller,
+		"FAKE_CLI_FIXTURE="+fakeCLI,
+		"ORDER_LOG="+orderLog,
+		"UNIT_FILE="+unitFile,
+		"LOADED_MARKER="+loadedMarker,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install with denied user bus failed: %v\n%s", err, output)
+	}
+	order, err := os.ReadFile(orderLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "old:disable-failed\nold:disable\nreplace\n"; string(order) != want {
+		t.Fatalf("upgrade order = %q, want %q", order, want)
+	}
+	for _, path := range []string{unitFile, wantsLink, loadedMarker} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed unexpectedly: %v", path, err)
+		}
 	}
 }
 

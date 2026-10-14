@@ -91,3 +91,20 @@ func IsDefaultHost(host string) bool {
 	}
 	return false
 }
+
+// DefaultHost returns the built-in host for an explicitly selected environment.
+func DefaultHost(name string) (string, bool) { host, ok := defaultHosts[name]; return host, ok }
+
+// NameForHost reports the environment of the resolved host, not the shell default.
+func NameForHost(host string) string {
+	h := Normalize(host)
+	if i := strings.IndexByte(h, '/'); i >= 0 {
+		h = h[:i]
+	}
+	for name, builtIn := range defaultHosts {
+		if h == builtIn {
+			return name
+		}
+	}
+	return "custom"
+}

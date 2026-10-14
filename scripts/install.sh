@@ -12,6 +12,7 @@
 #   --force         覆盖已存在二进制
 #   --activate      安装后明确将 Relay owner 切换到 CLI（默认保留当前 owner）
 #   --hermes-profile <name>  指定需要停用 YoooClaw 插件的 Hermes profile
+#   --skill <agent> 安装后为该宿主安装 Agent Skills（等同 yoooclaw skills install --agent，例如 claude/codex）
 #   --modify-path   将安装目录写入 shell 配置（默认不修改）
 #   --no-modify-path 不修改 shell 配置（默认行为，兼容旧调用）
 #
@@ -38,6 +39,7 @@ FORCE=0
 MODIFY_PATH=0
 ACTIVATE_OWNER=0
 HERMES_PROFILE=""
+SKILL_AGENT=""
 STOPPED_PROFILES=""
 OLD_CLI=""
 HANDOFF_PENDING=0
@@ -58,15 +60,20 @@ while [ $# -gt 0 ]; do
     --force)   FORCE=1; shift ;;
     --activate) ACTIVATE_OWNER=1; shift ;;
     --hermes-profile) HERMES_PROFILE="${2:?--hermes-profile 需要值}"; shift 2 ;;
+    --skill)   SKILL_AGENT="${2:?--skill 需要值}"; shift 2 ;;
     --modify-path) MODIFY_PATH=1; shift ;;
     --no-modify-path) MODIFY_PATH=0; shift ;;
     -h|--help)
-      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) err "未知参数: $1" ;;
   esac
 done
+
+if [ -n "$SKILL_AGENT" ] && [ -z "$(printf '%s' "$SKILL_AGENT" | tr -d '[:space:]')" ]; then
+  err "--skill 不能为空（例如 claude 或 codex）"
+fi
 
 # ---------- detect platform ----------
 uname_s=$(uname -s)
@@ -215,10 +222,23 @@ stop_existing_daemons() {
 
 # ---------- download + verify ----------
 TMP=$(mktemp -d)
+REPORT_CONTEXT=""
+REPORT_CLI="$TARGET"
+REPORT_STAGE=download
+if [ -x "$TARGET" ] && "$TARGET" update _report-begin --help >/dev/null 2>&1; then
+  REPORT_CLI="$TMP/report-cli"
+  cp "$TARGET" "$REPORT_CLI"
+  REPORT_CONTEXT=$("$REPORT_CLI" update _report-begin "$VERSION" 2>/dev/null || true)
+fi
+report_update() {
+  [ -n "$REPORT_CONTEXT" ] || return 0
+  "$REPORT_CLI" update _report "$REPORT_CONTEXT" "$1" "$2" >/dev/null 2>&1 || true
+}
 
 cleanup() {
   cleanup_status=$?
   trap - EXIT
+  if [ "$cleanup_status" -ne 0 ]; then report_update "$REPORT_STAGE" failed; fi
   rm -rf "$TMP"
   if [ "$cleanup_status" -ne 0 ] && [ "$HANDOFF_PENDING" -eq 1 ] && [ -n "$STOPPED_PROFILES" ]; then
     recovery_cli="$OLD_CLI"
@@ -233,9 +253,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+report_update download started
 info "下载 ${BASE}/${ASSET}"
 curl -fL --progress-bar -o "$TMP/$ASSET" "${BASE}/${ASSET}"
 
+report_update download succeeded
+REPORT_STAGE=verify
+REPORT_VERIFY_RESULT=skipped
+report_update verify started
 info "下载 checksums.txt"
 if curl -fsSL -o "$TMP/checksums.txt" "${BASE}/checksums.txt"; then
   expected=$(grep " $ASSET\$" "$TMP/checksums.txt" | awk '{print $1}')
@@ -249,10 +274,15 @@ if curl -fsSL -o "$TMP/checksums.txt" "${BASE}/checksums.txt"; then
     actual="$expected"
   fi
   [ "$actual" = "$expected" ] || err "sha256 不匹配：期望 $expected 实得 $actual"
+  if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then REPORT_VERIFY_RESULT=succeeded; fi
   info "sha256 ✓ $actual"
 else
   warn "未找到 checksums.txt，跳过校验"
 fi
+
+report_update verify "$REPORT_VERIFY_RESULT"
+REPORT_STAGE=apply
+report_update apply started
 
 # 制品已经下载并校验完成，此时才短暂停掉旧 CLI daemon，避免下载失败影响现有 owner。
 stop_existing_daemons
@@ -406,6 +436,16 @@ info "请在 Agent runner/服务启动环境中配置 PATH 并重启对应进程
 PATH="$INSTALL_DIR:${PATH:-}"
 export PATH
 
+# Record this official standalone install for the updater. Older binaries lack
+# this command; their installation behavior is unchanged.
+if "$TARGET" update _register --help >/dev/null 2>&1; then
+  "$TARGET" update _register >/dev/null || err "无法登记独立 CLI 安装位置"
+fi
+
+report_update apply succeeded
+REPORT_STAGE=restart
+report_update restart started
+
 # ---------- restore or explicitly activate owner ----------
 if [ "$ACTIVATE_OWNER" -eq 1 ]; then
   info "切换 Relay owner 到 standalone CLI…"
@@ -438,3 +478,20 @@ else
   warn "无法迁移 daemon 登录自启；可稍后运行: yoooclaw daemon autostart enable"
 fi
 HANDOFF_PENDING=0
+
+if [ -n "$STOPPED_PROFILES" ] || [ "$ACTIVATE_OWNER" -eq 1 ]; then report_update restart succeeded; else report_update restart skipped; fi
+
+# ---------- agent skills ----------
+# Runs after the daemon handoff so a Skill failure never rolls back the binary.
+# The update itself is complete; stop reporting so a Skill failure isn't counted as a failed update.
+REPORT_CONTEXT=""
+if [ -n "$SKILL_AGENT" ]; then
+  info "安装 ${SKILL_AGENT} 宿主的 Agent Skills…"
+  if [ "$FORCE" -eq 1 ]; then
+    "$TARGET" skills install --agent "$SKILL_AGENT" --force \
+      || err "CLI 已安装，但 Skill 安装失败；可稍后运行: yoooclaw skills install --agent $SKILL_AGENT --force"
+  else
+    "$TARGET" skills install --agent "$SKILL_AGENT" \
+      || err "CLI 已安装，但 Skill 安装失败；可稍后运行: yoooclaw skills install --agent $SKILL_AGENT"
+  fi
+fi

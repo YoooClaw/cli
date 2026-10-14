@@ -97,6 +97,14 @@ configure_user_service_env() {
     DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
     export DBUS_SESSION_BUS_ADDRESS
   fi
+  # WUYING shells may inherit a bus address this user cannot open. Prefer the
+  # user's own runtime bus when the inherited one is unusable.
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [ -S "$user_runtime_dir/bus" ] || return 0
+  ! systemctl --user show-environment >/dev/null 2>&1 || return 0
+  XDG_RUNTIME_DIR="$user_runtime_dir"
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus"
+  export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 }
 
 if [ -n "$INSTALL_DIR" ]; then
@@ -122,13 +130,36 @@ CLI="$EFFECTIVE_INSTALL_DIR/yoooclaw"
 
 configure_user_service_env
 
+# Releases up to 0.13.0-beta.0 fail to disable their systemd --user unit in
+# two WUYING states: the shell is denied the user bus while the unit file
+# exists, or the file was removed but systemd still has the unit loaded.
+# Repair either state so a retried disable only has to stop the daemon itself.
+repair_old_user_unit() {
+  [ "$(uname -s)" = "Linux" ] || return 1
+  [ -z "${YOOOCLAW_HOME:-}" ] || return 1
+  command -v systemctl >/dev/null 2>&1 || return 1
+  unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  unit_file="$unit_dir/yoooclaw-daemon.service"
+  if systemctl --user show-environment >/dev/null 2>&1; then
+    [ ! -e "$unit_file" ] || return 1
+    warn "旧版自启单元文件已不存在，重新加载 systemd 用户配置"
+    systemctl --user daemon-reload
+    return
+  fi
+  [ -e "$unit_file" ] || return 1
+  warn "systemd 用户总线不可用，直接移除旧版自启单元 $unit_file"
+  rm -f "$unit_dir"/*.wants/yoooclaw-daemon.service "$unit_file"
+}
+
 # Stop an older managed/detached installation before replacing its executable.
 # Otherwise the generic installer may restore that runtime mid-upgrade and the
 # WUYING owner handoff sees its Relay lock as a foreign owner.
 if [ -x "$CLI" ]; then
   info "停止旧版 daemon/autostart…"
   if ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
-    err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+    if ! repair_old_user_unit || ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
+      err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+    fi
   fi
 fi
 
@@ -157,7 +188,11 @@ curl -fsSL -o "$TMP/install.sh" "$BASE_INSTALLER_URL"
 set -- "$TMP/install.sh"
 [ -n "$VERSION" ] && set -- "$@" --version "$VERSION"
 set -- "$@" --dir "$EFFECTIVE_INSTALL_DIR"
-[ "$FORCE" -eq 1 ] && set -- "$@" --force
+# An existing CLI was already stopped above, so replacing it is the upgrade
+# this installer exists for; the base installer only overwrites with --force.
+if [ "$FORCE" -eq 1 ] || [ -e "$CLI" ]; then
+  set -- "$@" --force
+fi
 if [ "$MODIFY_PATH" -eq 1 ]; then
   set -- "$@" --modify-path
 else
@@ -203,6 +238,16 @@ fi
 info "持久化云端环境: ${CLOUD_ENV}…"
 yc config set cloud.host "$CLOUD_HOST"
 yc config set relay.url "wss://${CLOUD_HOST}/message/messages/ws/plugin"
+
+# A key issued for another environment still installs, but Relay then keeps
+# failing with 403. Probe one read-only cloud API so the mismatch is visible.
+if ! key_check=$(yc --format json lightrule list 2>&1); then
+  case "$key_check" in
+    *'"code":"401"'*)
+      warn "API key 未通过 ${CLOUD_ENV} 环境校验，Relay 将无法连接；请用 --env 指定 key 所属环境，或用 --api-key 传入 ${CLOUD_ENV} 的 key"
+      ;;
+  esac
+fi
 
 info "安装 ${SKILL_AGENT} 宿主的 Agent Skills…"
 skill_args=""

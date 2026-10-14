@@ -17,6 +17,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
 	"github.com/YoooClaw/cli/internal/transfer"
+	updater "github.com/YoooClaw/cli/internal/update"
 	"github.com/YoooClaw/cli/internal/version"
 )
 
@@ -238,6 +240,17 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		logger.Info(fmt.Sprintf("[recording-recovery] 已恢复 %d 个缺失音频任务", count))
 	}
 
+	if mode == config.IngressStandalone {
+		srv.lastActivity.Store(time.Now().UnixNano())
+		stopUpdates := updater.StartRuntime(func() (updater.Identity, error) { return updater.NewIdentity(ctx.Paths) }, executable,
+			func() bool {
+				return srv.activityPayload()["busy"] == false && time.Since(time.Unix(0, srv.lastActivity.Load())) >= 10*time.Minute
+			},
+			func() bool { return srv.relayStatusPayload()["connected"] == true },
+			func() bool { return cfg.AutoUpdate.Enabled }, logger.Warn)
+		defer stopUpdates()
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	srv.shutdown = func(reason string) {
@@ -273,6 +286,8 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 }
 
 type server struct {
+	lastActivity      atomic.Int64
+	activeRequests    atomic.Int64
 	ctx               *clictx.Context
 	cfg               config.Config
 	logger            *Logger
@@ -366,6 +381,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if path != "/daemon/status" && path != "/health" {
+		s.lastActivity.Store(time.Now().UnixNano())
+		s.activeRequests.Add(1)
+		defer s.activeRequests.Add(-1)
+	}
 	switch {
 	case path == "/daemon/status" && r.Method == http.MethodGet:
 		s.handleStatus(w)
@@ -397,6 +417,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleWebPageStatus(w, r, authCtx)
 	case path == "/web-pages/index" && r.Method == http.MethodGet:
 		s.handleWebPageIndex(w, r, authCtx)
+	case path == "/web-pages/tracking" && r.Method == http.MethodPost:
+		s.handleWebPageTracking(w, r, authCtx)
 	case path == "/transfer" && r.Method == http.MethodPost:
 		s.handleTransfer(w, r, authCtx)
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):
@@ -409,6 +431,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleGatewayCompat(w, r, path)
 	case strings.HasPrefix(path, "/tunnel/"):
 		s.handleTunnel(w, r, path)
+	case strings.HasPrefix(path, "/local-services/"):
+		s.handleLocalService(w, r, path)
 	default:
 		writeJSON(w, 404, map[string]any{"ok": false, "error": map[string]any{"code": errs.CodeNotFound, "message": "未知路径：" + path}})
 	}
@@ -609,6 +633,7 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 		"lastIngestAt": nilIfEmptyStr(lastIngest), "ingestCount": ingestCount,
 		"ingressMode":    s.ingressMode,
 		"cloud":          s.cloudStatusPayload(),
+		"activity":       s.activityPayload(),
 		"relay":          relayStatus,
 		"tunnels":        relayStatus["tunnels"],
 		"credentialMode": set.Mode, "defaultLabel": defaultLabel,
@@ -623,7 +648,7 @@ func (s *server) cloudStatusPayload() map[string]any {
 	return map[string]any{
 		// source 说明这台主机是谁定的（env|cloud.host|relay.url|default）——
 		// 光给 host 不够，排查时最费时间的恰恰是"配置写着 A 为什么打到 B"。
-		"env": envhost.Name(), "host": host, "source": source,
+		"env": envhost.NameForHost(host), "host": host, "source": source,
 		"lightApiUrl":  light.LightAPIURL(host),
 		"lightRuleApi": lightrule.APIURL(host),
 	}
@@ -651,7 +676,7 @@ func (s *server) relayStatusPayload() map[string]any {
 		}
 		expectedURL := config.ResolveRelayURL(s.cfg)
 		return map[string]any{
-			"mode": "relay", "connected": connected, "env": envhost.Name(), "url": expectedURL, "enabled": s.cfg.Relay.Enabled,
+			"mode": "relay", "connected": connected, "env": envhost.NameForHost(expectedURL), "url": expectedURL, "enabled": s.cfg.Relay.Enabled,
 			"reconnectAttempt": reconnectAttempt, "lastDisconnectReason": nilIfEmptyStr(lastDisconnectReason),
 			// stale：默认隧道实际拨的地址与配置解析出的地址不一致，说明正在跟随环境切换重连。
 			"stale":      currentURL != "" && currentURL != expectedURL,
@@ -671,7 +696,7 @@ func (s *server) relayStatusPayload() map[string]any {
 		}
 	}
 	return map[string]any{
-		"mode": "standalone-http", "connected": false, "env": envhost.Name(), "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
+		"mode": "standalone-http", "connected": false, "env": envhost.NameForHost(config.ResolveRelayURL(s.cfg)), "url": config.ResolveRelayURL(s.cfg), "enabled": s.cfg.Relay.Enabled,
 		"reconnectAttempt": 0, "note": note, "tunnels": []any{},
 		"stale": false, "currentUrl": nil, "expectedUrl": config.ResolveRelayURL(s.cfg),
 	}
@@ -684,7 +709,7 @@ func isIngestPath(path string) bool {
 	case "/notifications", "/images",
 		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么
 		// 一起能用 api-key，要么一起不能，分开授权只会让 popup 一半功能可用。
-		"/web-pages", "/web-pages/status", "/web-pages/index",
+		"/web-pages", "/web-pages/status", "/web-pages/index", "/web-pages/tracking",
 		"/gateway/notifications.push", "/gateway/recordings.result.write", "/gateway/images.sync":
 		return true
 	}
@@ -781,4 +806,13 @@ func defaultEntryLabel(set creds.CredentialSet) any {
 		return nil
 	}
 	return set.DefaultEntry.Label
+}
+
+func (s *server) activityPayload() map[string]any {
+	downloads := int64(0)
+	if s.recordingStorage != nil {
+		downloads = s.recordingStorage.ActiveDownloads()
+	}
+	requests := s.activeRequests.Load()
+	return map[string]any{"busy": downloads > 0 || requests > 0, "activeRequests": requests, "recordingDownloads": downloads}
 }

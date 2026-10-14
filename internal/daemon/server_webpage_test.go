@@ -121,3 +121,40 @@ func TestWebPagePathsRequireAuth(t *testing.T) {
 		t.Fatalf("无凭据时 status = %d, 期望 401", resp.StatusCode)
 	}
 }
+
+func TestWebPageTrackingToggle(t *testing.T) {
+	_, ts := newTestServer(t, "")
+	post := func(path, body string) (*http.Response, map[string]any) {
+		t.Helper()
+		resp, err := http.Post(ts.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp, out
+	}
+
+	_, ingest := post("/web-pages", `{"canonicalUrl":"https://example.com/board","title":"看板","capturedAt":"2026-08-01T09:00:00+08:00","markdown":"营收 100","contentHash":"a1"}`)
+	hash, _ := ingest["urlHash"].(string)
+	if ingest["version"] != float64(1) || ingest["tracking"] != "auto" {
+		t.Fatalf("首次收藏应回 version=1 tracking=auto: %v", ingest)
+	}
+
+	resp, out := post("/web-pages/tracking", `{"hash":"`+hash[:16]+`","tracking":"off"}`)
+	if resp.StatusCode != 200 || out["tracking"] != "off" {
+		t.Fatalf("关闭追踪: status=%d body=%v", resp.StatusCode, out)
+	}
+	_, second := post("/web-pages", `{"canonicalUrl":"https://example.com/board","title":"看板","capturedAt":"2026-08-02T09:00:00+08:00","markdown":"营收 120","contentHash":"a2"}`)
+	if _, has := second["version"]; has || second["tracking"] != "off" {
+		t.Fatalf("关闭后应退回旧回执: %v", second)
+	}
+
+	if resp, _ := post("/web-pages/tracking", `{"hash":"`+hash[:16]+`","tracking":"maybe"}`); resp.StatusCode != 400 {
+		t.Errorf("非法取值应 400，得到 %d", resp.StatusCode)
+	}
+	if resp, _ := post("/web-pages/tracking", `{"hash":"deadbeefdeadbeef","tracking":"on"}`); resp.StatusCode != 404 {
+		t.Errorf("没收过的网页应 404，得到 %d", resp.StatusCode)
+	}
+}
