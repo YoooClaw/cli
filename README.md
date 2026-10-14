@@ -600,6 +600,11 @@ yc update install --version 0.13.0
 
 Standalone daemons check after about one minute and then every four hours. Background installation waits for ten minutes without business requests and no active requests or recording downloads; eligibility and activity are checked again before replacement. Disabling `autoUpdate.enabled` retains checks, reporting and manual installation but disables background installation. Restart the daemon after changing this setting.
 
+On Linux, updates launched from the managed daemon run in a separate transient user service (`yoooclaw-update-<updateId>`). Stopping the daemon therefore does not stop its installer. If the independent service cannot start, the daemon remains running; its service configuration and autostart preference are not changed.
+
+For WUYING reinstalls, a broken old CLI no longer has to successfully execute `daemon autostart disable`: the installer can stop the matching standard user service directly and check that the runtime locks are free before replacing it. An occupied runtime lock, a different service executable, or an inaccessible service manager still blocks replacement. Existing credentials and user data are retained. Older clients affected by the update-worker bug need one installation through the official installer after this fix is released; publishing a newer artifact alone does not repair their running updater.
+
+
 Only standalone binaries registered by the official native installer are replaced. Hermes embedded/shared binaries and npm installations are excluded. Updates retain environment, credentials and autostart settings. Claude skills are refreshed when detected, retaining Wuying command bindings. Manual installation works with an offline daemon and still requires rollout eligibility.
 
 `started` means the installer was launched, not that the new version is active. Activation requires a running, connected new daemon; offline installs await its next startup. Phase logs and terminal results share an `updateId`; queues retry for up to seven days and redact errors before persistence. Official scripts report phases when the existing CLI supports reporting; a first install or older CLI cannot report those earlier phases.
