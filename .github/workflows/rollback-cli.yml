@@ -1,0 +1,84 @@
+name: Rollback CLI OSS
+
+# 把生产 OSS 的 live 安装脚本与 latest 标记回滚到某个已发布的正式版。
+# 从目标版本的 tag 检出源码，用该版本自己的 oss-upload 重新渲染安装脚本；
+# 二进制取自目标版本的 GitHub Release，并按 OSS 上已发布的 checksums.txt 校验，
+# 因此 v<版本>/ 归档内容与原发布保持一致。不改 npm、不改 GitHub Release。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 回滚到的正式版本号（如 0.12.2）
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-oss
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VERSION: ${{ inputs.version }}
+      OSS_REGION: oss-cn-hangzhou
+      OSS_BUCKET: yoooclaw-artifacts
+      OSS_PUBLIC_URL: https://artifact.yoooclaw.com
+      OSS_PREFIX: cli
+    steps:
+      - name: Validate version
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::只能回滚到正式版（x.y.z），收到: $VERSION"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: cli-v${{ inputs.version }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: tools/oss-upload/go.sum
+
+      - name: Download release binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist-native
+          cd dist-native
+          gh release download "cli-v$VERSION" --repo "$GITHUB_REPOSITORY" \
+            -p 'yoooclaw-darwin-*' -p 'yoooclaw-linux-*' -p 'yoooclaw-win32-*' -p checksums.txt
+          rm -f ./*.tgz
+          # 以 OSS 上原发布的 checksums 为准，确保回滚上传的正是当时发布的二进制
+          curl -fsSL "$OSS_PUBLIC_URL/$OSS_PREFIX/v$VERSION/checksums.txt" -o oss-checksums.txt
+          sha256sum -c oss-checksums.txt
+          cmp checksums.txt oss-checksums.txt
+          rm oss-checksums.txt
+          ls -l
+
+      - name: Re-publish to Alibaba OSS
+        timeout-minutes: 40
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ]; then
+            echo "::error::缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（production environment）"
+            exit 1
+          fi
+          go -C tools/oss-upload run . --version "$VERSION"
+
+      - name: Verify live endpoints
+        run: |
+          latest=$(curl -fsSL "$OSS_PUBLIC_URL/$OSS_PREFIX/latest" | tr -d '[:space:]')
+          [ "$latest" = "$VERSION" ] || { echo "::error::latest=$latest，期望 $VERSION"; exit 1; }
+          for f in install.sh install.ps1 install-wuying.sh; do
+            curl -fsSL "$OSS_PUBLIC_URL/$OSS_PREFIX/$f" | cmp - <(curl -fsSL "$OSS_PUBLIC_URL/$OSS_PREFIX/v$VERSION/installer/$f")
+          done
+          echo "OSS live 已回滚到 $VERSION"
