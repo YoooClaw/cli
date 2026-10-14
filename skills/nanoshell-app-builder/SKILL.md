@@ -32,6 +32,8 @@ description: 仅用于 YoooClaw / NanoShell 硬件屏幕程序的开发、修改
 
 ## 3. 实现并构建候选包
 
+涉及文字、图形或页面布局时，先读取 [画面与字体规范](references/rendering.md)，按目标固件核对字形、尺寸与试玩一致性。
+
 编写前读取项目的 `guest/sdk/ns_guest.h`、`docs/host-api-v1.md` 和 `docs/design-notes.md`；最小应用参考 `hello_tiny.c`，按键相位参考 `hop.c`，存储参考 `counter.c`。
 
 从最贴近需求的示例起步，先写出包含画面、核心输入和退出路径的最小版本并立即编译，再逐项补齐 `acceptance.md` 的功能。首次构建的目标是尽早验证接口与工具链，完整需求仍须全部实现并验收。预览器内部实现仅在公开接口和示例无法回答具体问题，或实际运行报错时按相关函数查阅。
