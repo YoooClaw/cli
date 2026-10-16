@@ -63,6 +63,7 @@ func TestFor(t *testing.T) {
 		p.DaemonLog:     filepath.Join("logs", "daemon.log"),
 		p.Notifications: "notifications", p.Recordings: "recordings",
 		p.Locations: "locations",
+		p.Calendars: "calendars",
 		p.Voice:     "voice",
 		p.Images:    "images", p.WebPages: "web-pages",
 		p.LightRules: "light-rules", p.State: "state",

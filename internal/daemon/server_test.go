@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/YoooClaw/cli/internal/calendar"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/location"
@@ -35,6 +36,7 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 		st:              &runtimeState{startedAt: "2026-06-07T10:00:00Z"},
 		storage:         storage,
 		locationStorage: location.NewStorage(p.Locations),
+		calendarStorage: calendar.NewStorage(p.Calendars),
 		token:           token,
 		ignored:         map[string]bool{"com.spam.app": true},
 		bind:            "127.0.0.1",
