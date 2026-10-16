@@ -29,6 +29,7 @@ import (
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/light"
 	"github.com/YoooClaw/cli/internal/lightrule"
+	"github.com/YoooClaw/cli/internal/location"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
@@ -41,7 +42,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"notifications", "recordings", "locations", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -158,7 +159,8 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 	srv := &server{
 		ctx: ctx, cfg: cfg, logger: logger, st: st, storage: storage,
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
-		token: token, credentialSet: credentialSet, ignored: ignored, bind: bind,
+		locationStorage: location.NewStorage(ctx.Paths.Locations),
+		token:           token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
 		ingressMode: mode, egress: NoopEgress{},
 		transfer: &transfer.Service{
@@ -294,6 +296,7 @@ type server struct {
 	st                *runtimeState
 	storage           *notif.Storage
 	recordingStorage  *recording.Storage
+	locationStorage   *location.Storage
 	recordingEventLog *recording.EventLog
 	transfer          *transfer.Service
 	ingressMode       string
@@ -403,6 +406,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	case path == "/notifications" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "notifications")
+	case path == "/locations" && r.Method == http.MethodPost:
+		s.handleLocationIngest(w, r)
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
 	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
@@ -706,7 +711,7 @@ func (s *server) relayStatusPayload() map[string]any {
 
 func isIngestPath(path string) bool {
 	switch path {
-	case "/notifications", "/images",
+	case "/notifications", "/locations", "/images",
 		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么
 		// 一起能用 api-key，要么一起不能，分开授权只会让 popup 一半功能可用。
 		"/web-pages", "/web-pages/status", "/web-pages/index", "/web-pages/tracking",

@@ -11,6 +11,7 @@ import (
 
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/location"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/paths"
 	"github.com/YoooClaw/cli/internal/recording"
@@ -28,18 +29,19 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 		t.Fatal(err)
 	}
 	srv := &server{
-		ctx:        &clictx.Context{Profile: "default", Paths: p},
-		cfg:        config.Default(p.Credentials),
-		logger:     logger,
-		st:         &runtimeState{startedAt: "2026-06-07T10:00:00Z"},
-		storage:    storage,
-		token:      token,
-		ignored:    map[string]bool{"com.spam.app": true},
-		bind:       "127.0.0.1",
-		port:       18789,
-		owner:      "hermes-plugin",
-		generation: "gen-1",
-		executable: "/tmp/yoooclaw",
+		ctx:             &clictx.Context{Profile: "default", Paths: p},
+		cfg:             config.Default(p.Credentials),
+		logger:          logger,
+		st:              &runtimeState{startedAt: "2026-06-07T10:00:00Z"},
+		storage:         storage,
+		locationStorage: location.NewStorage(p.Locations),
+		token:           token,
+		ignored:         map[string]bool{"com.spam.app": true},
+		bind:            "127.0.0.1",
+		port:            18789,
+		owner:           "hermes-plugin",
+		generation:      "gen-1",
+		executable:      "/tmp/yoooclaw",
 	}
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)

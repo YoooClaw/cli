@@ -419,6 +419,45 @@ yoooclaw api POST /images --data @image.json
 echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 ```
 
+### 位置上报
+
+CLI 接收 `POST /locations`，请求体为 `{"items":[位置记录,...]}`。客户端经 Relay
+的 `POST /api/message/messageBridge/send` 调用时，使用 `path: "locations"`，
+`payload` 为该请求体序列化后的 JSON 字符串，并沿用现有鉴权与 `x-api-key-id` 路由。
+
+```json
+{
+  "items": [
+    {
+      "longitude": 120.123456,
+      "latitude": 30.123456,
+      "deviceType": "iOS",
+      "horizontalAccuracy": 35,
+      "collectedAt": "2026-10-16T01:00:02.456Z",
+      "poiText": "示例地点",
+      "address": "示例市 示例路 1 号"
+    }
+  ]
+}
+```
+
+`deviceType` 表示上报设备，为可选字符串，可省略、传 `null` 或空字符串 `""`；
+CLI 原样保存，不限定设备名称或枚举值。
+
+只校验经纬度为数值且分别在 `[-180, 180]`、`[-90, 90]` 内，零值合法；其他字段
+不作业务校验，原样保存，不补充 `receivedAt`、`clientLabel`，也不去重。
+请求必须包含非空 `items` 数组，整批经纬度校验通过后才开始写入。
+
+记录按 **CLI 接收当天的本地日期** 追加到当前 profile 的
+`locations/YYYY-MM-DD.jsonl`，每行一条 JSON；`collectedAt` 不参与文件日期计算。
+目录与通知、录音使用同一数据根目录，遵循 `YOOOCLAW_HOME` 和 profile 配置，
+目录权限为 `0700`，文件权限为 `0600`。
+
+写入成功返回 HTTP 200 `{"ok":true,"ingested":1}`；非法请求返回 HTTP 400，
+保存失败返回 HTTP 500、错误码 `LOCATION_WRITE_FAILED`。客户端须检查 Relay
+返回的内层 HTTP 状态与 CLI 结果；重试会再次追加。当前仅提供上报和存储，
+尚未接入位置查询命令、同步或数据迁移包。
+
 ## 进阶用法
 
 ### 全局 flags
