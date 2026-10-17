@@ -241,10 +241,10 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 	}
 
 	if mode == config.IngressStandalone {
-		srv.lastActivity.Store(time.Now().UnixNano())
+		srv.lastRecordingActivity.Store(time.Now().UnixNano())
 		stopUpdates := updater.StartRuntime(func() (updater.Identity, error) { return updater.NewIdentity(ctx.Paths) }, executable,
 			func() bool {
-				return srv.activityPayload()["busy"] == false && time.Since(time.Unix(0, srv.lastActivity.Load())) >= 10*time.Minute
+				return srv.updateIdle(time.Now())
 			},
 			func() bool { return srv.relayStatusPayload()["connected"] == true },
 			func() bool { return cfg.AutoUpdate.Enabled }, logger.Warn)
@@ -286,26 +286,27 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 }
 
 type server struct {
-	lastActivity      atomic.Int64
-	activeRequests    atomic.Int64
-	ctx               *clictx.Context
-	cfg               config.Config
-	logger            *Logger
-	st                *runtimeState
-	storage           *notif.Storage
-	recordingStorage  *recording.Storage
-	recordingEventLog *recording.EventLog
-	transfer          *transfer.Service
-	ingressMode       string
-	token             string
-	ignored           map[string]bool
-	bind              string
-	port              int
-	owner             string
-	generation        string
-	executable        string
-	shutdown          func(string)
-	shutdownOnce      sync.Once
+	lastRecordingActivity atomic.Int64
+	activeRecordingWrites atomic.Int64
+	activeRequests        atomic.Int64
+	ctx                   *clictx.Context
+	cfg                   config.Config
+	logger                *Logger
+	st                    *runtimeState
+	storage               *notif.Storage
+	recordingStorage      *recording.Storage
+	recordingEventLog     *recording.EventLog
+	transfer              *transfer.Service
+	ingressMode           string
+	token                 string
+	ignored               map[string]bool
+	bind                  string
+	port                  int
+	owner                 string
+	generation            string
+	executable            string
+	shutdown              func(string)
+	shutdownOnce          sync.Once
 
 	// shareMu 保护下面三个字段：/daemon/reload 会在请求 goroutine 里整体替换它们，
 	// 而每个并发请求都在读（鉴权、status、egress 推送）。
@@ -382,7 +383,6 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if path != "/daemon/status" && path != "/health" {
-		s.lastActivity.Store(time.Now().UnixNano())
 		s.activeRequests.Add(1)
 		defer s.activeRequests.Add(-1)
 	}
@@ -815,4 +815,21 @@ func (s *server) activityPayload() map[string]any {
 	}
 	requests := s.activeRequests.Load()
 	return map[string]any{"busy": downloads > 0 || requests > 0, "activeRequests": requests, "recordingDownloads": downloads}
+}
+
+// 更新只保护录音业务；普通请求计数仅用于状态展示。
+func (s *server) updateIdle(now time.Time) bool {
+	if s.activeRecordingWrites.Load() > 0 || (s.recordingStorage != nil && s.recordingStorage.ActiveDownloads() > 0) {
+		s.lastRecordingActivity.Store(now.UnixNano())
+		return false
+	}
+	return now.Sub(time.Unix(0, s.lastRecordingActivity.Load())) >= 10*time.Minute
+}
+
+func (s *server) beginRecordingWrite() func() {
+	s.activeRecordingWrites.Add(1)
+	return func() {
+		s.lastRecordingActivity.Store(time.Now().UnixNano())
+		s.activeRecordingWrites.Add(-1)
+	}
 }
