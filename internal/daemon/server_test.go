@@ -24,6 +24,7 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 	t.Setenv("YOOOCLAW_HOME", t.TempDir())
 	p := paths.For(paths.DefaultProfile)
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 	storage := notif.NewStorage(p.Notifications, notif.PluginConfig{}, logger)
 	if err := storage.Init(); err != nil {
 		t.Fatal(err)
@@ -164,6 +165,7 @@ func TestNotifyRecordingStatusPreservesAudioFailure(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "recordings")
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 	storage := recording.NewStorage(dir, logger)
 	if err := storage.Init(); err != nil {
 		t.Fatal(err)
@@ -273,6 +275,7 @@ func TestServerNotFound(t *testing.T) {
 func TestListenWithFallbackPortZeroReturnsActualPort(t *testing.T) {
 	t.Parallel()
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 	ln, port, err := listenWithFallback("127.0.0.1", 0, logger)
 	if err != nil {
 		t.Fatal(err)
