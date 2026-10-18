@@ -12,6 +12,7 @@ func TestLoggerWritesLevels(t *testing.T) {
 	t.Parallel()
 	logFile := filepath.Join(t.TempDir(), "daemon.log")
 	l := NewLogger(logFile, "info", false)
+	t.Cleanup(func() { _ = l.Close() })
 	l.Info("hello")
 	l.Warn("careful")
 	l.Error("boom")
@@ -57,6 +58,7 @@ func TestLoggerCleanupRotated(t *testing.T) {
 func TestLoggerLevelDefaults(t *testing.T) {
 	t.Parallel()
 	l := NewLogger(filepath.Join(t.TempDir(), "x.log"), "", false)
+	t.Cleanup(func() { _ = l.Close() })
 	if l.level != "info" {
 		t.Errorf("empty level should default to info, got %q", l.level)
 	}
@@ -69,6 +71,26 @@ func TestLoggerLevelDefaults(t *testing.T) {
 	// 未知级别按 info 处理
 	if !l.enabled("bogus") {
 		t.Error("unknown level treated as info should be enabled")
+	}
+}
+
+func TestLoggerCloseReleasesLogFileAndDoesNotReopen(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "daemon.log")
+	l := NewLogger(logFile, "info", false)
+	l.Info("before close")
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("second Close() = %v", err)
+	}
+	if err := os.Remove(logFile); err != nil {
+		t.Fatalf("remove closed log: %v", err)
+	}
+	l.Info("after close")
+	if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+		t.Fatalf("closed logger recreated log: %v", err)
 	}
 }
 

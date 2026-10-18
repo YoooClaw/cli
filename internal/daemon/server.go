@@ -112,6 +112,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 	}
 	ctx.Paths.MigrateLogs()
 	logger := NewLogger(ctx.Paths.DaemonLog, logLevel, false)
+	defer logger.Close()
 	logger.Info(diagnostics.Message("daemon.start_context", map[string]any{"profile": ctx.Profile, "version": version.Version, "executable": executable, "configPath": ctx.Paths.Config, "lockPath": ctx.Paths.DaemonLock, "ingress": mode, "relayEnabled": cfg.Relay.Enabled, "credentials": credentialSummary(credentialSet), "gatewayTokenSource": tokenRef.Source, "gatewayTokenPresent": token != ""}))
 	if lockErr != nil {
 		logger.Warn(diagnostics.Message("daemon.singleton_lock_unavailable", map[string]any{"error": diagnostics.SafeError(lockErr)}))
@@ -268,6 +269,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 				_ = httpSrv.Close()
 			}
 			RemoveLockIfOwnedBy(ctx.Paths, selfPID)
+			_ = logger.Close()
 			os.Exit(0)
 		})
 	}

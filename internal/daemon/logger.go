@@ -27,6 +27,7 @@ type Logger struct {
 	mu         sync.Mutex
 	currentDay string
 	f          *os.File
+	closed     bool
 }
 
 // NewLogger 构造 logger。
@@ -97,6 +98,9 @@ func (l *Logger) write(level, msg string) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
 	now := time.Now()
 	if dateKey(now) != l.currentDay {
 		if l.f != nil {
@@ -129,12 +133,37 @@ func (l *Logger) writeLineLocked(line string) {
 }
 
 func (l *Logger) reopenLocked() bool {
+	if l.closed {
+		return false
+	}
 	f, err := os.OpenFile(l.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return false
 	}
 	l.f = f
 	return true
+}
+
+// Close flushes the process-lifetime log handle. It is safe to call more than
+// once and prevents later writes from reopening the file. Windows does not
+// allow profile or temporary directories to be removed while this handle is
+// still open, so daemon owners must close it when their lifecycle ends.
+func (l *Logger) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil
+	}
+	l.closed = true
+	if l.f == nil {
+		return nil
+	}
+	err := l.f.Close()
+	l.f = nil
+	return err
 }
 
 func upper(s string) string {
