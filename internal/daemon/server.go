@@ -28,6 +28,7 @@ import (
 	"github.com/YoooClaw/cli/internal/envhost"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/healthdata"
 	"github.com/YoooClaw/cli/internal/light"
 	"github.com/YoooClaw/cli/internal/lightrule"
 	"github.com/YoooClaw/cli/internal/location"
@@ -43,7 +44,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "health-data", "health-data-daily-v2", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -160,9 +161,10 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 	srv := &server{
 		ctx: ctx, cfg: cfg, logger: logger, st: st, storage: storage,
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
-		locationStorage: location.NewStorage(ctx.Paths.Locations),
-		calendarStorage: calendar.NewStorage(ctx.Paths.Calendars),
-		token:           token, credentialSet: credentialSet, ignored: ignored, bind: bind,
+		locationStorage:   location.NewStorage(ctx.Paths.Locations),
+		calendarStorage:   calendar.NewStorage(ctx.Paths.Calendars),
+		healthDataStorage: healthdata.NewStorage(ctx.Paths.HealthData),
+		token:             token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
 		ingressMode: mode, egress: NoopEgress{},
 		transfer: &transfer.Service{
@@ -300,6 +302,7 @@ type server struct {
 	recordingStorage  *recording.Storage
 	locationStorage   *location.Storage
 	calendarStorage   *calendar.Storage
+	healthDataStorage *healthdata.Storage
 	recordingEventLog *recording.EventLog
 	transfer          *transfer.Service
 	ingressMode       string
@@ -413,6 +416,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLocationIngest(w, r)
 	case path == "/calendars" && r.Method == http.MethodPost:
 		s.handleCalendarIngest(w, r)
+	case path == "/health-data" && r.Method == http.MethodPost:
+		s.handleHealthDataIngest(w, r)
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
 	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
@@ -716,7 +721,7 @@ func (s *server) relayStatusPayload() map[string]any {
 
 func isIngestPath(path string) bool {
 	switch path {
-	case "/notifications", "/locations", "/calendars", "/images",
+	case "/notifications", "/locations", "/calendars", "/health-data", "/images",
 		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么
 		// 一起能用 api-key，要么一起不能，分开授权只会让 popup 一半功能可用。
 		"/web-pages", "/web-pages/status", "/web-pages/index", "/web-pages/tracking",

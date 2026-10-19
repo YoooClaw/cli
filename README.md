@@ -490,6 +490,35 @@ Audio downloads reuse the Alibaba Cloud OSS Go SDK v2 multipart downloader (8 Mi
 
 Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
 
+### Health Data Ingest
+
+`POST /health-data` accepts platform-neutral daily snapshots (`schemaVersion: 2`) through existing ingest authentication. `/health` advertises `health-data-daily-v2` in addition to the legacy `health-data` capability. Relay uses `path: "health-data"` and the JSON string as `payload` of `/api/message/messageBridge/send`.
+
+```json
+{
+  "schemaVersion": 2,
+  "provider": "healthkit",
+  "collectedAt": "2026-10-19T15:00:00+08:00",
+  "timeZone": "Asia/Shanghai",
+  "days": [
+    {"date":"2026-09-30","items":[
+      {"metric":"steps","name":"Steps","value":12000,"unit":"steps"},
+      {"metric":"sleep_minutes","name":"Total Sleep Duration","value":420,"unit":"min"}
+    ]}
+  ]
+}
+```
+
+Each business date is saved as one current snapshot in `profiles/<profile>/health-data/YYYY-MM-DD.jsonl`, regardless of when it arrives. The first line contains `schemaVersion`, `date`, `timeZone`, `updatedAt` and `provider`; subsequent lines contain one short metric (`metric/name/value/unit`) each. Names use fixed English labels and units use English tokens or standard symbols (for example `Steps` / `steps`, `Flights Climbed` / `floors`, `Respiratory Rate` / `breaths/min`), independent of UI language. The CLI never sums source samples. Mobile clients supply system aggregate results or documented deterministic merges, with readable names, explicit statistics/units and no repeated device metadata. A directory `README.md` explains the reading rules.
+
+The CLI validates the entire request before writes: 1..366 unique dates, 1..256 unique metrics per date, valid dates and IANA timezone, RFC3339 collection time and finite numeric values. Empty or inaccessible reads must not be sent as a deletion or invented zero. Each nonempty supplied day is a complete visible snapshot, replacing that day's prior file atomically; a missing metric is unknown, not zero. Files outside the supplied dates remain unchanged. Older collection times cannot overwrite newer snapshots. Multi-date writes are atomic per date, and retries are idempotent if a later date write fails.
+
+Quantity metrics such as steps come from native merged statistics. Sleep/workouts use the mobile first-source rule, not an assertion of equivalence to the Health app's private source priorities. Sleep minutes are clipped to each local calendar day; workout active duration is attributed to its start date. SDNN/RMSSD, Apple exercise-ring minutes/exercise-session duration, activity-specific/general distance are distinct semantics and must not be renamed as equivalent metrics. Clients recalculate the latest 30 local calendar days; older stored dates remain historical, without automatic correction outside that window.
+
+Legacy v1 batches remain accepted unchanged, including unknown fields, numeric lexemes and `deletedIds`, but are appended under `health-data/legacy/receipts/` by receipt date. On the first v2 write, existing v1 date files in the root are copied into `legacy/imported/` before being removed from the daily-results root; backup failure leaves the original intact, and unknown formats are not moved. Legacy data is for compatibility/debugging and must not be added to daily totals.
+
+Success returns HTTP 200 with `{"ok":true,"ingested":N,"deleted":0}` for v2, where N counts metrics across all days. Legacy receipts retain their original item/deletion counts. Invalid input returns 400; write failures return 500 with `HEALTH_DATA_WRITE_FAILED`. No health database or query command is introduced.
+
 ### Data Transfer
 
 `yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package: a single `.tar.gz` file (since 0.12.0, when `--out` ends in `.tar.gz`/`.tgz`) or a package directory (any other path). The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions; targets older than CLI 0.12.0 / plugin 1.18.0 only read directories, and `--target-capabilities` refuses a tar.gz export for them with `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`. Compression is not encryption.
@@ -559,6 +588,7 @@ Full documentation lives at [yc-docs/src/cli](https://github.com/YoooClaw/yc-doc
 | [internal/paths/paths.go](internal/paths/paths.go)      | `~/.yoooclaw/` directory layout resolution |
 | [internal/daemon/server.go](internal/daemon/server.go)  | daemon HTTP server, auth, Relay wiring |
 | [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
+| [internal/healthdata](internal/healthdata) / [internal/daemon/server_healthdata.go](internal/daemon/server_healthdata.go) | raw health-batch JSONL storage and authenticated ingest |
 | [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | in-process dispatch from inbound Relay frames to daemon HTTP/gateway |
 | [internal/recording](internal/recording)                | recording OSS download, state machine, ASR, transcript storage |
 | [internal/capturerecording](internal/capturerecording)  | read-only daily indexes and artifact checks for YoooClaw Capture recordings |

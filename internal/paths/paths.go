@@ -9,7 +9,7 @@
 //	    credentials.json          instance 级密文
 //	    daemon.lock
 //	    logs/daemon.log           daemon 日志 + 轮转文件（logs/daemon.log.YYYY-MM-DD）
-//	    notifications/ recordings/ locations/ calendars/ images/ light-rules/ state/
+//	    notifications/ recordings/ locations/ calendars/ health-data/ images/ light-rules/ state/
 package paths
 
 import (
@@ -77,6 +77,7 @@ type Paths struct {
 	Recordings    string
 	Locations     string
 	Calendars     string
+	HealthData    string
 	Voice         string
 	Images        string
 	WebPages      string
@@ -105,6 +106,7 @@ func ForRoot(root, profile string) Paths {
 		Recordings:    filepath.Join(dir, "recordings"),
 		Locations:     filepath.Join(dir, "locations"),
 		Calendars:     filepath.Join(dir, "calendars"),
+		HealthData:    filepath.Join(dir, "health-data"),
 		Voice:         filepath.Join(dir, "voice"),
 		Images:        filepath.Join(dir, "images"),
 		WebPages:      filepath.Join(dir, "web-pages"),

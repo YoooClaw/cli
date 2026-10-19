@@ -62,10 +62,11 @@ func TestFor(t *testing.T) {
 		p.DaemonLock: "daemon.lock", p.Logs: "logs",
 		p.DaemonLog:     filepath.Join("logs", "daemon.log"),
 		p.Notifications: "notifications", p.Recordings: "recordings",
-		p.Locations: "locations",
-		p.Calendars: "calendars",
-		p.Voice:     "voice",
-		p.Images:    "images", p.WebPages: "web-pages",
+		p.Locations:  "locations",
+		p.Calendars:  "calendars",
+		p.HealthData: "health-data",
+		p.Voice:      "voice",
+		p.Images:     "images", p.WebPages: "web-pages",
 		p.LightRules: "light-rules", p.State: "state",
 	}
 	for got, leaf := range cases {
