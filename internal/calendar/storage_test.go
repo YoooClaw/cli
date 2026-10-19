@@ -25,10 +25,23 @@ func replace(t *testing.T, s *Storage, p Payload) *Batch {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Replace(b); err != nil {
+	if _, err := s.Replace(b); err != nil {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func replaceResult(t *testing.T, s *Storage, p Payload) Result {
+	t.Helper()
+	b, err := Prepare(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Replace(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func readDay(t *testing.T, dir, date string) []Record {
@@ -55,7 +68,7 @@ func TestReplaceGroupsCrossDayAndPreservesClientFields(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "calendars")
 	s := NewStorage(dir)
 	cross := record(t, `{"id":"cross","calendarName":"工作","title":"跨天日程","startAt":"2026-10-16T23:00:00+08:00","endAt":"2026-10-18T01:00:00+08:00","timeZone":"Asia/Shanghai","isAllDay":false,"description":"备注\n换行","extra":{"n":9007199254740993}}`)
-	b := replace(t, s, Payload{StartDate: "2026-10-16", EndDate: "2026-10-19", Items: []Record{cross}})
+	b := replace(t, s, Payload{StartDate: "2026-10-16", EndDate: "2026-10-19", CollectedAt: testCollectedAt, Items: []Record{cross}})
 	if b.ItemCount() != 1 || b.DayCount() != 4 {
 		t.Fatalf("counts: items=%d days=%d", b.ItemCount(), b.DayCount())
 	}
@@ -92,7 +105,7 @@ func TestReplaceRescheduleEmptySnapshotAndRetainHistory(t *testing.T) {
 	}
 	first := record(t, `{"id":"event","startAt":"2026-10-16T09:00:00+08:00","endAt":"2026-10-16T09:30:00+08:00","timeZone":"Asia/Shanghai"}`)
 	second := record(t, `{"id":"event-new-id","startAt":"2026-10-17T10:00:00+08:00","endAt":"2026-10-17T10:30:00+08:00","timeZone":"Asia/Shanghai"}`)
-	p := Payload{StartDate: "2026-10-16", EndDate: "2026-10-18", Items: []Record{first}}
+	p := Payload{StartDate: "2026-10-16", EndDate: "2026-10-18", CollectedAt: testCollectedAt, Items: []Record{first}}
 	replace(t, s, p)
 	p.Items = []Record{second}
 	// 重发同一份完整快照应覆盖，不追加或依赖旧 ID。
@@ -123,12 +136,12 @@ func TestReplaceSerializesConcurrentBatches(t *testing.T) {
 	var wg sync.WaitGroup
 	for _, id := range []string{"a", "b", "c", "d"} {
 		r := record(t, `{"id":"`+id+`","startAt":"2026-10-16T23:00:00+08:00","endAt":"2026-10-17T01:00:00+08:00","timeZone":"Asia/Shanghai"}`)
-		b, err := Prepare(Payload{StartDate: "2026-10-16", EndDate: "2026-10-17", Items: []Record{r}})
+		b, err := Prepare(Payload{StartDate: "2026-10-16", EndDate: "2026-10-17", CollectedAt: testCollectedAt, Items: []Record{r}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		wg.Go(func() {
-			if err := s.Replace(b); err != nil {
+			if _, err := s.Replace(b); err != nil {
 				t.Error(err)
 			}
 		})
@@ -138,5 +151,41 @@ func TestReplaceSerializesConcurrentBatches(t *testing.T) {
 	b := readDay(t, dir, "2026-10-17")
 	if len(a) != 1 || len(b) != 1 || !bytes.Equal(a[0]["id"], b[0]["id"]) {
 		t.Fatalf("batches interleaved: %+v %+v", a, b)
+	}
+}
+
+func TestReplaceSkipsStaleSnapshotAcrossRestart(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fresh := record(t, `{"id":"fresh","startAt":"2026-10-16T09:00:00+08:00","endAt":"2026-10-16T09:30:00+08:00","timeZone":"Asia/Shanghai"}`)
+	stale := record(t, `{"id":"stale","startAt":"2026-10-16T09:00:00+08:00","endAt":"2026-10-16T09:30:00+08:00","timeZone":"Asia/Shanghai"}`)
+	freshPayload := Payload{StartDate: "2026-10-16", EndDate: "2026-10-16", CollectedAt: "2026-10-16T12:00:00+08:00", Items: []Record{fresh}}
+	stalePayload := Payload{StartDate: "2026-10-16", EndDate: "2026-10-16", CollectedAt: "2026-10-16T11:00:00+08:00", Items: []Record{stale}}
+
+	if result := replaceResult(t, NewStorage(dir), freshPayload); !result.Applied || result.FilesWritten != 1 {
+		t.Fatalf("fresh snapshot not applied: %+v", result)
+	}
+	// 模拟 daemon 重启：水位从 state.json 重新加载，迟到的旧快照整批跳过。
+	if result := replaceResult(t, NewStorage(dir), stalePayload); result.Applied || result.FilesWritten != 0 {
+		t.Fatalf("stale snapshot applied: %+v", result)
+	}
+	got := readDay(t, dir, "2026-10-16")
+	if len(got) != 1 || !bytes.Equal(got[0]["id"], []byte(`"fresh"`)) {
+		t.Fatalf("stale snapshot overwrote newer data: %+v", got)
+	}
+	// 同一份快照重发（时间戳相同）必须幂等应用，不能因为「不新」被丢掉。
+	if result := replaceResult(t, NewStorage(dir), freshPayload); !result.Applied {
+		t.Fatalf("idempotent resend skipped: %+v", result)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, stateFile))
+	if err != nil || !bytes.Contains(raw, []byte(`2026-10-16T12:00:00+08:00`)) {
+		t.Fatalf("state watermark missing: %s %v", raw, err)
+	}
+	// 损坏的水位文件不应永久阻塞上报：视为没有历史，继续应用。
+	if err := os.WriteFile(filepath.Join(dir, stateFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result := replaceResult(t, NewStorage(dir), stalePayload); !result.Applied {
+		t.Fatalf("corrupt state blocked ingest: %+v", result)
 	}
 }

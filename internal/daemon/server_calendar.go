@@ -19,12 +19,25 @@ func (s *server) handleCalendarIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody("INVALID_PARAMS", err.Error()))
 		return
 	}
-	if err := s.calendarStorage.Replace(batch); err != nil {
+	if collectedAtTooFarInFuture(batch.CollectedAt()) {
+		writeJSON(w, http.StatusBadRequest, errBody("INVALID_PARAMS", "collectedAt is too far in the future"))
+		return
+	}
+	result, err := s.calendarStorage.Replace(batch)
+	if err != nil {
 		s.logger.Error(fmt.Sprintf("[calendars] requestId=%s write failed: %v", r.Header.Get(relay.InternalRequestIDHeader), err))
 		writeJSON(w, http.StatusInternalServerError, errBody("CALENDAR_WRITE_FAILED", "日程数据保存失败"))
 		return
 	}
-	s.logger.Info(fmt.Sprintf("[calendars] requestId=%s range=%s..%s ingested=%d files=%d",
-		r.Header.Get(relay.InternalRequestIDHeader), body.StartDate, body.EndDate, batch.ItemCount(), batch.DayCount()))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ingested": batch.ItemCount(), "filesWritten": batch.DayCount()})
+	requestID := r.Header.Get(relay.InternalRequestIDHeader)
+	if !result.Applied {
+		s.logger.Warn(fmt.Sprintf("[calendars] requestId=%s skipped stale snapshot collectedAt=%s", requestID, body.CollectedAt))
+	}
+	ingested := 0
+	if result.Applied {
+		ingested = batch.ItemCount()
+	}
+	s.logger.Info(fmt.Sprintf("[calendars] requestId=%s range=%s..%s ingested=%d files=%d applied=%t",
+		requestID, body.StartDate, body.EndDate, ingested, result.FilesWritten, result.Applied))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": result.Applied, "ingested": ingested, "filesWritten": result.FilesWritten})
 }

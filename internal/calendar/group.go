@@ -7,6 +7,16 @@ import (
 	_ "time/tzdata" // 发布后的独立 CLI 在没有系统时区库时也能解析 IANA 时区。
 )
 
+const (
+	// maxRangeDays 限制单次快照覆盖的日期数。daemon 经 Relay 对移动端暴露，
+	// 日期范围直接按天展开成内存和文件；没有上限时一个异常客户端就能写满磁盘。
+	maxRangeDays = 366
+	// maxItems 限制单次快照的日程条数（客户端实际只传约 39 天）。
+	maxItems = 20000
+	// maxPreparedBytes 限制跨天复制后准备落盘的总字节数，兜住「少量超大日程 × 长范围」的放大。
+	maxPreparedBytes = 16 << 20
+)
+
 // Prepare 先验证整批并生成每天完整的文件内容，包括没有日程的空日期。
 func Prepare(p Payload) (*Batch, error) {
 	start, err := parseDate(p.StartDate)
@@ -20,17 +30,29 @@ func Prepare(p Payload) (*Batch, error) {
 	if end.Before(start) {
 		return nil, fmt.Errorf("endDate must not be before startDate")
 	}
+	if days := int(end.Sub(start)/(24*time.Hour)) + 1; days > maxRangeDays {
+		return nil, fmt.Errorf("date range must not exceed %d days", maxRangeDays)
+	}
+	// collectedAt 必填：storage 用它拒绝迟到的旧快照，漏传会让乱序保护静默失效。
+	collected, err := time.Parse(time.RFC3339Nano, p.CollectedAt)
+	if err != nil {
+		return nil, fmt.Errorf("collectedAt must include an RFC3339 time zone offset")
+	}
 	if p.Items == nil {
 		return nil, fmt.Errorf("items must be an array; use [] for an empty snapshot")
 	}
+	if len(p.Items) > maxItems {
+		return nil, fmt.Errorf("items must not exceed %d entries", maxItems)
+	}
 
-	batch := &Batch{}
+	batch := &Batch{collectedAt: collected}
 	indices := make(map[string]int)
 	for day := start; !day.After(end); day = day.AddDate(0, 0, 1) {
 		date := day.Format(time.DateOnly)
 		indices[date] = len(batch.files)
 		batch.files = append(batch.files, dayFile{date: date})
 	}
+	prepared := 0
 	for i, item := range p.Items {
 		first, last, err := recordDates(item)
 		if err != nil {
@@ -54,6 +76,10 @@ func Prepare(p Payload) (*Batch, error) {
 		for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
 			index := indices[day.Format(time.DateOnly)]
 			batch.files[index].data = append(batch.files[index].data, line...)
+			prepared += len(line)
+			if prepared > maxPreparedBytes {
+				return nil, fmt.Errorf("snapshot expands to more than %d bytes; narrow the date range", maxPreparedBytes)
+			}
 		}
 	}
 	return batch, nil

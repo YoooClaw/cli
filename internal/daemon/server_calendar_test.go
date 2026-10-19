@@ -16,7 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const calendarSnapshot = `{"startDate":"2026-10-16","endDate":"2026-10-18","items":[{"id":"instance","calendarName":"工作","title":"夜间活动","startAt":"2026-10-16T23:00:00+08:00","endAt":"2026-10-18T00:00:00+08:00","timeZone":"Asia/Shanghai","isAllDay":false,"extra":{"n":9007199254740993}}]}`
+const calendarSnapshot = `{"startDate":"2026-10-16","endDate":"2026-10-18","collectedAt":"2026-10-16T12:00:00+08:00","items":[{"id":"instance","calendarName":"工作","title":"夜间活动","startAt":"2026-10-16T23:00:00+08:00","endAt":"2026-10-18T00:00:00+08:00","timeZone":"Asia/Shanghai","isAllDay":false,"extra":{"n":9007199254740993}}]}`
 
 func TestCalendarsAcceptAPIKeyAndReplaceDateFiles(t *testing.T) {
 	srv, _ := newTestServer(t, "gateway-secret")
@@ -45,7 +45,7 @@ func TestCalendarsAcceptAPIKeyAndReplaceDateFiles(t *testing.T) {
 			t.Fatalf("unexpected metadata: %s", raw)
 		}
 	}
-	w := post(`{"startDate":"2026-10-17","endDate":"2026-10-18","items":[]}`, "phone-key")
+	w := post(`{"startDate":"2026-10-17","endDate":"2026-10-18","collectedAt":"2026-10-16T13:00:00+08:00","items":[]}`, "phone-key")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ingested":0`) {
 		t.Fatalf("empty snapshot: %d %s", w.Code, w.Body.String())
 	}
@@ -80,6 +80,8 @@ func TestCalendarsInvalidBatchDoesNotOverwriteExistingFiles(t *testing.T) {
 		`{}`, `null`, `{"items":`,
 		`{"startDate":"2026-10-16","endDate":"2026-10-18"}`,
 		`{"startDate":"2026-10-16","endDate":"2026-10-18","items":null}`,
+		`{"startDate":"2026-10-16","endDate":"2026-10-18","items":[]}`,
+		`{"startDate":"2026-10-16","endDate":"2026-10-18","collectedAt":"2026-10-16","items":[]}`,
 		strings.Replace(calendarSnapshot, `"timeZone":"Asia/Shanghai"`, `"timeZone":"not-a-zone"`, 1),
 		strings.Replace(calendarSnapshot, `}]}`, `},{}]}`, 1),
 	} {
@@ -188,5 +190,36 @@ func TestCalendarsRelayRoundTrip(t *testing.T) {
 	if err != nil || !strings.Contains(string(logs), "POST calendars -> /calendars") ||
 		!strings.Contains(string(logs), "requestId=calendar-test range=2026-10-16..2026-10-18 ingested=1 files=3") {
 		t.Fatalf("missing request/write-result logs: %s %v", logs, err)
+	}
+}
+
+func TestCalendarsRejectFutureAndSkipStaleSnapshots(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/calendars", strings.NewReader(body)))
+		return w
+	}
+	future := strings.Replace(calendarSnapshot, "2026-10-16T12:00:00+08:00", time.Now().Add(48*time.Hour).Format(time.RFC3339), 1)
+	if w := post(future); w.Code != http.StatusBadRequest {
+		t.Fatalf("future collectedAt accepted: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(calendarSnapshot); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"applied":true`) {
+		t.Fatalf("fresh snapshot rejected: %d %s", w.Code, w.Body.String())
+	}
+	stale := strings.Replace(calendarSnapshot, `"id":"instance"`, `"id":"stale"`, 1)
+	stale = strings.Replace(stale, "2026-10-16T12:00:00+08:00", "2026-10-16T11:00:00+08:00", 1)
+	if w := post(stale); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"applied":false`) ||
+		!strings.Contains(w.Body.String(), `"ingested":0`) || !strings.Contains(w.Body.String(), `"filesWritten":0`) {
+		t.Fatalf("stale snapshot not skipped: %d %s", w.Code, w.Body.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(srv.ctx.Paths.Calendars, "2026-10-16.jsonl"))
+	if err != nil || !bytes.Contains(raw, []byte(`"id":"instance"`)) || bytes.Contains(raw, []byte(`"id":"stale"`)) {
+		t.Fatalf("stale snapshot changed stored data: %s %v", raw, err)
+	}
+	logs, err := os.ReadFile(srv.logger.logFile)
+	if err != nil || !strings.Contains(string(logs), "skipped stale snapshot") {
+		t.Fatalf("missing stale log: %s %v", logs, err)
 	}
 }

@@ -365,6 +365,15 @@ func (s *server) currentEgress() Egress {
 // 没有上限的话一个恶意/异常的大 POST 就能把 daemon 直接 OOM。
 const maxRequestBodyBytes = 64 << 20
 
+// maxIngestFutureSkew 是采集时间允许超前本机时钟的偏差。手机时钟偶有漂移，
+// 但一个远在未来的 collectedAt 会让「旧快照不覆盖新快照」的比较把后续正常
+// 上报全部挡掉，因此在入口直接拒绝。
+const maxIngestFutureSkew = 24 * time.Hour
+
+func collectedAtTooFarInFuture(collected time.Time) bool {
+	return !collected.IsZero() && collected.After(time.Now().Add(maxIngestFutureSkew))
+}
+
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
