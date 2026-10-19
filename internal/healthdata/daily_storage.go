@@ -20,7 +20,11 @@ func (s *Storage) replaceDaily(b *DailyBatch) error {
 	if err := s.ensureDailyReadme(); err != nil {
 		return err
 	}
-	if err := s.archiveLegacyRoot(); err != nil {
+	incoming := make(map[string]bool, len(b.Days))
+	for _, day := range b.Days {
+		incoming[day.Date] = true
+	}
+	if err := s.archiveLegacyRoot(incoming); err != nil {
 		return err
 	}
 	collected, _ := time.Parse(time.RFC3339Nano, b.CollectedAt)
@@ -92,7 +96,9 @@ func (s *Storage) preserveLegacy(date string, raw []byte) error {
 
 // Keep raw receipt-day batches out of the daily reader's root, including files whose
 // receipt date is outside the new snapshot window. Content is copied before removal.
-func (s *Storage) archiveLegacyRoot() error {
+// Only a file that collides with an incoming date may block the write: one stray file
+// at another date must not disable every future daily ingest.
+func (s *Storage) archiveLegacyRoot(incoming map[string]bool) error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return err
@@ -111,17 +117,27 @@ func (s *Storage) archiveLegacyRoot() error {
 		if err != nil {
 			return err
 		}
+		if len(bytes.TrimSpace(raw)) == 0 {
+			// An empty file holds nothing to preserve; a colliding daily write replaces it atomically.
+			continue
+		}
 		var header dailyHeader
 		first := bytes.SplitN(raw, []byte{'\n'}, 2)[0]
 		if json.Unmarshal(first, &header) == nil && header.SchemaVersion == 2 && header.Date == date {
 			continue
 		}
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(first, &fields) != nil || fields["items"] == nil {
-			return fmt.Errorf("health date file %s has an unrecognized format; original preserved", name)
+		unrecognized := json.Unmarshal(first, &fields) != nil || fields["items"] == nil
+		if !unrecognized {
+			if version, exists := fields["schemaVersion"]; exists && string(bytes.TrimSpace(version)) != "1" {
+				unrecognized = true
+			}
 		}
-		if version, exists := fields["schemaVersion"]; exists && string(bytes.TrimSpace(version)) != "1" {
-			return fmt.Errorf("health date file %s has an unsupported version; original preserved", name)
+		if unrecognized {
+			if incoming[date] {
+				return fmt.Errorf("health date file %s has an unrecognized or unsupported format; original preserved", name)
+			}
+			continue
 		}
 		if err := s.preserveLegacy(date, raw); err != nil {
 			return err

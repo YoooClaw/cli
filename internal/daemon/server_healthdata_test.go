@@ -132,7 +132,7 @@ func TestHealthDataAuthAndWriteFailureNeverAcknowledgeSuccess(t *testing.T) {
 
 func TestHealthDataRelayRoundTripIncludesDeletionReceiptAndOriginalJSONL(t *testing.T) {
 	srv, local := newTestServer(t, "gateway-secret")
-	daily := `{"schemaVersion":2,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T16:00:00+08:00","days":[{"date":"2026-09-30","items":[{"metric":"steps","name":"Steps","value":31502,"unit":"steps"}]}]}`
+	daily := `{"schemaVersion":2,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-09-30T16:00:00+08:00","days":[{"date":"2026-09-30","items":[{"metric":"steps","name":"Steps","value":31502,"unit":"steps"}]}]}`
 	payloads := []string{healthBatch, `{"provider":"healthkit","items":[],"deletedIds":["source-id"]}`, daily, daily}
 	type result struct {
 		responses []relay.ProxyResponseFrame
@@ -238,5 +238,19 @@ func assertHealthReceipt(t *testing.T, status int, raw []byte, items, deleted in
 	if err := json.Unmarshal(raw, &receipt); err != nil || status != http.StatusOK ||
 		!receipt.OK || receipt.Ingested != items || receipt.Deleted != deleted {
 		t.Fatalf("receipt=%d %s err=%v, want ok=true ingested=%d deleted=%d", status, raw, err, items, deleted)
+	}
+}
+
+func TestHealthDataRejectsFarFutureCollectedAt(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	body := fmt.Sprintf(`{"schemaVersion":2,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":%q,"days":[{"date":%q,"items":[{"metric":"steps","name":"Steps","value":1,"unit":"steps"}]}]}`,
+		time.Now().Add(48*time.Hour).Format(time.RFC3339), time.Now().Format("2006-01-02"))
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", strings.NewReader(body)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("future collectedAt accepted: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(srv.ctx.Paths.HealthData); !os.IsNotExist(err) {
+		t.Fatalf("rejected batch wrote health data: %v", err)
 	}
 }

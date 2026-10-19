@@ -5,15 +5,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Batch 是经完整校验的日快照，或兼容旧客户端的原始批次。
 type Batch struct {
 	daily        *DailyBatch
 	line         []byte
+	collectedAt  time.Time
 	ItemCount    int
 	DeletedCount int
 }
+
+// CollectedAt 是 v2 快照的采集时间；v1 批次为零值。
+func (b Batch) CollectedAt() time.Time { return b.collectedAt }
 
 // Prepare 校验 v2 日期和精简指标结构；旧版批次保留原样进入 legacy。
 func Prepare(raw json.RawMessage) (Batch, error) {
@@ -22,11 +27,11 @@ func Prepare(raw json.RawMessage) (Batch, error) {
 		return Batch{}, fmt.Errorf("body must be a JSON object")
 	}
 	if string(bytes.TrimSpace(fields["schemaVersion"])) == "2" {
-		daily, count, err := prepareDaily(raw)
+		daily, collected, count, err := prepareDaily(raw)
 		if err != nil {
 			return Batch{}, err
 		}
-		return Batch{daily: daily, ItemCount: count}, nil
+		return Batch{daily: daily, collectedAt: collected, ItemCount: count}, nil
 	}
 	if version, exists := fields["schemaVersion"]; exists && string(bytes.TrimSpace(version)) != "1" {
 		return Batch{}, fmt.Errorf("unsupported health schemaVersion")

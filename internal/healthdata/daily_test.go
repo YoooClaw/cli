@@ -203,3 +203,41 @@ func TestUnknownRootFormatIsNotArchivedOrOverwritten(t *testing.T) {
 		t.Fatal("unknown incoming schema treated as legacy")
 	}
 }
+
+func TestDailyUnknownRootFileAtOtherDateDoesNotBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2020-01-01.jsonl")
+	unknown := []byte("{\"schemaVersion\":3,\"date\":\"2020-01-01\"}\n")
+	if err := os.WriteFile(path, unknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := Prepare([]byte(dailyBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewStorage(dir).Append(batch); err != nil {
+		t.Fatalf("stray root file blocked ingest: %v", err)
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, unknown) {
+		t.Fatal("unknown root file changed")
+	}
+	if raw, err := os.ReadFile(filepath.Join(dir, "2026-09-30.jsonl")); err != nil || len(raw) == 0 {
+		t.Fatalf("daily snapshot not written: %s %v", raw, err)
+	}
+}
+
+func TestDailyEmptyRootFileIsReplaced(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026-09-30.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	batch, _ := Prepare([]byte(dailyBody))
+	if err := NewStorage(dir).Append(batch); err != nil {
+		t.Fatalf("empty root file blocked ingest: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(raw, []byte(`"value":31502`)) {
+		t.Fatalf("empty file not replaced: %s %v", raw, err)
+	}
+}
