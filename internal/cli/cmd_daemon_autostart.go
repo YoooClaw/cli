@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/YoooClaw/cli/internal/autostart"
@@ -278,6 +279,23 @@ func serviceManaged() (bool, autostart.Status) {
 	return desired == autostart.DesiredEnabled || status.Installed, status
 }
 
+// Starting an existing Windows task requires fewer permissions than updating it.
+// Installation and explicit migration own changes to its launch configuration.
+func prepareManagedStart(manager autostart.Manager, status autostart.Status, platform string) error {
+	if platform == "windows" && status.Installed {
+		return nil
+	}
+	spec, err := autostartSpec()
+	if err != nil {
+		return autostartError(err)
+	}
+	_, err = autostart.Enable(manager, spec, false)
+	if err != nil {
+		return autostartError(err)
+	}
+	return nil
+}
+
 func startStandalone(ctx *clictx.Context) (*daemon.Lock, error) {
 	managed, status := serviceManaged()
 	if !managed {
@@ -290,14 +308,8 @@ func startStandalone(ctx *clictx.Context) (*daemon.Lock, error) {
 		}
 	}
 	manager := autostartManager()
-	spec, err := autostartSpec()
-	if err != nil {
-		return nil, autostartError(err)
-	}
-	// Reinstall is idempotent and refreshes an executable path that may have
-	// changed during an npm/native update.
-	if _, err := autostart.Enable(manager, spec, false); err != nil {
-		return nil, autostartError(err)
+	if err := prepareManagedStart(manager, status, runtime.GOOS); err != nil {
+		return nil, err
 	}
 	if err := manager.Start(); err != nil {
 		return nil, autostartError(err)
@@ -361,12 +373,8 @@ func restartManagedDaemon(ctx *clictx.Context) (any, error) {
 		return map[string]any{"ok": true, "pid": lock.PID, "bind": lock.Bind, "port": lock.Port, "detached": true}, nil
 	}
 	manager := autostartManager()
-	spec, err := autostartSpec()
-	if err != nil {
-		return nil, autostartError(err)
-	}
-	if _, err := autostart.Enable(manager, spec, false); err != nil {
-		return nil, autostartError(err)
+	if err := prepareManagedStart(manager, status, runtime.GOOS); err != nil {
+		return nil, err
 	}
 	if err := manager.Restart(); err != nil {
 		return nil, autostartError(err)
