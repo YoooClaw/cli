@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YoooClaw/cli/internal/clictx"
+	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/daemon"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/paths"
@@ -18,7 +19,8 @@ import (
 )
 
 func addRolloutCommands(c *cobra.Command) {
-	check := &cobra.Command{Use: "check", Short: "检查灰度平台允许的更新", Args: cobra.NoArgs, RunE: run(updateCheck)}
+	check := &cobra.Command{Use: "check", Short: "检查更新并安排至少 10 分钟后空闲安装", Args: cobra.NoArgs, RunE: run(updateCheck)}
+	check.Flags().Bool("check-only", false, "只查询，不安排后台安装")
 	check.Flags().String("version", "", "复查指定版本（不绕过灰度）")
 	install := &cobra.Command{Use: "install", Short: "后台安装灰度平台允许的版本", Args: cobra.NoArgs, RunE: run(updateInstall)}
 	install.Flags().String("version", "", "安装指定的有资格版本")
@@ -67,7 +69,44 @@ func updateCheck(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"ok": true, "component": "CLI", "currentVersion": id.CurrentVersion, "platform": id.Platform, "arch": id.Arch, "updateAvailable": offer != nil, "artifact": offer}, nil
+	result := map[string]any{"ok": true, "component": "CLI", "currentVersion": id.CurrentVersion, "platform": id.Platform, "arch": id.Arch, "updateAvailable": offer != nil, "artifact": offer, "scheduled": false}
+	if offer == nil || flagBool(cmd, "check-only") || cmd.Name() == "self" {
+		return result, nil
+	}
+	runtime, err := inspectUpdateRuntime(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !runtime.Running {
+		result["message"] = "发现新版，但 daemon 未运行，未安排自动更新"
+		return result, nil
+	}
+	cfg, err := config.Load(ctx.Paths)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.AutoUpdate.Enabled {
+		result["message"] = "发现新版，但自动更新已关闭，未安排自动更新"
+		return result, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	target, err := updater.OwnedTarget(paths.RootDir(), exe)
+	if err != nil {
+		return nil, err
+	}
+	if runtime.Version != id.CurrentVersion || runtime.Executable != target || runtime.Profile != id.Profile || "https://"+runtime.Host != id.BaseURL {
+		return nil, fmt.Errorf("运行中的 daemon 与当前 CLI 版本、路径或环境不一致，请先重启 daemon")
+	}
+	due, err := updater.ScheduleCheck(id, *offer, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	result["scheduled"], result["notBefore"] = true, due
+	result["message"] = "已安排至少 10 分钟后空闲安装；录音业务繁忙或失败冷却期间将延后"
+	return result, nil
 }
 func updateInstall(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	exe, err := os.Executable()

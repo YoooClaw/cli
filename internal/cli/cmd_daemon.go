@@ -150,6 +150,17 @@ func daemonStop(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error
 	return stopManagedDaemon(ctx, stopOptsFromCmd(cmd))
 }
 
+// Reconcile the profile process before starting a service reported as stopped.
+// Keep the normal precheck after stopping it: another profile or Hermes may own Relay.
+func reconcileManagedRestart(profileRunning bool, stop, precheck func() error) error {
+	if profileRunning {
+		if err := stop(); err != nil {
+			return err
+		}
+	}
+	return precheck()
+}
+
 func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	if err := rejectManagedOverrides(cmd); err != nil {
 		return nil, err
@@ -159,7 +170,19 @@ func daemonRestart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 	}
 	if managed, serviceStatus := serviceManaged(); managed {
 		if !serviceStatus.Running {
-			if err := daemon.PrecheckStart(ctx, daemon.StartOpts{}); err != nil {
+			// Task Scheduler can report Ready while its daemon child is still alive.
+			// Stop that profile's process before checking the account-wide Relay lock.
+			state := daemon.State(ctx.Paths)
+			err := reconcileManagedRestart(state.Running, func() error {
+				_, err := daemon.Stop(ctx.Paths)
+				if err == nil && state.Lock != nil {
+					waitForProfileDaemonExit(state.Lock.PID)
+				}
+				return err
+			}, func() error {
+				return daemon.PrecheckStart(ctx, daemon.StartOpts{})
+			})
+			if err != nil {
 				return nil, err
 			}
 		}
