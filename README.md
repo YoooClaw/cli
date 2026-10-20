@@ -125,7 +125,7 @@ curl -fsSL https://artifact.yoooclaw.com/cli/install-wuying.sh \
 
 Current CLI releases accept `claude` and `codex` for `--skill`. The value is passed directly to the CLI Skill adapter, so the installer will not need a workflow change when a DeepSeek Harness adapter is added. `--env` accepts `development`, `test`, or `production`; it defaults to `PHONE_NOTIFICATIONS_ENV`, then `production`, and is persisted in the profile for systemd-launched daemons. The live script installs the CLI release that shipped it by default — always a stable one, since prereleases never overwrite the live scripts or the `latest` marker — and also accepts `--version` (the only way to install a prerelease), `--dir`, `--profile`, and `--modify-path`. It never prints the API key and writes it through stdin to the shared `0600` credentials file; reference an environment variable as above to keep the plaintext value out of shell history.
 
-> `yc update check` (`yc update self` is an alias) checks account eligibility through the rollout service. `yc update install` starts a detached installer. An API key is required.
+> `yc update check` checks account eligibility and schedules an offered update in the running standalone daemon, no earlier than ten minutes later. `yc update check --check-only` and `yc update self` only query eligibility. `yc update install` starts a detached installer. An API key is required.
 
 ### Quickstart (Human Users)
 
@@ -598,7 +598,12 @@ yc update install
 yc update install --version 0.13.0
 ```
 
-Standalone daemons check after about one minute and then every four hours. Background installation waits for ten minutes without business requests and no active requests or recording downloads; eligibility and activity are checked again before replacement. Disabling `autoUpdate.enabled` retains checks, reporting and manual installation but disables background installation. Restart the daemon after changing this setting.
+Standalone daemons check after about one minute and then every four hours. Background installation waits for ten minutes without recording activity and no recording downloads or writes; eligibility and activity are checked again before replacement. Disabling `autoUpdate.enabled` retains checks, reporting and manual installation but disables background installation. Restart the daemon after changing this setting.
+
+On Linux, updates launched from the managed daemon run in a separate transient user service (`yoooclaw-update-<updateId>`). Stopping the daemon therefore does not stop its installer. If the independent service cannot start, the daemon remains running; its service configuration and autostart preference are not changed.
+
+For WUYING reinstalls, a broken old CLI no longer has to successfully execute `daemon autostart disable`: the installer can stop the matching standard user service directly and check that the runtime locks are free before replacing it. An occupied runtime lock, a different service executable, or an inaccessible service manager still blocks replacement. Existing credentials and user data are retained. Older clients affected by the update-worker bug need one installation through the official installer after this fix is released; publishing a newer artifact alone does not repair their running updater.
+
 
 Only standalone binaries registered by the official native installer are replaced. Hermes embedded/shared binaries and npm installations are excluded. Updates retain environment, credentials and autostart settings. Claude skills are refreshed when detected, retaining Wuying command bindings. Manual installation works with an offline daemon and still requires rollout eligibility.
 
@@ -614,3 +619,5 @@ yc daemon restart
 ```
 
 The setting is read at daemon startup, without periodic reloading. If the daemon is stopped, the next start picks it up. Add `--profile <name>` for a non-default profile. To restore automatic updates, set it to `true` and restart the daemon.
+
+Manual checks report `scheduled` and `notBefore`. Scheduling requires a running matching standalone daemon and enabled auto-update; repeated checks restart the ten-minute delay. Recording activity and failure cooldown can postpone installation. The daemon consumes the request on its 30-second tick; installation rechecks rollout eligibility. `--check-only` does not cancel an existing schedule.

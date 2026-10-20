@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -38,12 +39,13 @@ type ClientOptions struct {
 type Client struct {
 	opts ClientOptions
 
-	mu        sync.Mutex
-	conn      *websocket.Conn
-	writeMu   sync.Mutex
-	stopCh    chan struct{}
-	stoppedCh chan struct{}
-	stopOnce  sync.Once
+	mu           sync.Mutex
+	conn         *websocket.Conn
+	connectionID string
+	writeMu      sync.Mutex
+	stopCh       chan struct{}
+	stoppedCh    chan struct{}
+	stopOnce     sync.Once
 
 	handlersMu           sync.Mutex
 	inboundHandlers      []func(Frame)
@@ -172,14 +174,17 @@ func (c *Client) connectOnce() error {
 	}
 	conn := result.conn
 	defer conn.Close()
+	connectionID := fmt.Sprintf("%d-%x", os.Getpid(), time.Now().UnixNano())
+	connectedAt := time.Now()
 
 	c.mu.Lock()
 	c.conn = conn
+	c.connectionID = connectionID
 	c.mu.Unlock()
 	c.setConnected()
 	c.emitConnected()
 	c.writeStatus("connected", "")
-	c.opts.Logger.Info("Relay tunnel: connected, heartbeat started")
+	c.opts.Logger.Info(fmt.Sprintf("Relay tunnel: connected, heartbeat started connection=%s heartbeatSec=%d", connectionID, c.opts.HeartbeatSec))
 
 	readDone := make(chan error, 1)
 	heartbeatDone := make(chan error, 1)
@@ -188,15 +193,18 @@ func (c *Client) connectOnce() error {
 		c.opts.Logger.Debug("Relay tunnel: <- pong received")
 		return nil
 	})
-	go c.readLoop(conn, readDone)
+	go c.readLoop(conn, readDone, connectionID)
 	go c.heartbeatLoop(conn, heartbeatDone)
 
 	select {
 	case err := <-readDone:
+		c.logConnectionEnd(connectionID, "read", connectedAt, err)
 		return err
 	case err := <-heartbeatDone:
+		c.logConnectionEnd(connectionID, "heartbeat", connectedAt, err)
 		return err
 	case <-c.stopCh:
+		c.logConnectionEnd(connectionID, "stop", connectedAt, nil)
 		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client stopping"), time.Now().Add(time.Second))
 		return fmt.Errorf("stopped")
 	}
@@ -236,7 +244,7 @@ func (c *Client) buildURLAndHeaders(credential Credential) (*url.URL, http.Heade
 	return wsURL, headers, nil
 }
 
-func (c *Client) readLoop(conn *websocket.Conn, done chan<- error) {
+func (c *Client) readLoop(conn *websocket.Conn, done chan<- error, connectionID string) {
 	for {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
@@ -256,6 +264,9 @@ func (c *Client) readLoop(conn *websocket.Conn, done chan<- error) {
 		if err := json.Unmarshal(data, &frame); err != nil {
 			c.opts.Logger.Warn("Relay tunnel: received invalid frame, ignoring")
 			continue
+		}
+		if stringField(frame, "type") == "req" {
+			c.opts.Logger.Info(fmt.Sprintf("Relay RPC received connection=%s id=%q method=%q", connectionID, preview(stringField(frame, "id"), 100), preview(stringField(frame, "method"), 100)))
 		}
 		c.handlersMu.Lock()
 		handlers := append([]func(Frame){}, c.inboundHandlers...)
@@ -307,6 +318,8 @@ func (c *Client) sendHeartbeat(conn *websocket.Conn) error {
 		return fmt.Errorf("heartbeat-timeout idleMs=%d", idle.Milliseconds())
 	}
 	c.opts.Logger.Debug(`Relay tunnel: -> heartbeat "ping"`)
+	finish := c.observeWrite(conn, "heartbeat")
+	defer finish()
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {
@@ -339,12 +352,62 @@ func (c *Client) SendRaw(text string) {
 		c.opts.Logger.Warn("Relay tunnel: sendRaw skipped, ws not open")
 		return
 	}
+	// Only log response metadata, never payloads, headers, or credentials.
+	operation := responseMetadata(text)
+	finish := c.observeWrite(conn, operation)
+	defer finish()
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(text)); err != nil {
-		c.opts.Logger.Warn("Relay tunnel: sendRaw failed: " + err.Error())
+		c.opts.Logger.Warn(fmt.Sprintf("Relay tunnel: sendRaw failed connection=%s %s: %v", c.idForConnection(conn), operation, err))
 		_ = conn.Close()
+	} else if operation != "frame" {
+		c.opts.Logger.Info(fmt.Sprintf("Relay write completed connection=%s %s bytes=%d (local write only; peer acknowledgement unknown)", c.idForConnection(conn), operation, len(text)))
 	}
+}
+
+func responseMetadata(text string) string {
+	var meta struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+	}
+	if json.Unmarshal([]byte(text), &meta) == nil && (meta.Type == "res" || meta.Type == "proxy_response") {
+		return fmt.Sprintf("type=%s id=%q", meta.Type, preview(meta.ID, 100))
+	}
+	return "frame"
+}
+
+func (c *Client) idForConnection(conn *websocket.Conn) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != conn {
+		return "retired"
+	}
+	return c.connectionID
+}
+
+// Observe both write-lock waits and network writes without changing timeouts.
+func (c *Client) observeWrite(conn *websocket.Conn, operation string) func() {
+	id := c.idForConnection(conn)
+	started := time.Now()
+	timer := time.AfterFunc(5*time.Second, func() {
+		c.opts.Logger.Warn(fmt.Sprintf("Relay write pending connection=%s %s elapsedMs=%d stage=write-lock-or-network", id, operation, time.Since(started).Milliseconds()))
+	})
+	return func() {
+		timer.Stop()
+		if elapsed := time.Since(started); elapsed >= 5*time.Second {
+			c.opts.Logger.Warn(fmt.Sprintf("Relay slow write finished connection=%s %s elapsedMs=%d", id, operation, elapsed.Milliseconds()))
+		}
+	}
+}
+
+func (c *Client) logConnectionEnd(id, source string, started time.Time, err error) {
+	code := 0
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		code = closeErr.Code
+	}
+	c.opts.Logger.Info(fmt.Sprintf("Relay connection ended connection=%s source=%s lifetimeMs=%d inboundIdleMs=%d closeCode=%d", id, source, time.Since(started).Milliseconds(), time.Since(c.lastInbound()).Milliseconds(), code))
 }
 
 // Stop 优雅停止客户端。
@@ -456,8 +519,13 @@ func (c *Client) writeStatus(state, reason string) {
 		payload["lastDisconnectReason"] = reason
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
-	_ = fsutil.EnsureDir(filepath.Dir(c.opts.StatusFilePath), fsutil.DirMode)
-	_ = os.WriteFile(c.opts.StatusFilePath, append(data, '\n'), 0o600)
+	if err := fsutil.EnsureDir(filepath.Dir(c.opts.StatusFilePath), fsutil.DirMode); err != nil {
+		c.opts.Logger.Warn(fmt.Sprintf("Relay status directory failed state=%s: %v", state, err))
+		return
+	}
+	if err := os.WriteFile(c.opts.StatusFilePath, append(data, '\n'), 0o600); err != nil {
+		c.opts.Logger.Warn(fmt.Sprintf("Relay status write failed state=%s: %v", state, err))
+	}
 }
 
 func relayCredential(apiKey string) Credential {

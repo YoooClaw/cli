@@ -151,19 +151,11 @@ func Launch(id Identity, a Artifact, trigger, executable string) (string, error)
 		return "", err
 	}
 	cmd := exec.Command(worker, "--profile", id.Profile, "update", "_apply", JobPath(attempt))
-	detach(cmd)
-	log, err := os.OpenFile(filepath.Join(dir, "worker.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return "", err
-	}
-	defer log.Close()
-	cmd.Stdout = log
-	cmd.Stderr = log
 	cmd.Env = os.Environ()
-	if err := cmd.Start(); err != nil {
+	if err := startWorker(cmd, attempt); err != nil {
 		return "", err
 	}
-	_ = cmd.Process.Release()
+
 	return attempt.UpdateID, nil
 }
 

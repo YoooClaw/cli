@@ -21,6 +21,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 	method := strings.TrimPrefix(path, "/gateway/")
 	switch method {
 	case "recordings.result.write":
+		defer s.beginRecordingWrite()()
 		var body recording.ResultWriteParams
 		if !decodeBody(w, r, &body) {
 			return
@@ -97,7 +98,9 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if body.ASR == nil {
 			s.logger.Info("[recording-retranscribe] 使用本地 asr-config.json（mode=" + asr.Mode + maskedKeyLog(asr) + "）")
 		}
+		finishRecording := s.beginRecordingWrite()
 		go func() {
+			defer finishRecording()
 			if err := recording.TriggerTranscription(recordingID, s.recordingStorage, *asr, s.logger, recording.SyncOptions{
 				NotifyStatus: s.notifyRecordingStatus,
 			}); err != nil {
@@ -107,6 +110,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		gatewayOK(w, map[string]any{"ok": true, "recordingId": recordingID, "message": "转写已重新触发"})
 
 	case "recordings.asr.init":
+		defer s.beginRecordingWrite()()
 		var body struct {
 			ASR *recording.AsrConfig `json:"asr"`
 		}
@@ -165,6 +169,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		gatewayOK(w, recordingDetail(entry))
 
 	case "recordings.rename":
+		defer s.beginRecordingWrite()()
 		var body struct {
 			RecordingID string `json:"recordingId"`
 			Name        string `json:"name"`
@@ -195,6 +200,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		gatewayOK(w, recordingDetail(entry))
 
 	case "recordings.delete":
+		defer s.beginRecordingWrite()()
 		var body struct {
 			RecordingID  string `json:"recordingId"`
 			DeleteRemote bool   `json:"deleteRemote"`

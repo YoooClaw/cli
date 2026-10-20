@@ -458,6 +458,13 @@ jobs:
           fi
           go -C tools/oss-upload run . --version "$VERSION"
 
+      - name: Register production OTA draft
+        env:
+          OTA_DRAFT_URL: https://openclaw-service.yoooclaw.com/api/ota/pipeline/plugin/releases
+          OTA_PLUGIN_RELEASE_PIPELINE_TOKEN: ${{ secrets.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN }}
+          OTA_ARTIFACT_BASE_URL: ${{ env.OSS_PUBLIC_URL }}/${{ env.OSS_PREFIX }}
+        run: node scripts/register-ota-draft.mjs
+
       - name: Notify Feishu
         if: success()
         env:

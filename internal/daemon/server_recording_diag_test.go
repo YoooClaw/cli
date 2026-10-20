@@ -29,6 +29,7 @@ func TestRecordingIndexRenameTarget(t *testing.T) {
 func TestLogRecordingWriteFailureIncludesRequestContext(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "daemon.log")
 	s := &server{logger: NewLogger(logPath, "info", false)}
+	t.Cleanup(func() { _ = s.logger.Close() })
 	s.logRecordingWriteFailure("rec-123", "relay-256", errors.New("write failed"))
 
 	raw, err := os.ReadFile(logPath)
