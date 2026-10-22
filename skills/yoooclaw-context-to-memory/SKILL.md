@@ -62,4 +62,6 @@ Limit each user-triggered run to three substantive batches total across all sele
 
 ## 5. Report coverage and outcome
 
+Before reporting, issue a Read for each changed host memory index (such as `MEMORY.md`) and inspect its saved links and coverage. This includes indexes created after batch confirmations. Report verification only when an actual read-back result supports it; if a file is unverified, name that limitation.
+
 Report which sources/date ranges were processed, verified batch and item counts, memory changes, and remaining or unvisited sources. A complete result requires every selected source to be complete as of its last read; unavailable sources are reported as unavailable. Distinguish partial memory writes from confirmed consumption and unknown confirmation outcomes. Keep raw source bodies and internal memory paths out of the report.
