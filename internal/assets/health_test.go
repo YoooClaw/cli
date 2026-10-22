@@ -96,10 +96,22 @@ func TestHealthScanBudgetAndLegacyFileVisitBudget(t *testing.T) {
 	if len(collect(t, s, "health-data", url.Values{})) != 2 {
 		t.Fatal("budget skipped day")
 	}
+	s = fixture(t)
+	for d := 1; d <= 16; d++ {
+		put(t, s, "health-data", fmt.Sprintf("2026-10-%02d.jsonl", d), []byte(`{"schemaVersion":1,"items":[]}`))
+	}
+	put(t, s, "health-data", "legacy/receipts/2026-10-22.jsonl", []byte("ignored"))
+	p = get(t, s, "health-data", url.Values{})
+	if len(p.Items) != 0 || p.NextCursor == nil || warning(p, "UNSUPPORTED_SCHEMA") != 14 {
+		t.Fatal("legacy visit limit")
+	}
+	if len(collect(t, s, "health-data", nextValues(p, 7))) != 0 {
+		t.Fatal("legacy returned as daily")
+	}
 }
 
 func TestHealthCorruptionFailsAndReplacementRetry(t *testing.T) {
-	for _, raw := range [][]byte{[]byte(`{"schemaVersion":2,"items":[]}`), nil, []byte("{"), []byte(`{"schemaVersion":3,"date":"2026-10-22"}`),
+	for _, raw := range [][]byte{nil, []byte("{"), []byte(`{"schemaVersion":3,"date":"2026-10-22"}`),
 		bytes.ReplaceAll(daily(t, "2026-10-22", "Steps", json.Number("1")), []byte(`"value":1`), []byte(`"value":"bad"`))} {
 		s := fixture(t)
 		put(t, s, "health-data", "2026-10-22.jsonl", raw)
