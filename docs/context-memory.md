@@ -46,3 +46,7 @@ Synthetic isolated tests cover upcoming/all/date scopes, overlapping calendar da
 ## Source-field compatibility validation
 
 Query fixtures cover the current `isAllDay`, `timestamp`, `accuracyMeters`, `poi`, and source metadata fields, with older optional spellings retained. Calendar sorting and upcoming filtering share the same effective-start calculation. Location scope remains receipt-day based even when observation time falls on another day. An isolated local profile can be populated with copied source folders to exercise the real CLI; keep private samples and reports outside Git. Run query and pagination checks before any test-only consumption, and verify that token confirmation never changes the source files.
+
+## Empty-scope handling
+
+Memory runs retain the user-selected date arguments across every source and follow-up query. Empty results, unavailable sources and out-of-scope pending counts do not authorize a broader query. A completed source advances directly to the next selected source; an entirely empty run reports coverage without creating memory or index files. Final replies describe only the five supported memory sources.
