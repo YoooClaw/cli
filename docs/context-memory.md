@@ -33,6 +33,8 @@ New sources maintain independent state under the profile's `state/memory-sync/`.
 
 Persistent memory is managed by the host agent, not the CLI. The skill requires read-before-write merging, read-back verification and explicit attribution before confirmation. Every modified destination requires a separate post-write Read whose contents are inspected before a later confirmation call; a successful Write response alone is insufficient. Host indexes created during finalization also require an actual read-back before reporting success. Retries deduplicate partial memory writes. Thread ingestion cursors remain independent. This change does not install Thread source adapters or alter role scheduling.
 
+Each user-triggered memory run allows up to three substantive batches **per selected source**, counted independently. Reaching one source’s limit does not prevent processing the next source; five selected sources allow at most fifteen substantive batches. Report remaining work by source. Notification skipped-only windows retain their separate limit. These are skill execution rules, not CLI-enforced limits.
+
 ## Skill rename
 
 `skills install` installs `yoooclaw-context-to-memory` and then removes the legacy notification-only directory. The legacy Wuying executable/profile binding is preserved when creating the new skill. Existing notification checkpoint files are untouched. Deployment still requires installing the updated CLI and refreshing its bundled skills; Git changes alone do not activate them.

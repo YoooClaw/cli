@@ -52,6 +52,6 @@ Use argument-array execution when available; otherwise safely quote arguments, i
 
 An exact-index commit is idempotent. If execution was interrupted and its outcome is unknown, retry the identical commit once. If the result is still unknown, stop and report that uncertainty; do not fetch another batch.
 
-Follow the parent skill’s shared batch budget. A `skippedOnly` batch does not count toward that budget; stop after 20 consecutive skipped-only confirmations and report the remainder.
+Follow the parent skill’s per-source batch budget: at most three substantive notification batches per run, independently of other sources. A `skippedOnly` batch does not count toward the notification budget; stop after 20 consecutive skipped-only confirmations and report the remainder.
 
 Each `next` reads current pending data; the CLI has no run-wide frozen snapshot. Newly arrived notifications may appear in later batches. Commit only the fetched end index and stop when its fetch-time remainder is zero, rather than polling for new arrivals. Never edit checkpoint files or calculate a replacement consumption index.
