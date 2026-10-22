@@ -122,3 +122,17 @@ cursor 继续复用 HMAC 签名，绑定 profile、daemon 实例、类别、日�
 - 上传与资产模型：完整时间线编码、睡眠单独成日、固定采集时刻、整日分批、详情翻页、重复游标、过期清空、迟到响应与并发保护。
 - CLI：v3 完整存储/替换、摘要一致性、阶段与来源边界、默认/最大条数、256 KiB 短页、跨页无遗漏、revision/profile/query 绑定、篡改/过期/重启、鉴权及 GET/POST 信封。
 - 原始健康数据只用于本机隔离校验，不作为公开测试夹具提交。
+
+
+## Agent CLI 查询与记忆消费
+
+`health-data list/get/series` 复用 `healthdata.ReadSnapshot` 校验 v3 文件；旧协议直接报错。
+`list` 返回 `data.header/items/sleepSessions`，睡眠为带 `segmentCount` 的摘要；
+`get --date YYYY-MM-DD` 返回该日期完整会话及分期，单日源文件限制 4 MiB。
+`series --metric` 仅查询普通指标，不把会话隐式转成旧睡眠日指标，缺项返回 missing。
+
+`sync next --source health-data` 保存按日的精确批次，正文含指标和睡眠摘要；
+内容版本覆盖完整时间线，排除 updatedAt，因此分期修订会进入下一批，时间戳单独变化不会。
+`commit` 仅确认已取出的版本，处理期间的新修订不能被旧 token 消费。
+详情查询读取的是当前快照，若其版本与待确认批次不同，应分开处理。
+合成回归覆盖纯睡眠日期、摘要/详情、缺失指标、并发修订、确认后去重、旧协议拒绝。
