@@ -64,6 +64,7 @@ func TestFor(t *testing.T) {
 		p.Notifications: "notifications", p.Recordings: "recordings",
 		p.Locations:  "locations",
 		p.Calendars:  "calendars",
+		p.Reminders:  "reminders",
 		p.HealthData: "health-data",
 		p.Voice:      "voice",
 		p.Images:     "images", p.WebPages: "web-pages",

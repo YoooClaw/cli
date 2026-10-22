@@ -627,3 +627,9 @@ yc daemon restart
 ```
 
 The setting is read at daemon startup, without periodic reloading. If the daemon is stopped, the next start picks it up. Add `--profile <name>` for a non-default profile. To restore automatic updates, set it to `true` and restart the daemon.
+
+## System reminders
+
+`POST /reminders` accepts complete iOS system-reminder snapshots, including completed and undated items. The CLI maintains per-source current mirrors in JSONL with a compact `index.json`; `state.json` tracks accepted collection times.
+
+`GET /assets/reminders` provides filtered, revision-bound pagination (50 default, 100 maximum, 256 KiB response cap); `GET /assets/reminders/{recordId}` returns full details. Both support the existing read-only messageBridge envelope. Agents use `yoooclaw reminders list/get` against the same daemon API. See [the V1 protocol](docs/design/reminders-v1.md) for fields, storage, consistency and query semantics.

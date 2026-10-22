@@ -14,6 +14,9 @@ import (
 )
 
 func assetKind(path string) string {
+	if _, ok := assets.ReminderRoute(path); ok {
+		return "reminders"
+	}
 	if _, _, ok := assets.SleepRoute(path); ok {
 		return "health-data-sleep"
 	}
@@ -27,11 +30,11 @@ func assetKind(path string) string {
 	return kind
 }
 
-// Every profile belongs to one owner, so all five read capabilities are available.
+// Every profile belongs to one owner; reads include all sources in that profile.
 func (s *server) capabilities() []string {
 	out := append([]string(nil), Capabilities...)
 	out = append(out, "assets.notifications.read.v1", "assets.web-pages.read.v1",
-		"assets.locations.read.v1", "assets.calendars.read.v1", "assets.health-data.read.v1", "assets.health-data.sleep.read.v1")
+		"assets.reminders.read.v1", "assets.locations.read.v1", "assets.calendars.read.v1", "assets.health-data.read.v1", "assets.health-data.sleep.read.v1")
 	return out
 }
 
@@ -78,6 +81,10 @@ func (s *server) handleAssetRequest(w http.ResponseWriter, r *http.Request, kind
 	} else if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET, POST")
 		writeAssetError(w, &assets.Error{Status: 405, Code: "METHOD_NOT_ALLOWED", Message: "Only asset reads are supported", Action: "none"})
+		return
+	}
+	if kind == "reminders" {
+		s.handleReminderAssets(w, r)
 		return
 	}
 	if kind == "health-data-sleep" {
