@@ -22,10 +22,11 @@ Dates refer to source-local business days. Read current snapshots afresh; combin
 - oxygen_saturation_average and body_fat_latest use percent: 98 means 98%.
 - Sleep sessions belong to the local end date in timeZone, without splitting at midnight. startAt/endAt are observed sleep boundaries, not bedtime/rise time: do not call their span time in bed or use it to derive sleep efficiency.
 - isPartial marks touching the collection query boundary. false does not establish a complete night, complete device synchronization, or that the user woke up. It is distinct from partialDay (the current source-local day); do not infer isPartial from today's date.
-- unknownMinutes is unobserved time in the recorded timeline, neither awake nor asleep. Zero does not prove there was no missing device data.
+- unknownMinutes is unobserved time in the recorded timeline, neither awake nor asleep. For zero, say only “当前时间线未标出未知区间”; do not translate this into continuous device acquisition, no dropped data, or a complete night.
 - sleepMinutes already includes core/deep/rem/unspecified stageMinutes; never add stages again or sum by sources. Do not use old sleep_* metrics for session trends.
 - Segment endpoints are rounded separately to minutes (30 seconds rounds up), then differences are summed. Totals can differ from subtracting the whole window; awakeningCount may include intervals rounded to zero minutes.
-- Keep dated observations separate from interpretations; a single snapshot does not establish long-term habits or normal/abnormal sleep structure. Check dates, units and values against the returned data before the final answer.
+- Report segment counts from segmentCount or a computed length of segments, not by visually counting long JSON. Preserve supplied aggregate values; calculate any new value from the returned data before reporting it.
+- Describe the observed first/last stages without calling their order typical, normal or abnormal. Keep dated observations separate from interpretations; a single snapshot does not establish long-term habits. Before the final answer, check every reported date, count, unit and value against the returned data, and check field explanations against this reference.
 - workout_*_minutes belongs to the workout start date and excludes native pauses; do not add it to exercise-ring minutes.
 
 Client source merging has already occurred. Use current v3 daily snapshots without accumulating different revisions.
