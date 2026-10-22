@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-const dailyBody = `{"schemaVersion":2,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T16:00:00+08:00","days":[{"date":"2026-09-30","items":[{"metric":"steps","name":"Steps","value":31502,"unit":"steps"},{"metric":"sleep_minutes","name":"Total Sleep Duration","value":420,"unit":"min"}]}]}`
+const dailyBody = `{"schemaVersion":3,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T16:00:00+08:00","days":[{"date":"2026-09-30","sleepSessions":[],"items":[{"metric":"steps","name":"Steps","value":31502,"unit":"steps"},{"metric":"active_energy","name":"Active Energy","value":420,"unit":"kcal"}]}]}`
 
 func TestDailyUsesMeasurementDateAndReplacesRatherThanAdds(t *testing.T) {
 	dir := t.TempDir()
@@ -67,38 +67,14 @@ func TestDailyValidatesEntireBatchBeforeChangingAnyFile(t *testing.T) {
 		strings.Replace(dailyBody, `"value":31502`, `"value":null`, 1),
 		strings.Replace(dailyBody, `"value":31502`, `"value":"31502"`, 1),
 		strings.Replace(dailyBody, `"steps"`, `"HKQuantityTypeIdentifierStepCount"`, 1),
-		strings.Replace(dailyBody, `"sleep_minutes"`, `"steps"`, 1),
+		strings.Replace(dailyBody, `"active_energy"`, `"steps"`, 1),
 		strings.Replace(dailyBody, `"unit":"steps"`, `"unit":"steps","device":{"large":"metadata"}`, 1),
-		`{"schemaVersion":2,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T16:00:00+08:00","days":[{"date":"2026-09-30","items":[]}]}`,
+		`{"schemaVersion":3,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T16:00:00+08:00","days":[{"date":"2026-09-30","sleepSessions":[],"items":[]}]}`,
 	}
 	for _, raw := range bad {
 		if _, err := Prepare([]byte(raw)); err == nil {
 			t.Fatalf("accepted invalid daily snapshot: %s", raw)
 		}
-	}
-}
-
-func TestDailyPreservesCollidingLegacyFileWithoutMixingFormats(t *testing.T) {
-	dir := t.TempDir()
-	legacy := []byte("{\"schemaVersion\":1,\"items\":[]}\n")
-	path := filepath.Join(dir, "2026-09-30.jsonl")
-	if err := os.WriteFile(path, legacy, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	batch, err := Prepare([]byte(dailyBody))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := NewStorage(dir).Append(batch); err != nil {
-		t.Fatal(err)
-	}
-	backup, err := os.ReadFile(filepath.Join(dir, "legacy", "imported", "2026-09-30.jsonl"))
-	if err != nil || !bytes.Equal(backup, legacy) {
-		t.Fatalf("legacy file not preserved: %v", err)
-	}
-	current, _ := os.ReadFile(path)
-	if bytes.Contains(current, []byte(`"schemaVersion":1`)) {
-		t.Fatal("raw batches mixed with daily metrics")
 	}
 }
 
@@ -137,57 +113,10 @@ func TestConcurrentDailySnapshotsAlwaysLeaveNewestCompleteResult(t *testing.T) {
 	}
 }
 
-func TestDailyArchivesLegacyReceiptOutsideNewWindowButKeepsOldDailyHistory(t *testing.T) {
-	dir := t.TempDir()
-	raw := []byte("{\"schemaVersion\":1,\"items\":[]}\n")
-	if err := os.WriteFile(filepath.Join(dir, "2020-01-01.jsonl"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	historical := []byte("{\"schemaVersion\":2,\"date\":\"2020-02-02\"}\n{\"metric\":\"steps\",\"name\":\"Steps\",\"value\":1,\"unit\":\"steps\"}\n")
-	if err := os.WriteFile(filepath.Join(dir, "2020-02-02.jsonl"), historical, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	batch, _ := Prepare([]byte(dailyBody))
-	if err := NewStorage(dir).Append(batch); err != nil {
-		t.Fatal(err)
-	}
-	backup, err := os.ReadFile(filepath.Join(dir, "legacy", "imported", "2020-01-01.jsonl"))
-	if err != nil || !bytes.Equal(backup, raw) {
-		t.Fatalf("legacy backup: %s %v", backup, err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "2020-01-01.jsonl")); !os.IsNotExist(err) {
-		t.Fatal("legacy batches still in daily root")
-	}
-	kept, _ := os.ReadFile(filepath.Join(dir, "2020-02-02.jsonl"))
-	if !bytes.Equal(kept, historical) {
-		t.Fatal("out-of-window daily history changed")
-	}
-}
-
-func TestDailyBackupFailureLeavesOriginalUntouched(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "2026-09-30.jsonl")
-	raw := []byte("{\"items\":[]}\n")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "legacy"), []byte("blocked"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	batch, _ := Prepare([]byte(dailyBody))
-	if err := NewStorage(dir).Append(batch); err == nil {
-		t.Fatal("backup failure was ignored")
-	}
-	actual, _ := os.ReadFile(path)
-	if !bytes.Equal(actual, raw) {
-		t.Fatal("original modified before backup")
-	}
-}
-
 func TestUnknownRootFormatIsNotArchivedOrOverwritten(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "2026-09-30.jsonl")
-	raw := []byte("{\"schemaVersion\":3,\"date\":\"2026-09-30\"}\n")
+	raw := []byte("{\"schemaVersion\":4,\"date\":\"2026-09-30\"}\n")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +136,7 @@ func TestUnknownRootFormatIsNotArchivedOrOverwritten(t *testing.T) {
 func TestDailyUnknownRootFileAtOtherDateDoesNotBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "2020-01-01.jsonl")
-	unknown := []byte("{\"schemaVersion\":3,\"date\":\"2020-01-01\"}\n")
+	unknown := []byte("{\"schemaVersion\":4,\"date\":\"2020-01-01\"}\n")
 	if err := os.WriteFile(path, unknown, 0o600); err != nil {
 		t.Fatal(err)
 	}

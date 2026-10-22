@@ -9,7 +9,7 @@ import (
 	"github.com/YoooClaw/cli/internal/relay"
 )
 
-// handleHealthDataIngest 接收精简日快照，并兼容归档旧客户端原始批次。
+// handleHealthDataIngest 接收 v3 日指标与完整睡眠会话快照。
 func (s *server) handleHealthDataIngest(w http.ResponseWriter, r *http.Request) {
 	var raw json.RawMessage
 	if !decodeBody(w, r, &raw) {

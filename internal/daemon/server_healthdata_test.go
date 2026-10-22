@@ -17,15 +17,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const healthBatch = `{
-  "schemaVersion":1,"provider":"healthkit","collectedAt":"2026-10-19T09:10:00+08:00",
-  "items":[{"id":"source-id","type":"HKQuantityTypeIdentifierStepCount",
-    "startAt":"2026-10-19T08:00:00+08:00","endAt":"2026-10-19T08:10:00+08:00",
-    "data":{"value":820,"unit":"count","extra":{"large":9007199254740993,"future":1e999}}}],
-  "extension":{"keep":true}
-}`
+const healthBatch = `{"schemaVersion":3,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T09:10:00+08:00","days":[{"date":"2026-10-19","sleepSessions":[],"items":[{"metric":"steps","name":"Steps","value":9007199254740993,"unit":"steps"}]}]}`
 
-func TestHealthDataPreservesWholeBatchAndAcceptsExistingIngestCredentials(t *testing.T) {
+func TestHealthDataReplacesDailySnapshotAndAcceptsIngestCredentials(t *testing.T) {
 	srv, _ := newTestServer(t, "gateway-secret")
 	srv.credentialSet = creds.CredentialSet{Entries: []creds.ApiKeyEntry{{Label: "phone", Key: "phone-key"}}}
 	for _, token := range []string{"phone-key", "gateway-secret"} {
@@ -39,42 +33,27 @@ func TestHealthDataPreservesWholeBatchAndAcceptsExistingIngestCredentials(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, []byte(healthBatch)); err != nil {
-		t.Fatal(err)
-	}
-	want := bytes.Repeat(append(compact.Bytes(), '\n'), 2)
-	if !bytes.Equal(raw, want) {
-		t.Fatalf("batch changed, server metadata added or duplicate removed: %s", raw)
+	if len(bytes.Split(bytes.TrimSpace(raw), []byte{'\n'})) != 2 || !bytes.Contains(raw, []byte(`"value":9007199254740993`)) {
+		t.Fatalf("snapshot not replaced faithfully: %s", raw)
 	}
 	health := httptest.NewRecorder()
 	srv.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if !strings.Contains(health.Body.String(), `"health-data"`) || !strings.Contains(health.Body.String(), `"health-data-daily-v2"`) || !isIngestPath("/health-data") {
+	if !strings.Contains(health.Body.String(), `"health-data"`) || !strings.Contains(health.Body.String(), `"health-data-daily-v3"`) || !isIngestPath("/health-data") {
 		t.Fatalf("health-data capability/auth path missing: %s", health.Body.String())
 	}
 }
 
-func TestHealthDataDeletionIsStoredAsAnEventWithoutRemovingEarlierData(t *testing.T) {
+func TestHealthDataRejectsOldFormatsWithoutWriting(t *testing.T) {
 	srv, _ := newTestServer(t, "")
-	deletion := `{"schemaVersion":1,"provider":"healthkit","collectedAt":"2026-10-19T10:00:00+08:00","items":[],"deletedIds":["source-id"]}`
-	for i, body := range []string{healthBatch, deletion, `{"items":[]}`} {
+	for _, body := range []string{`{"schemaVersion":1,"items":[]}`, `{"schemaVersion":2,"days":[]}`, `{"items":[]}`} {
 		response := httptest.NewRecorder()
 		srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", strings.NewReader(body)))
-		items, deleted := 0, 0
-		if i == 0 {
-			items = 1
-		} else if i == 1 {
-			deleted = 1
+		if response.Code != 400 {
+			t.Fatal(response.Code, response.Body.String())
 		}
-		assertHealthReceipt(t, response.Code, response.Body.Bytes(), items, deleted)
 	}
-	raw, err := os.ReadFile(healthDataFile(srv))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := bytes.Split(bytes.TrimSpace(raw), []byte{'\n'})
-	if len(lines) != 3 || !bytes.Contains(lines[0], []byte(`"id":"source-id"`)) || string(lines[1]) != deletion {
-		t.Fatalf("source delete must remain an event, not erase stored history: %s", raw)
+	if _, err := os.Stat(srv.ctx.Paths.HealthData); !os.IsNotExist(err) {
+		t.Fatal("old format wrote data")
 	}
 }
 
@@ -130,10 +109,10 @@ func TestHealthDataAuthAndWriteFailureNeverAcknowledgeSuccess(t *testing.T) {
 	}
 }
 
-func TestHealthDataRelayRoundTripIncludesDeletionReceiptAndOriginalJSONL(t *testing.T) {
+func TestHealthDataRelayRoundTripIncludesReceiptsAndDailyJSONL(t *testing.T) {
 	srv, local := newTestServer(t, "gateway-secret")
-	daily := `{"schemaVersion":2,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-09-30T16:00:00+08:00","days":[{"date":"2026-09-30","items":[{"metric":"steps","name":"Steps","value":31502,"unit":"steps"}]}]}`
-	payloads := []string{healthBatch, `{"provider":"healthkit","items":[],"deletedIds":["source-id"]}`, daily, daily}
+	daily := `{"schemaVersion":3,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":"2026-09-30T16:00:00+08:00","days":[{"date":"2026-09-30","sleepSessions":[],"items":[{"metric":"steps","name":"Steps","value":31502,"unit":"steps"}]}]}`
+	payloads := []string{healthBatch, healthBatch, daily, daily}
 	type result struct {
 		responses []relay.ProxyResponseFrame
 		err       error
@@ -197,18 +176,14 @@ func TestHealthDataRelayRoundTripIncludesDeletionReceiptAndOriginalJSONL(t *test
 			if response.Type != "proxy_response" || response.ID != fmt.Sprintf("health-test-%d", i) {
 				t.Fatalf("unexpected Relay response: %+v", response)
 			}
-			if i < 2 {
-				assertHealthReceipt(t, response.Status, []byte(response.Body), 1-i, i)
-			} else {
-				assertHealthReceipt(t, response.Status, []byte(response.Body), 1, 0)
-			}
+			assertHealthReceipt(t, response.Status, []byte(response.Body), 1, 0)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("health-data Relay response timed out")
 	}
 	raw, err := os.ReadFile(healthDataFile(srv))
 	if err != nil || len(bytes.Split(bytes.TrimSpace(raw), []byte{'\n'})) != 2 ||
-		!bytes.Contains(raw, []byte(`"large":9007199254740993`)) || !bytes.Contains(raw, []byte(`"deletedIds":["source-id"]`)) {
+		!bytes.Contains(raw, []byte(`"value":9007199254740993`)) {
 		t.Fatalf("Relay batch did not reach JSONL unchanged: %s err=%v", raw, err)
 	}
 	dailyRaw, err := os.ReadFile(filepath.Join(srv.ctx.Paths.HealthData, "2026-09-30.jsonl"))
@@ -218,14 +193,14 @@ func TestHealthDataRelayRoundTripIncludesDeletionReceiptAndOriginalJSONL(t *test
 	logs, err := os.ReadFile(srv.logger.logFile)
 	if err != nil || !strings.Contains(string(logs), "POST health-data -> /health-data") ||
 		!strings.Contains(string(logs), "requestId=health-test-0 ingested=1 deleted=0") ||
-		!strings.Contains(string(logs), "requestId=health-test-1 ingested=0 deleted=1") ||
+		!strings.Contains(string(logs), "requestId=health-test-1 ingested=1 deleted=0") ||
 		!strings.Contains(string(logs), "requestId=health-test-3 ingested=1 deleted=0") {
 		t.Fatalf("missing actual request/storage result logs: %s err=%v", logs, err)
 	}
 }
 
 func healthDataFile(srv *server) string {
-	return filepath.Join(srv.ctx.Paths.HealthData, "legacy", "receipts", time.Now().Format("2006-01-02")+".jsonl")
+	return filepath.Join(srv.ctx.Paths.HealthData, "2026-10-19.jsonl")
 }
 
 func assertHealthReceipt(t *testing.T, status int, raw []byte, items, deleted int) {
@@ -243,7 +218,7 @@ func assertHealthReceipt(t *testing.T, status int, raw []byte, items, deleted in
 
 func TestHealthDataRejectsFarFutureCollectedAt(t *testing.T) {
 	srv, _ := newTestServer(t, "")
-	body := fmt.Sprintf(`{"schemaVersion":2,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":%q,"days":[{"date":%q,"items":[{"metric":"steps","name":"Steps","value":1,"unit":"steps"}]}]}`,
+	body := fmt.Sprintf(`{"schemaVersion":3,"provider":"healthkit","timeZone":"Asia/Shanghai","collectedAt":%q,"days":[{"date":%q,"sleepSessions":[],"items":[{"metric":"steps","name":"Steps","value":1,"unit":"steps"}]}]}`,
 		time.Now().Add(48*time.Hour).Format(time.RFC3339), time.Now().Format("2006-01-02"))
 	response := httptest.NewRecorder()
 	srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", strings.NewReader(body)))
