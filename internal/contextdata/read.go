@@ -119,7 +119,7 @@ func Read(p paths.Paths, source string) (Dataset, error) {
 	}
 	out.TimeBasis = "source-local calendar date"
 	if source == "locations" {
-		out.TimeBasis = "receipt date; collectedAt is unvalidated source metadata"
+		out.TimeBasis = "receipt date; timestamp is source observation time (legacy collectedAt); source time is unvalidated"
 	}
 	seen := map[string]bool{}
 	for _, entry := range entries {
@@ -174,7 +174,7 @@ func Read(p paths.Paths, source string) (Dataset, error) {
 					continue
 				}
 				seen[identity] = true
-				ts, err := time.Parse(time.RFC3339Nano, Str(r, "startAt"))
+				ts, err := calendarStart(r)
 				if err != nil {
 					return out, fmt.Errorf("invalid calendar startAt in %s", path)
 				}
@@ -199,8 +199,8 @@ func Read(p paths.Paths, source string) (Dataset, error) {
 	sort.Slice(out.Items, func(i, j int) bool {
 		a, b := out.Items[i], out.Items[j]
 		if source == "calendars" {
-			ta, _ := time.Parse(time.RFC3339Nano, Str(a.Data, "startAt"))
-			tb, _ := time.Parse(time.RFC3339Nano, Str(b.Data, "startAt"))
+			ta, _ := calendarStart(a.Data)
+			tb, _ := calendarStart(b.Data)
 			if !ta.Equal(tb) {
 				return ta.Before(tb)
 			}
@@ -274,4 +274,26 @@ func readPages(dir string, out Dataset) (Dataset, error) {
 	sort.Strings(out.Dates)
 	sort.Slice(out.Items, func(i, j int) bool { return out.Items[i].ID < out.Items[j].ID })
 	return out, nil
+}
+
+// calendarStart uses the source's current field, with the older optional spelling
+// as a fallback. An explicit false is authoritative when both are present.
+func calendarStart(record map[string]any) (time.Time, error) {
+	start, err := time.Parse(time.RFC3339Nano, Str(record, "startAt"))
+	if err != nil {
+		return time.Time{}, err
+	}
+	allDay, present := record["isAllDay"].(bool)
+	if !present {
+		allDay, _ = record["allDay"].(bool)
+	}
+	if allDay {
+		zone, err := time.LoadLocation(Str(record, "timeZone"))
+		if err != nil {
+			return time.Time{}, err
+		}
+		local := start.In(zone)
+		return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, zone), nil
+	}
+	return start, nil
 }

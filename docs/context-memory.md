@@ -4,11 +4,11 @@ The context-query skill now routes calendars, locations and health metrics along
 
 ## Read-only commands
 
-- `calendar list`: future starts only, ordered by start instant. The response says `scope=upcoming`, explains the default, and records `asOf`. Ongoing events are excluded. All-day events start at source-local midnight.
+- `calendar list`: future starts only, ordered by start instant. The response says `scope=upcoming`, explains the default, and records `asOf`. Ongoing events are excluded. `isAllDay` identifies all-day events; legacy `allDay` is a fallback. Explicit false in the current field takes precedence. All-day events start at source-local midnight.
 - `calendar list --all`: all synchronized past, ongoing and future events (`all_synced`). This is not a claim of complete device history.
 - `calendar list --date YYYY-MM-DD` or `--from-date ... --to-date ...`: events overlapping the explicit source-local dates, overriding the upcoming default. `--all` conflicts with date filters.
 - `calendar get <id>`: resolve an ID from list. IDs fingerprint content, because ingestion does not require stable event IDs; resolve again after a revision. Original event/instance identities, if supplied, remain in `data`.
-- `location list` / `get <id>`: original observations. Dates select receipt days, and `collectedAt` is unvalidated source metadata. Exact duplicate rows within a receipt day collapse.
+- `location list` / `get <id>`: original observations. Dates select receipt days, and `timestamp` is unvalidated observation time (legacy `collectedAt`); `accuracyMeters`, `poi`, `provider`, and `deviceType` remain in the original data. Exact duplicate rows within a receipt day collapse.
 - `health-data list`, `get --date ...`, `series --metric ...`: current daily snapshots or metric series. Missing values stay null, with units/provider and partial-day metadata preserved. Legacy health receipts are excluded.
 
 Lists return `coverage.connected`, actual `availableDates`, `timeBasis`, `total`, and `nextCursor`. The default page is 100 items (`--limit 1..500`). Follow the cursor with unchanged filters. Source/query changes invalidate a cursor so pages cannot silently mix versions. Queries do not write consumption state.
@@ -40,3 +40,7 @@ Persistent memory is managed by the host agent, not the CLI. The skill requires 
 ## Validation
 
 Synthetic isolated tests cover upcoming/all/date scopes, overlapping calendar days, pagination changes, exact-version commit while new data arrives, independent source/profile tokens, repeated confirmations, timestamp-only health updates, calendar empty snapshots, missing health metrics, location duplicate rows, source/checkpoint corruption, webpage updates/path boundaries, command dispatch and skill rename binding preservation. No production model, private data, or remote delivery is needed for these tests.
+
+## Source-field compatibility validation
+
+Query fixtures cover the current `isAllDay`, `timestamp`, `accuracyMeters`, `poi`, and source metadata fields, with older optional spellings retained. Calendar sorting and upcoming filtering share the same effective-start calculation. Location scope remains receipt-day based even when observation time falls on another day. An isolated local profile can be populated with copied source folders to exercise the real CLI; keep private samples and reports outside Git. Run query and pagination checks before any test-only consumption, and verify that token confirmation never changes the source files.

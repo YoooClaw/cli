@@ -111,11 +111,7 @@ func Query(p paths.Paths, source, mode, id string, o Options, now time.Time) (ma
 			continue
 		}
 		if scope == "upcoming" {
-			start, _ := time.Parse(time.RFC3339Nano, Str(v.Data, "startAt"))
-			if all, _ := v.Data["allDay"].(bool); all {
-				zone, _ := time.LoadLocation(Str(v.Data, "timeZone"))
-				start = time.Date(start.In(zone).Year(), start.In(zone).Month(), start.In(zone).Day(), 0, 0, 0, 0, zone)
-			}
+			start, _ := calendarStart(v.Data)
 			if !start.After(c.AsOf) {
 				continue
 			}

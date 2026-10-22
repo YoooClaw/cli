@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,4 +252,55 @@ func TestMemoryProcessLockReleased(t *testing.T) {
 		t.Fatal(e)
 	}
 	second()
+}
+
+func TestCalendarIsAllDayFieldAndLegacyFallback(t *testing.T) {
+	p := paths.ForRoot(t.TempDir(), "default")
+	now, _ := time.Parse(time.RFC3339, "2026-01-15T12:00:00+08:00")
+	// Ingest accepts optional fields verbatim. Normalize explicit all-day records
+	// even if their start clock is non-midnight; explicit isAllDay takes precedence.
+	primary := event("2026-01-15T16:00:00+08:00", "2026-01-16T00:00:00+08:00")
+	primary["id"] = "primary"
+	primary["isAllDay"] = true
+	timed := event("2026-01-15T17:00:00+08:00", "2026-01-15T18:00:00+08:00")
+	timed["id"] = "timed"
+	timed["isAllDay"] = false
+	timed["allDay"] = true
+	legacy := event("2026-01-15T15:00:00+08:00", "2026-01-16T00:00:00+08:00")
+	legacy["id"] = "legacy"
+	legacy["allDay"] = true
+	fixture(t, filepath.Join(p.Calendars, "2026-01-15.jsonl"), primary, timed, legacy)
+	r, e := Query(p, "calendars", "list", "", Options{Limit: 100}, now)
+	if e != nil {
+		t.Fatal(e)
+	}
+	items := r["items"].([]Item)
+	if len(items) != 1 || items[0].Data["id"] != "timed" {
+		t.Fatalf("incorrect upcoming all-day handling: %v", items)
+	}
+	r, e = Query(p, "calendars", "list", "", Options{All: true, Limit: 100}, now)
+	if e != nil || r["total"] != 3 {
+		t.Fatal(r, e)
+	}
+}
+
+func TestLocationCurrentFieldsPreservedAndExplained(t *testing.T) {
+	p := paths.ForRoot(t.TempDir(), "default")
+	row := map[string]any{"id": "sample-location", "timestamp": "2026-01-14T23:00:00+08:00", "latitude": 0, "longitude": 0, "accuracyMeters": 12, "poi": "Synthetic place", "coordinateSystem": "wgs84", "provider": "sample-provider"}
+	fixture(t, filepath.Join(p.Locations, "2026-01-15.jsonl"), row)
+	r, e := Query(p, "locations", "list", "", Options{Date: "2026-01-15", Limit: 100}, time.Now())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(r["timeBasis"].(string), "timestamp") {
+		t.Fatal("observation-time field absent from timeBasis")
+	}
+	item := r["items"].([]Item)[0]
+	if item.Date != "2026-01-15" || Hash(item.Data) != Hash(row) {
+		t.Fatal("receipt date or original fields changed")
+	}
+	r, e = Query(p, "locations", "list", "", Options{Date: "2026-01-14", Limit: 100}, time.Now())
+	if e != nil || r["total"] != 0 {
+		t.Fatal("date filter must retain receipt-day semantics", r, e)
+	}
 }
