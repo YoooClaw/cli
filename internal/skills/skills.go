@@ -275,6 +275,9 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 	}
 	var results []InstallResult
 	var installed []string
+	legacyMemory := filepath.Join(target, "yoooclaw-notification-to-memory")
+	legacyRaw, _ := os.ReadFile(filepath.Join(legacyMemory, "SKILL.md"))
+	legacyCommand := wuyingCommandRE.Find(legacyRaw)
 	for _, name := range deprecatedBundledSkills {
 		dest := filepath.Join(target, name)
 		if !fsutil.Exists(dest) {
@@ -290,13 +293,18 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 	for _, s := range skills {
 		dest := filepath.Join(target, s.Name)
 		var commandBlock []byte
+		if s.Name == "yoooclaw-context-to-memory" {
+			commandBlock = legacyCommand
+		}
 		if fsutil.Exists(dest) {
 			if !force {
 				results = append(results, InstallResult{Name: s.Name, Status: "skipped", Reason: "目标已存在，加 --force 覆盖", Dest: dest})
 				continue
 			}
 			old, _ := os.ReadFile(filepath.Join(dest, "SKILL.md"))
-			commandBlock = wuyingCommandRE.Find(old)
+			if block := wuyingCommandRE.Find(old); len(block) > 0 {
+				commandBlock = block
+			}
 			if err := os.RemoveAll(dest); err != nil {
 				return nil, nil, err
 			}
@@ -321,6 +329,14 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 		}
 		results = append(results, InstallResult{Name: s.Name, Status: "installed", Dest: dest})
 		installed = append(installed, s.Name)
+	}
+	// Remove the former router only after its replacement exists; preserve the
+	// bound executable/profile block when migrating an installed Wuying skill.
+	if fsutil.Exists(filepath.Join(target, "yoooclaw-context-to-memory", "SKILL.md")) && fsutil.Exists(legacyMemory) {
+		if err := os.RemoveAll(legacyMemory); err != nil {
+			return nil, nil, err
+		}
+		results = append(results, InstallResult{Name: "yoooclaw-notification-to-memory", Status: "removed", Reason: "renamed to yoooclaw-context-to-memory", Dest: legacyMemory})
 	}
 	return results, installed, nil
 }

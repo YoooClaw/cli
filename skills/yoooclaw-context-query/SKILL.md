@@ -1,7 +1,7 @@
 ---
 name: yoooclaw-context-query
 description: |
-  Query yoooclaw data already synchronized to this computer: notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source local context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
+  Query yoooclaw data already synchronized to this computer: notifications/messages (“最近有什么通知”), calendar plans, location history, health daily metrics, voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source local context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
 ---
 
 # YoooClaw local context query
@@ -25,6 +25,9 @@ Do not infer reply language from previous messages, source content, command outp
 
 ### 1. Route the source
 
+- Calendars/plans: read `references/calendars.md`.
+- Location history: read `references/locations.md`.
+- Health daily metrics/trends: read `references/health-data.md`.
 - Notifications/messages, senders, apps, recent/unread summaries: read `references/notifications.md`.
 - Voice input, dictation/口述 history, or “我刚才说了什么”: read `references/voice-input.md`.
 - Phone/meeting recordings, recording transcripts, or “录音里说了什么”: read `references/recordings.md`.
@@ -53,6 +56,9 @@ For a cross-source query:
 
 1. Extract a focused phrase plus any time or count constraint.
 2. Query every relevant source for the full scope requested by the user:
+   - calendars: `calendar list` with explicit dates or `--all` when requested; default is future starts only;
+   - locations: `location list` by receipt date, interpreting observation time separately;
+   - health: `health-data get` for one day or `series` for one metric;
    - notifications: focused `notification search`;
    - voice input: focused `voice search` or a bounded `voice list`;
    - pages: `yoooclaw synced-web-page search`;
@@ -72,7 +78,7 @@ Do not apply a shared per-source result cap. Process large scopes in batches ins
 
 ## Boundaries
 
-- Learning from notifications or persisting notification facts to memory uses `yoooclaw-notification-to-memory`.
+- Learning from notifications, calendars, locations, health data, or web pages uses `yoooclaw-context-to-memory`.
 - Immediate lighting and persistent notification-triggered lighting use `yoooclaw-light`.
 - Meeting minutes, translation, mind maps, interview restructuring, and entity extraction use `yoooclaw-recordings-process`.
 - Relay, daemon, authentication, and ingest failures use `yoooclaw-tunnel-debug`.
