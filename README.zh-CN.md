@@ -182,8 +182,8 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | Skill                           | 说明 |
 | ------------------------------- | ---- |
 | `yoooclaw-media-generate`     | 使用 Python 3 生成图片和最长 30 秒的视频；从 `~/.config/yoooclaw/credentials` 读取 `MODEL_PROXY_API_KEY` |
-| `yoooclaw-context-query`        | 查询最新通知、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
-| `yoooclaw-notification-to-memory` | 从通知提炼个人画像、每日记录与长期记忆，验证持久写入后逐批提交学习进度 |
+| `yoooclaw-context-query`        | 查询最新通知、日程、位置、健康统计、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
+| `yoooclaw-context-to-memory` | 从通知、日程、位置、健康与网页提炼有来源的记忆，验证持久写入后确认精确批次 |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
 | `yoooclaw-light`                | 通过独立 CLI 播放一次性灯效并管理「通知 → 灯效」持久规则 |
 | `yoooclaw-todo`                 | 个人待办的查询、创建、修改、完成 / 恢复与删除；泛指日程 / 待办时默认使用，删除前确认 |
