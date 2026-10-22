@@ -38,15 +38,15 @@ Require successful exit and `ok=true`. A `done=true` response must have `totalPe
 
 Snapshot batches are frozen on disk until confirmation. Repeating `next` with the same scope returns the same batch; a different scope is rejected while one is pending. One batch has at most 100 items and normally about 64 KB of JSON; a single larger document is returned intact. Inspect its full content before confirmation.
 
-Complete with a validated batch or valid scope-complete response.
+Complete with a validated batch or valid scope-complete response. Finish steps 3 and 4 for a nonempty batch before fetching another batch or source.
 
 ## 3. Select, merge, and verify memory
 
 Evaluate every item using its source reference. Separate date-bound daily records, durable user/profile facts, and attributed reference knowledge within the host’s existing memory organization. Retain source identity/version and dates sufficiently to reconcile later revisions. Evidence of a plan remains a plan; source observations support only their stated attribution.
 
-Prepare additions and corrections against existing memory. Preserve user-authored rulings and unrelated material. Re-read each destination immediately before writing, merge intervening changes, then read back to verify persistence. A fully evaluated batch may legitimately require no writes.
+Prepare additions and corrections against existing memory. Preserve user-authored rulings and unrelated material. For each destination, perform three sequential tool operations: read the current file (or establish that it does not exist), write the merged content, then issue a separate Read of the saved file and check the expected changes. A successful Write response alone is not verification. Keep confirmation for a later tool call, after all read-back results have been inspected. A fully evaluated batch may legitimately require no writes.
 
-Complete when every item has been evaluated and every necessary write verified. On failure, stop before confirmation. A retry first deduplicates any partial memory writes using source identities and versions.
+Complete when every item has been evaluated and every modified destination has a successful post-write Read result matching the intended changes. For a no-write batch, identify the existing memory or source-specific reason that makes a write unnecessary. On failure, stop before confirmation. A retry first deduplicates any partial memory writes using source identities and versions.
 
 ## 4. Confirm only the processed batch
 
