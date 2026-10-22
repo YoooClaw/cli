@@ -492,32 +492,15 @@ Recording config and events live under the current profile at `recordings/asr-co
 
 ### Health Data Ingest
 
-`POST /health-data` accepts platform-neutral daily snapshots (`schemaVersion: 2`) through existing ingest authentication. `/health` advertises `health-data-daily-v2` in addition to the legacy `health-data` capability. Relay uses `path: "health-data"` and the JSON string as `payload` of `/api/message/messageBridge/send`.
+`POST /health-data` accepts platform-neutral daily snapshots (`schemaVersion: 3`) through existing ingest authentication. `/health` advertises `health-data-daily-v3`. Relay uses `path: "health-data"` and the JSON string as `payload` of `/api/message/messageBridge/send`.
 
-```json
-{
-  "schemaVersion": 2,
-  "provider": "healthkit",
-  "collectedAt": "2026-10-19T15:00:00+08:00",
-  "timeZone": "Asia/Shanghai",
-  "days": [
-    {"date":"2026-09-30","items":[
-      {"metric":"steps","name":"Steps","value":12000,"unit":"steps"},
-      {"metric":"sleep_minutes","name":"Total Sleep Duration","value":420,"unit":"min"}
-    ]}
-  ]
-}
-```
+Each day contains `date`, ordinary `items` (`metric/name/value/unit`) and `sleepSessions`. Complete sleep sessions include observed start/end, sleep and stage minutes, awake minutes/count/longest interval, unknown minutes, boundary status, sources and the full ordered stage timeline. Sleep belongs to its **end date** and is never split at midnight. Stage minutes round each interval endpoint to the nearest minute before summing; unknown intervals are neither sleep nor awake. Source selection and the 60-minute session gap are product rules, not a claim to reproduce Apple's private algorithm.
 
-Each business date is saved as one current snapshot in `profiles/<profile>/health-data/YYYY-MM-DD.jsonl`, regardless of when it arrives. The first line contains `schemaVersion`, `date`, `timeZone`, `updatedAt` and `provider`; subsequent lines contain one short metric (`metric/name/value/unit`) each. Names use fixed English labels and units use English tokens or standard symbols (for example `Steps` / `steps`, `Flights Climbed` / `floors`, `Respiratory Rate` / `breaths/min`), independent of UI language. The CLI never sums source samples. Mobile clients supply system aggregate results or documented deterministic merges, with readable names, explicit statistics/units and no repeated device metadata. A directory `README.md` explains the reading rules.
+Each supplied date atomically replaces `profiles/<profile>/health-data/YYYY-MM-DD.jsonl`. The first line contains version/date/timezone/update/provider metadata; remaining lines contain ordinary metrics or `type:sleepSession` records with complete sessions. The CLI validates summaries against timelines. Limits: 256 metrics and 32 sessions per day, 4096 segments per session, 4 MiB stored per day. iOS recalculates the latest 30 days with 36 hours of sleep lookback, uploads whole dates in bounded batches, and never treats invisible data as a deletion. Old collection times cannot overwrite newer snapshots.
 
-The CLI validates the entire request before writes: 1..366 unique dates, 1..256 unique metrics per date, valid dates and IANA timezone, RFC3339 collection time and finite numeric values. A `collectedAt` more than 24 hours ahead of the daemon clock is rejected, because a clock-skewed timestamp would otherwise block every later snapshot for that date. Empty or inaccessible reads must not be sent as a deletion or invented zero. Each nonempty supplied day is a complete visible snapshot, replacing that day's prior file atomically; a missing metric is unknown, not zero. Files outside the supplied dates remain unchanged. Older collection times cannot overwrite newer snapshots. Multi-date writes are atomic per date, and retries are idempotent if a later date write fails.
+`GET /assets/health-data` returns date summaries (7 by default, 14 maximum), with `revision` and `segmentCount` instead of full sleep timelines. `GET /assets/health-data/{date}/sleep-sessions/{id}` uses the list revision plus limit/cursor (100 by default, 500 maximum, 256 KiB response cap). Snapshot changes invalidate the detail cursor. Both routes support the read-only messageBridge envelope.
 
-Quantity metrics such as steps come from native merged statistics. Sleep/workouts use the mobile first-source rule, not an assertion of equivalence to the Health app's private source priorities. Sleep minutes are clipped to each local calendar day; workout active duration is attributed to its start date. SDNN/RMSSD, Apple exercise-ring minutes/exercise-session duration, activity-specific/general distance are distinct semantics and must not be renamed as equivalent metrics. Clients recalculate the latest 30 local calendar days; older stored dates remain historical, without automatic correction outside that window.
-
-Legacy v1 batches remain accepted unchanged, including unknown fields, numeric lexemes and `deletedIds`, but are appended under `health-data/legacy/receipts/` by receipt date. On the first v2 write, existing v1 date files in the root are copied into `legacy/imported/` before being removed from the daily-results root; backup failure leaves the original intact, and unknown formats are not moved. An unknown-format file only blocks a write whose date it collides with — stray files at other dates stay untouched and do not disable ingest; empty date files hold nothing to preserve and are replaced by the atomic daily write. Legacy data is for compatibility/debugging and must not be added to daily totals.
-
-Success returns HTTP 200 with `{"ok":true,"ingested":N,"deleted":0}` for v2, where N counts metrics across all days. Legacy receipts retain their original item/deletion counts. Invalid input returns 400; write failures return 500 with `HEALTH_DATA_WRITE_FAILED`. No health database or query command is introduced.
+Old v1/v2 uploads are rejected, old stored formats are skipped by asset reads, and historical files are not bulk migrated or deleted. A newly uploaded v3 day replaces that same date. See [the full v3 contract](docs/design/health-sessions-v3.md) and [asset pagination rules](docs/design/assets-read-v1.md).
 
 ### Data Transfer
 

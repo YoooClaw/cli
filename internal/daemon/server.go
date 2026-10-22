@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/assets"
 	"github.com/YoooClaw/cli/internal/calendar"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
@@ -44,7 +45,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "health-data", "health-data-daily-v2", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -303,6 +304,8 @@ type server struct {
 	locationStorage   *location.Storage
 	calendarStorage   *calendar.Storage
 	healthDataStorage *healthdata.Storage
+	assetReader       *assets.Service
+	assetOnce         sync.Once
 	recordingEventLog *recording.EventLog
 	transfer          *transfer.Service
 	ingressMode       string
@@ -387,14 +390,22 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	}
 	path := r.URL.Path
+	if assetKind(path) != "" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+	}
 
 	if path == "/health" && r.Method == http.MethodGet {
-		writeJSON(w, 200, map[string]any{"server": "yoooclaw", "version": version.Version, "protocol": ProtocolVersion, "capabilities": Capabilities})
+		writeJSON(w, 200, map[string]any{"server": "yoooclaw", "version": version.Version, "protocol": ProtocolVersion, "capabilities": s.capabilities()})
 		return
 	}
 
 	authCtx, ok := s.authContext(r, path)
 	if !ok {
+		if assetKind(path) != "" {
+			writeAssetError(w, &assets.Error{Status: 401, Code: "UNAUTHORIZED", Message: "token 不一致或缺失", Action: "reauth"})
+			return
+		}
 		writeJSON(w, 401, map[string]any{"ok": false, "error": map[string]any{"code": errs.CodeUnauthorized, "message": "token 不一致或缺失"}})
 		return
 	}
@@ -405,6 +416,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer s.activeRequests.Add(-1)
 	}
 	switch {
+	case assetKind(path) != "":
+		s.handleAssetRequest(w, r, assetKind(path))
 	case path == "/daemon/status" && r.Method == http.MethodGet:
 		s.handleStatus(w)
 	case path == "/daemon/stop" && r.Method == http.MethodPost:
@@ -729,6 +742,9 @@ func (s *server) relayStatusPayload() map[string]any {
 // ── helpers ──
 
 func isIngestPath(path string) bool {
+	if assetKind(path) != "" {
+		return true
+	}
 	switch path {
 	case "/notifications", "/locations", "/calendars", "/health-data", "/images",
 		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么

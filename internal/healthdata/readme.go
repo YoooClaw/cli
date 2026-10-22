@@ -7,45 +7,49 @@ import (
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
-const dailyReadme = `# 健康日统计
+const dailyReadme = `# 健康数据（v3）
 
-根目录 YYYY-MM-DD.jsonl 按数据所属的当地自然日保存，不按接收日保存。
-每个日期文件是一份当前快照。重复同步会更新，不可跨文件或版本重复累计。
-第一行是文件说明：schemaVersion/date/timeZone/updatedAt/provider。
-其余每行一个指标，只含 metric（稳定业务名）、name（可读名称）、value、unit。
-睡眠和运动的多来源处理已经在客户端完成，不要再把文件中的结果按来源相加。
+根目录 YYYY-MM-DD.jsonl 是一份日期快照，重复同步覆盖更新，不可把不同版本累加。
+第一行是 schemaVersion=3/date/timeZone/updatedAt/provider；后续行分两类：
+- 普通指标：metric/name/value/unit。步数、能量、心率等按当地自然日统计。
+- 睡眠：type=sleepSession，session 内保存一次完整睡眠的摘要与全部 segments。
 
-- steps：系统合并后的每日总步数。
-- walking_running_distance / cycling_distance：分别为步行跑步/骑行距离，不是所有运动的总距离。
-- active_energy：活动能量，不含静息消耗；不要与全天总能量混用。
-- flights_climbed：爬楼层数，不是爬升米数。
-- apple_exercise_minutes：Apple 锻炼圆环的分钟数，不等于运动会话时长。
-- *_average / *_minimum / *_maximum / *_latest：分别为系统日平均/最低/最高/最近值。
-- hrv_sdnn_average 与 Android 的 hrv_rmssd_average 算法不同，不可拼成同一趋势。
-- oxygen_saturation_average / body_fat_latest：单位 %，98 表示 98%，不是 0.98。
-- sleep_minutes：当天 00:00 至次日 00:00 内的实际睡眠分钟，跨午夜按日拆分，不等于“昨夜睡眠”。
-- sleep_*_minutes：睡眠阶段或在床/清醒时长；sleep_minutes 已包含睡眠阶段，不能再加阶段时长。
-  core 保留核心睡眠语义，不把它强行等同于其他平台的 light。
-- workout_*_minutes：按运动开始日期归属的完整运动有效分钟（已扣除原生暂停时长）；跨午夜不按比例猜算。
-- workout_sessions：运动次数；不要把 workout_*_minutes 再加到 Apple 锻炼分钟数。
+睡眠会话归记录结束的当地日期，跨午夜不拆分；同日可以有夜间睡眠和午睡等多次记录。
+startAt/endAt 是记录到的首个/末个实际睡眠片段边界，不代表上床时间或确认实际起床。
+客户端先按开始/结束时间及来源标识排序，优先来源覆盖重叠，其他来源只补空白；
+同源详细阶段优先于 unspecified。相邻实际睡眠片段间隔 <=60 分钟归为同一会话。
+这是产品规则，不声称复现 Apple 未公开的来源排序或会话识别算法。
 
-睡眠/运动一期来源规则：按开始时间、结束时间、来源稳定标识排序，第一条记录的来源优先。
-睡眠在重叠区间保留优先来源，其他来源只补空白；同源详细阶段优先于未分期睡眠，在床不计入实际睡眠。
-运动保留优先来源的完整会话，跳过与它重叠的其他会话，保留不重叠会话。
-这个规则不声称复现健康 App 未公开的来源排序。
+session 字段：id/startAt/endAt/sleepMinutes/stageMinutes/awakeMinutes/awakeningCount/
+longestAwakeMinutes/unknownMinutes/isPartial/sources/segments。
+stageMinutes 包含 core/deep/rem/unspecified；sleepMinutes 为四类之和。
+segments 按时间顺序保存 stage/startAt/endAt/source；时间保留毫秒及偏移。
+awake 为有记录的清醒；unknown 为记录空白，不算睡眠或清醒。
+inBed 不作为睡眠阶段进入此时间线，也不计入睡眠时长。
+统计先将每个有效片段的起止时刻分别四舍五入到分钟，再相减汇总；30 秒进位，短片段可为 0。
+awakeningCount 按原始连续 Awake 区间计数，可能包含取整后时长为 0 的片段。
+isPartial 表示触及查询边界；false 也不代表已经确认用户起床或设备数据全部同步。
+sources 是来源标识与名称；同一来源已合并，不可再次按来源累加。
 
-缺少指标表示此次未读到该项，不能当成 0 或断言用户未授权。
-updatedAt 是最后一次采集时刻；今天是截至该时刻的部分日。
-系统统计可能随同步、源记录删除或权限变化而更新，跟踪应读取当前文件。
-旧协议原始批次在 legacy/receipts；首次接收日快照时归档的旧根目录文件完整备份在 legacy/imported。
-legacy 只用于兼容与排查，不能把这些原始记录再次累计到日统计中。
+Agent 默认读取摘要，问到阶段先后或具体清醒时间时再读取 segments。
+GET /assets/health-data 返回每日指标及 sleepSessions 摘要，不返回全部时间线。
+GET /assets/health-data/{date}/sleep-sessions/{id} 通过 revision 与 limit/cursor 分页读取阶段。
+
+普通指标说明：steps 为总步数，active_energy 不含静息消耗；oxygen_saturation_average/
+body_fat_latest 使用百分数（98 表示98%）；hrv_sdnn 与其他平台 RMSSD 不可混算。
+workout_*_minutes 是按开始日归属的完整运动有效时长，workout_sessions 是次数；
+不要与 apple_exercise_minutes 重复累计。数量和运动仍由客户端合并来源。
+
+缺少指标不能当成0或断言权限拒绝。updatedAt 是查询开始的采集时刻，今天为部分日。
+历史v1/v2文件不读取、不迁移、不删除；新上传的同日期v3快照会替换该日期文件。
+睡眠id在起点或来源变更时可能变化，应替换整个日期快照，不追加累加。
 `
 
 func (s *Storage) ensureDailyReadme() error {
 	path := filepath.Join(s.dir, "README.md")
-	if _, err := os.Stat(path); err == nil {
+	if raw, err := os.ReadFile(path); err == nil && string(raw) == dailyReadme {
 		return nil
-	} else if !os.IsNotExist(err) {
+	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return fsutil.WriteAtomic(path, []byte(dailyReadme), fsutil.SecretFileMode)

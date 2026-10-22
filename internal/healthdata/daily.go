@@ -19,8 +19,9 @@ type DailyBatch struct {
 	Days          []DailySnapshot `json:"days"`
 }
 type DailySnapshot struct {
-	Date  string            `json:"date"`
-	Items []json.RawMessage `json:"items"`
+	Date          string            `json:"date"`
+	Items         []json.RawMessage `json:"items"`
+	SleepSessions []SleepSession    `json:"sleepSessions"`
 }
 type dailyHeader struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -34,11 +35,16 @@ var metricPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,79}$`)
 
 func prepareDaily(raw json.RawMessage) (*DailyBatch, time.Time, int, error) {
 	var b DailyBatch
-	if err := json.Unmarshal(raw, &b); err != nil {
+	if !json.Valid(raw) {
+		return nil, time.Time{}, 0, fmt.Errorf("body must be one JSON value")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&b); err != nil {
 		return nil, time.Time{}, 0, fmt.Errorf("invalid daily snapshot: %w", err)
 	}
-	if b.SchemaVersion != 2 || strings.TrimSpace(b.Provider) == "" {
-		return nil, time.Time{}, 0, fmt.Errorf("schemaVersion=2 and provider are required")
+	if b.SchemaVersion != 3 || strings.TrimSpace(b.Provider) == "" {
+		return nil, time.Time{}, 0, fmt.Errorf("schemaVersion=3 and provider are required")
 	}
 	collected, err := time.Parse(time.RFC3339Nano, b.CollectedAt)
 	if err != nil {
@@ -47,7 +53,8 @@ func prepareDaily(raw json.RawMessage) (*DailyBatch, time.Time, int, error) {
 	if b.TimeZone == "" {
 		return nil, time.Time{}, 0, fmt.Errorf("timeZone is required")
 	}
-	if _, err := time.LoadLocation(b.TimeZone); err != nil {
+	zone, zoneErr := time.LoadLocation(b.TimeZone)
+	if zoneErr != nil {
 		return nil, time.Time{}, 0, fmt.Errorf("timeZone must be an IANA timezone")
 	}
 	if len(b.Days) == 0 || len(b.Days) > 366 {
@@ -61,8 +68,32 @@ func prepareDaily(raw json.RawMessage) (*DailyBatch, time.Time, int, error) {
 			return nil, time.Time{}, 0, fmt.Errorf("days[%d] has an invalid or repeated date", n)
 		}
 		dates[d.Date] = true
-		if len(d.Items) == 0 || len(d.Items) > 256 {
-			return nil, time.Time{}, 0, fmt.Errorf("days[%d].items must contain 1..256 metrics; an empty read is not a deletion", n)
+		if d.Items == nil || d.SleepSessions == nil || len(d.Items) > 256 || len(d.SleepSessions) > MaxSleepSessions {
+			return nil, time.Time{}, 0, fmt.Errorf("days[%d].items/sleepSessions arrays are required and must respect their limits", n)
+		}
+		if len(d.Items) == 0 && len(d.SleepSessions) == 0 {
+			return nil, time.Time{}, 0, fmt.Errorf("empty snapshots are not deletions")
+		}
+		encoded, _ := json.Marshal(d)
+		if len(encoded) > MaxDayBytes-4096 {
+			return nil, time.Time{}, 0, fmt.Errorf("health day exceeds 4 MiB")
+		}
+		seenSessions := map[string]bool{}
+		var previousEnd time.Time
+		for _, session := range d.SleepSessions {
+			if seenSessions[session.ID] {
+				return nil, time.Time{}, 0, fmt.Errorf("duplicate sleep session")
+			}
+			seenSessions[session.ID] = true
+			if err := validateSleep(session, d.Date, zone, collected); err != nil {
+				return nil, time.Time{}, 0, err
+			}
+			start, _ := time.Parse(time.RFC3339Nano, session.StartAt)
+			if !previousEnd.IsZero() && !start.After(previousEnd) {
+				return nil, time.Time{}, 0, fmt.Errorf("sleep sessions must be ordered and disjoint")
+			}
+			previousEnd, _ = time.Parse(time.RFC3339Nano, session.EndAt)
+			count++
 		}
 		metrics := map[string]bool{}
 		for j, item := range d.Items {
@@ -82,6 +113,9 @@ func prepareDaily(raw json.RawMessage) (*DailyBatch, time.Time, int, error) {
 			// Numbers remain RawMessage on disk. Float64 is used only to reject non-finite/out-of-range input.
 			if _, err := m.Value.Float64(); err != nil {
 				return nil, time.Time{}, 0, fmt.Errorf("days[%d].items[%d].value must be a finite number", n, j)
+			}
+			if strings.HasPrefix(m.Metric, "sleep_") {
+				return nil, time.Time{}, 0, fmt.Errorf("sleep data belongs in sleepSessions")
 			}
 			metrics[m.Metric] = true
 			count++
