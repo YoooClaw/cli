@@ -73,7 +73,7 @@ func TestCalendarScopesPaginationAndOverlap(t *testing.T) {
 	}
 }
 func health(t *testing.T, p paths.Paths, updated string, steps int) {
-	fixture(t, filepath.Join(p.HealthData, "2026-10-22.jsonl"), map[string]any{"schemaVersion": 2, "date": "2026-10-22", "timeZone": "Asia/Shanghai", "provider": "test", "updatedAt": updated}, map[string]any{"metric": "steps", "name": "Steps", "value": steps, "unit": "count"})
+	fixture(t, filepath.Join(p.HealthData, "2026-10-22.jsonl"), map[string]any{"schemaVersion": 3, "date": "2026-10-22", "timeZone": "Asia/Shanghai", "provider": "test", "updatedAt": updated}, map[string]any{"metric": "steps", "name": "Steps", "value": steps, "unit": "count"})
 }
 func TestSnapshotCommitDoesNotConsumeConcurrentUpdate(t *testing.T) {
 	p := paths.ForRoot(t.TempDir(), "one")

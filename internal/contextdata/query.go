@@ -135,6 +135,9 @@ func Query(p paths.Paths, source, mode, id string, o Options, now time.Time) (ma
 				v.Data = map[string]any{"header": h, "metric": o.Metric, "measurement": metric, "missing": metric == nil, "partialDay": v.Data["partialDay"]}
 			}
 		}
+		if source == "health-data" && mode == "list" {
+			v.Data = healthSummary(v.Data)
+		}
 		items = append(items, v)
 	}
 	if mode == "get" && len(items) == 0 {

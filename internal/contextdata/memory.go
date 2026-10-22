@@ -33,6 +33,11 @@ type memoryState struct {
 
 func memoryItems(p paths.Paths, source string) (Dataset, error) {
 	d, e := Read(p, source)
+	if e == nil && source == "health-data" {
+		for i := range d.Items {
+			d.Items[i].Data = healthSummary(d.Items[i].Data)
+		}
+	}
 	if e != nil || source != "calendars" {
 		return d, e
 	}

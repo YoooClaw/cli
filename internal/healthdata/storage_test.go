@@ -50,3 +50,23 @@ func TestSnapshotsPreserveLargeNumbersPermissionsAndUnrelatedHistory(t *testing.
 		}
 	}
 }
+
+func TestDailyWriteRejectsOldCollidingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026-09-30.jsonl")
+	old := []byte(`{"schemaVersion":2,"date":"2026-09-30"}`)
+	if err := os.WriteFile(path, old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := Prepare([]byte(dailyBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = NewStorage(dir).Append(batch); err == nil {
+		t.Fatal("old format overwritten implicitly")
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(old, after) {
+		t.Fatal("old data changed")
+	}
+}

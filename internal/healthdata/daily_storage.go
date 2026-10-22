@@ -32,7 +32,7 @@ func (s *Storage) replaceDaily(b *DailyBatch) error {
 				SchemaVersion int `json:"schemaVersion"`
 			}
 			first := bytes.SplitN(bytes.TrimSpace(prior), []byte{'\n'}, 2)[0]
-			if json.Unmarshal(first, &priorHeader) != nil || priorHeader.SchemaVersion > 3 || priorHeader.SchemaVersion < 1 {
+			if json.Unmarshal(first, &priorHeader) != nil || priorHeader.SchemaVersion != 3 {
 				return fmt.Errorf("unrecognized health file at %s", day.Date)
 			}
 			var header dailyHeader

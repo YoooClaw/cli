@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/healthdata"
 	"github.com/YoooClaw/cli/internal/paths"
 )
 
@@ -129,43 +130,60 @@ func Read(p paths.Paths, source string) (Dataset, error) {
 		}
 		date := strings.TrimSuffix(name, ".jsonl")
 		path := filepath.Join(dir, name)
+		if source == "health-data" {
+			info, err := os.Lstat(path)
+			if err != nil {
+				return out, err
+			}
+			if !info.Mode().IsRegular() {
+				return out, fmt.Errorf("health snapshot must be a regular file: %s", date)
+			}
+			if info.Size() > healthdata.MaxDayBytes {
+				return out, fmt.Errorf("health snapshot exceeds 4 MiB: %s", date)
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				return out, err
+			}
+			raw, err := io.ReadAll(io.LimitReader(file, healthdata.MaxDayBytes+1))
+			file.Close()
+			if err != nil {
+				return out, err
+			}
+			if len(raw) > healthdata.MaxDayBytes {
+				return out, fmt.Errorf("health snapshot exceeds 4 MiB: %s", date)
+			}
+			var header map[string]any
+			first := bytes.SplitN(bytes.TrimSpace(raw), []byte{'\n'}, 2)[0]
+			if err := json.Unmarshal(first, &header); err != nil {
+				return out, err
+			}
+			day, _, err := healthdata.ReadSnapshot(raw, date)
+			if err != nil {
+				return out, fmt.Errorf("health snapshot %s: %w", date, err)
+			}
+			metrics := []map[string]any{}
+			for _, item := range day.Items {
+				var metric map[string]any
+				decoder := json.NewDecoder(bytes.NewReader(item))
+				decoder.UseNumber()
+				if err := decoder.Decode(&metric); err != nil {
+					return out, err
+				}
+				metrics = append(metrics, metric)
+			}
+			sort.Slice(metrics, func(i, j int) bool { return Str(metrics[i], "metric") < Str(metrics[j], "metric") })
+			data := map[string]any{"header": header, "items": metrics, "sleepSessions": day.SleepSessions}
+			version := Hash(map[string]any{"date": date, "provider": header["provider"], "timeZone": header["timeZone"], "items": metrics, "sleepSessions": day.SleepSessions})
+			out.Items = append(out.Items, Item{ID: date, Date: date, Version: version, Data: data, Ref: path})
+			out.Dates = append(out.Dates, date)
+			continue
+		}
 		rs, e := rows(path)
 		if e != nil {
 			return out, e
 		}
 		out.Dates = append(out.Dates, date)
-		if source == "health-data" {
-			if len(rs) < 2 {
-				return out, fmt.Errorf("empty health snapshot %s", date)
-			}
-			h := rs[0]
-			if fmt.Sprint(h["schemaVersion"]) != "2" || Str(h, "date") != date {
-				return out, fmt.Errorf("unsupported health snapshot %s", date)
-			}
-			if _, err := time.Parse(time.RFC3339Nano, Str(h, "updatedAt")); err != nil {
-				return out, fmt.Errorf("invalid health updatedAt in %s", path)
-			}
-			if _, err := time.LoadLocation(Str(h, "timeZone")); err != nil {
-				return out, err
-			}
-			metrics := rs[1:]
-			sort.Slice(metrics, func(i, j int) bool { return Str(metrics[i], "metric") < Str(metrics[j], "metric") })
-			for i, m := range metrics {
-				if Str(m, "metric") == "" || Str(m, "unit") == "" {
-					return out, fmt.Errorf("invalid health metric in %s", path)
-				}
-				if _, ok := m["value"].(json.Number); !ok {
-					return out, fmt.Errorf("invalid health value in %s", path)
-				}
-				if i > 0 && Str(m, "metric") == Str(metrics[i-1], "metric") {
-					return out, fmt.Errorf("duplicate health metric in %s", path)
-				}
-			}
-			versionData := map[string]any{"date": date, "provider": h["provider"], "timeZone": h["timeZone"], "items": rs[1:]}
-			data := map[string]any{"header": h, "items": rs[1:]}
-			out.Items = append(out.Items, Item{ID: date, Date: date, Version: Hash(versionData), Data: data, Ref: path})
-			continue
-		}
 		for _, r := range rs {
 			identity := Hash(r)
 			if source == "calendars" {
@@ -296,4 +314,20 @@ func calendarStart(record map[string]any) (time.Time, error) {
 		return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, zone), nil
 	}
 	return start, nil
+}
+
+// Summaries keep default queries and memory batches independent of timeline size.
+// Version still covers all segments, so timeline corrections remain consumable.
+func healthSummary(data map[string]any) map[string]any {
+	out := make(map[string]any, len(data))
+	for k, v := range data {
+		out[k] = v
+	}
+	summaries := []healthdata.SleepListSummary{}
+	for _, session := range data["sleepSessions"].([]healthdata.SleepSession) {
+		summaries = append(summaries, session.Summary())
+	}
+	out["sleepSessions"] = summaries
+	out["sleepDetailsHint"] = "health-data get --date YYYY-MM-DD returns complete segments; use the returned date"
+	return out
 }
