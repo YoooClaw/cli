@@ -36,6 +36,7 @@ import (
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
+	"github.com/YoooClaw/cli/internal/reminders"
 	"github.com/YoooClaw/cli/internal/transfer"
 	updater "github.com/YoooClaw/cli/internal/update"
 	"github.com/YoooClaw/cli/internal/version"
@@ -45,7 +46,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -164,6 +165,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
 		locationStorage:   location.NewStorage(ctx.Paths.Locations),
 		calendarStorage:   calendar.NewStorage(ctx.Paths.Calendars),
+		reminderStorage:   reminders.NewStorage(ctx.Paths.Reminders),
 		healthDataStorage: healthdata.NewStorage(ctx.Paths.HealthData),
 		token:             token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
@@ -303,6 +305,7 @@ type server struct {
 	recordingStorage  *recording.Storage
 	locationStorage   *location.Storage
 	calendarStorage   *calendar.Storage
+	reminderStorage   *reminders.Storage
 	healthDataStorage *healthdata.Storage
 	assetReader       *assets.Service
 	assetOnce         sync.Once
@@ -436,6 +439,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleIngest(w, r, authCtx, "notifications")
 	case path == "/locations" && r.Method == http.MethodPost:
 		s.handleLocationIngest(w, r)
+	case path == "/reminders" && r.Method == http.MethodPost:
+		s.handleReminderIngest(w, r)
 	case path == "/calendars" && r.Method == http.MethodPost:
 		s.handleCalendarIngest(w, r)
 	case path == "/health-data" && r.Method == http.MethodPost:
@@ -746,7 +751,7 @@ func isIngestPath(path string) bool {
 		return true
 	}
 	switch path {
-	case "/notifications", "/locations", "/calendars", "/health-data", "/images",
+	case "/notifications", "/locations", "/calendars", "/reminders", "/health-data", "/images",
 		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么
 		// 一起能用 api-key，要么一起不能，分开授权只会让 popup 一半功能可用。
 		"/web-pages", "/web-pages/status", "/web-pages/index", "/web-pages/tracking",

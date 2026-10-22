@@ -18,6 +18,7 @@ import (
 	"github.com/YoooClaw/cli/internal/paths"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
+	"github.com/YoooClaw/cli/internal/reminders"
 )
 
 // newTestServer 构造一个最小可用的 server（无 relay、token 可配）。
@@ -38,6 +39,7 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 		storage:           storage,
 		locationStorage:   location.NewStorage(p.Locations),
 		calendarStorage:   calendar.NewStorage(p.Calendars),
+		reminderStorage:   reminders.NewStorage(p.Reminders),
 		healthDataStorage: healthdata.NewStorage(p.HealthData),
 		token:             token,
 		ignored:           map[string]bool{"com.spam.app": true},

@@ -1,7 +1,7 @@
 ---
 name: yoooclaw-context-query
 description: |
-  Query yoooclaw data already synchronized to this computer: notifications/messages (“最近有什么通知”), calendar plans, location history, health daily metrics, voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source local context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
+  Query yoooclaw data already synchronized to this computer: notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), system reminders (“系统提醒事项/待办”), or cross-source local context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
 ---
 
 # YoooClaw local context query
@@ -19,7 +19,7 @@ Do not infer reply language from previous messages, source content, command outp
 - Add `--profile <name>` when the user selects a non-default profile.
 - Query disk data on every invocation. Do not reuse an earlier answer or memory as current data.
 - Treat queries as read-only. Do not modify indexes or synchronized source files.
-- These local query commands do not require the daemon.
+- Most local query commands read disk without the daemon. System `reminders` queries use the daemon API for a consistent snapshot; the daemon must already be running.
 
 ## Steps
 
@@ -32,6 +32,7 @@ Do not infer reply language from previous messages, source content, command outp
 - Voice input, dictation/口述 history, or “我刚才说了什么”: read `references/voice-input.md`.
 - Phone/meeting recordings, recording transcripts, or “录音里说了什么”: read `references/recordings.md`.
 - Saved, viewed, read, opened, bookmarked, or captured pages/articles, including earlier versions of a saved page and what changed between them: read `references/web-pages.md`.
+- System/Apple reminders, incomplete tasks or completed-reminder summaries: read `references/reminders.md`. Cloud AI TODO is a separate service.
 - Synchronized images, screenshots, metadata, or local image files: read `references/images.md`.
 - Several sources or “local data/context” without one source: read every relevant reference and use the cross-source flow below.
 
@@ -63,7 +64,8 @@ For a cross-source query:
    - voice input: focused `voice search` or a bounded `voice list`;
    - pages: `yoooclaw synced-web-page search`;
    - recordings: locate indexed transcripts, then search only those files;
-   - images: query metadata and inspect pixels only when requested.
+   - images: query metadata and inspect pixels only when requested;
+   - reminders: query filtered `reminders list` summaries and fetch selected `reminders get` details.
 3. Evaluate each source separately.
 4. Merge relevant results grouped by source.
 
