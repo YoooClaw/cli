@@ -167,3 +167,20 @@ Flags `--source-id`, `--list-id`, `--due-from`, `--due-to`, `--completed-from` a
 discovery lives in the shipped `yoooclaw-context-query` skill's reminders reference.
 Read summaries first, fetch only relevant details, and use sync timestamps when
 describing freshness. This mirror is separate from the cloud `yoooclaw todo` service.
+
+## Memory consumption
+
+`sync scan/next --source reminders` reads the daemon's revision-consistent asset
+API and uses an independent per-profile memory checkpoint. No date flags means
+all unconsumed current records. Explicit dates select modifiedAt, then createdAt,
+then source lastCollectedAt, never the due date. `next` freezes up to 20 full
+records within the existing soft 64 KB batch budget, unfinished first. Identity
+is recordId and version is a hash of full record content; a newer collection
+watermark alone does not cause reconsumption.
+
+`sync commit --source reminders --token <token>` acknowledges only the frozen
+versions and preserves previous data for reconciliation. A repeated confirmation
+of the last token is idempotent. A concurrent upstream revision remains pending.
+Missing records produce no deletion inference or event. Ordinary list/get queries
+do not affect this checkpoint. The memory skill allows each source independently
+up to three nonempty batches per user run; the CLI does not infer user-run boundaries.

@@ -33,3 +33,9 @@ yoooclaw reminders get '<recordId>' --revision '<revision>' --format json
 - For keyword requests, filter the paginated summary titles locally first and
   retrieve only details needed to resolve the requested scope. State if a search
   covered titles only. Do not dump every note into the model context by default.
+
+For statistics, collect every required page and compute with a JSON processor
+(such as Python or jq). Count completion from `data.isCompleted` and undated
+records from `data.due == null`; do not confuse a null due time with a null due
+date. Check incomplete + completed = all and dated + undated = all for the same
+snapshot. Never estimate totals by reading the displayed records.

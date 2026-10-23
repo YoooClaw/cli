@@ -12,7 +12,7 @@ func newSyncCmd() *cobra.Command {
 	c := &cobra.Command{Use: "sync", Short: "将同步数据分批交给记忆系统；默认来源为通知 🟢"}
 
 	scan := &cobra.Command{
-		Use: "scan", Short: "扫描所选来源的待处理数据，默认本地当天",
+		Use: "scan", Short: "扫描所选来源的待处理数据，默认本地当天；提醒事项默认全部当前增量",
 		Args: cobra.NoArgs, RunE: run(syncScan),
 	}
 	addScopeFlags(scan)
@@ -37,7 +37,7 @@ func newSyncCmd() *cobra.Command {
 	commit.Flags().String("date", "", "通知日期（YYYY-MM-DD）")
 	commit.Flags().String("end-index", "", "本批次 fetch 返回的 endIndex")
 
-	c.PersistentFlags().String("source", "notifications", "notifications|calendars|locations|health-data|web-pages")
+	c.PersistentFlags().String("source", "notifications", "notifications|calendars|locations|health-data|web-pages|reminders")
 	commit.Flags().String("token", "", "next 返回的精确快照批次 token（非通知来源）")
 	c.AddCommand(scan, next, fetch, commit)
 	return c
@@ -51,8 +51,11 @@ func addScopeFlags(c *cobra.Command) {
 	c.Flags().String("to-date", "", "只处理该日期及之前的数据 YYYY-MM-DD")
 }
 
-// resolveScope 从命令 flags 解析同步范围（缺省本地当天）。
+// resolveScope defaults date-based sources to today and reminders to current revisions.
 func resolveScope(cmd *cobra.Command) (notif.SyncScope, error) {
+	if flagStr(cmd, "source") == "reminders" && !cmd.Flags().Changed("all") && !cmd.Flags().Changed("date") && !cmd.Flags().Changed("from-date") && !cmd.Flags().Changed("to-date") {
+		return notif.ResolveScanScope(notif.SyncScopeOptions{All: true})
+	}
 	return notif.ResolveScanScope(notif.SyncScopeOptions{
 		All:      flagBool(cmd, "all"),
 		Date:     flagStr(cmd, "date"),
@@ -67,7 +70,7 @@ func syncScan(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) 
 		if err != nil {
 			return nil, err
 		}
-		return contextdata.Next(ctx.Paths, source, contextdata.Options{All: scope.Mode == "all", From: scope.FromDate, To: scope.ToDate}, true)
+		return syncSourceNext(ctx, source, contextdata.Options{All: scope.Mode == "all", From: scope.FromDate, To: scope.ToDate}, true)
 	}
 	scope, err := resolveScope(cmd)
 	if err != nil {
@@ -82,7 +85,7 @@ func syncNext(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) 
 		if err != nil {
 			return nil, err
 		}
-		return contextdata.Next(ctx.Paths, source, contextdata.Options{All: scope.Mode == "all", From: scope.FromDate, To: scope.ToDate}, false)
+		return syncSourceNext(ctx, source, contextdata.Options{All: scope.Mode == "all", From: scope.FromDate, To: scope.ToDate}, false)
 	}
 	scope, err := resolveScope(cmd)
 	if err != nil {

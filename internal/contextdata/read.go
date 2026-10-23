@@ -45,6 +45,8 @@ func Date(s string) bool {
 }
 func Dir(p paths.Paths, source string) (string, error) {
 	switch source {
+	case "reminders":
+		return p.Reminders, nil
 	case "calendars":
 		return p.Calendars, nil
 	case "locations":

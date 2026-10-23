@@ -32,6 +32,9 @@ type memoryState struct {
 }
 
 func memoryItems(p paths.Paths, source string) (Dataset, error) {
+	if source == "reminders" {
+		return Dataset{}, fmt.Errorf("reminders require a consistent daemon reader")
+	}
 	d, e := Read(p, source)
 	if e == nil && source == "health-data" {
 		for i := range d.Items {
@@ -86,6 +89,11 @@ func batchResult(source string, b *Batch) map[string]any {
 // Next persists the exact fetched material. Retries return the same batch until
 // commit; updates arriving during reasoning cannot be accidentally acknowledged.
 func Next(p paths.Paths, source string, o Options, scan bool) (map[string]any, error) {
+	return NextWithReader(p, source, o, scan, func() (Dataset, error) { return memoryItems(p, source) })
+}
+
+// NextWithReader freezes a consistent source read under the consumption lock.
+func NextWithReader(p paths.Paths, source string, o Options, scan bool, read func() (Dataset, error)) (map[string]any, error) {
 	if e := o.Validate(); e != nil {
 		return nil, e
 	}
@@ -111,7 +119,7 @@ func Next(p paths.Paths, source string, o Options, scan bool) (map[string]any, e
 		}
 		return batchResult(source, s.Pending), nil
 	}
-	d, e := memoryItems(p, source)
+	d, e := read()
 	if e != nil {
 		return nil, e
 	}
@@ -130,7 +138,7 @@ func Next(p paths.Paths, source string, o Options, scan bool) (map[string]any, e
 			continue
 		}
 		change := Change{Item: item, PreviousVersion: old.Version}
-		if source == "calendars" || source == "health-data" {
+		if source == "calendars" || source == "health-data" || source == "reminders" {
 			change.PreviousData = old.Data
 		}
 		pending = append(pending, change)
@@ -139,7 +147,11 @@ func Next(p paths.Paths, source string, o Options, scan bool) (map[string]any, e
 		return map[string]any{"ok": true, "source": source, "done": len(pending) == 0, "scope": o, "totalPending": len(pending), "outsideScopePending": outside}, nil
 	}
 	n, bytes := 0, 0
-	for n < len(pending) && n < 100 {
+	limit := 100
+	if source == "reminders" {
+		limit = 20
+	}
+	for n < len(pending) && n < limit {
 		raw, _ := json.Marshal(pending[n])
 		if n > 0 && bytes+len(raw) > 64000 {
 			break
@@ -185,7 +197,7 @@ func Commit(p paths.Paths, source, token string) (map[string]any, error) {
 		}
 		for _, change := range s.Pending.Items {
 			item := change.Item
-			if source != "calendars" && source != "health-data" {
+			if source != "calendars" && source != "health-data" && source != "reminders" {
 				item.Data = nil
 			}
 			s.Seen[item.ID] = item
