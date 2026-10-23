@@ -89,7 +89,7 @@ Do not apply a shared per-source result cap. Process large scopes in batches ins
 
 - Creating, editing, completing, reopening or deleting YoooClaw App todos uses `yoooclaw-todo`; this skill only queries. System calendars and reminders are read-only through these commands.
 
-- Learning from notifications, calendars, locations, health data, or web pages uses `yoooclaw-context-to-memory`.
+- Learning from notifications, calendars, system reminders, locations, health data, or web pages uses `yoooclaw-context-to-memory`.
 - Immediate lighting and persistent notification-triggered lighting use `yoooclaw-light`.
 - Meeting minutes, translation, mind maps, interview restructuring, and entity extraction use `yoooclaw-recordings-process`.
 - Relay, daemon, authentication, and ingest failures use `yoooclaw-tunnel-debug`.
