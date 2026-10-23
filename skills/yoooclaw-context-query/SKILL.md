@@ -50,7 +50,7 @@ Load only the references needed for the request.
 - `get`: resolve and read one identified item.
 - `answer`: answer from selected source content.
 - `summarize`: summarize a bounded source set using its source-specific safeguards.
-- `statistics`: aggregate counts, rankings, distributions, or trends.
+- `statistics`: aggregate counts, rankings, distributions, or trends. Compute counts and sums programmatically from the returned JSON across all required pages; do not count rows by visually reading tool output. Keep the calculation scope and source explicit, and reconcile mutually exclusive groups against the total before reporting.
 
 Resolve ambiguity before reading many full documents. If multiple material candidates remain, show a compact numbered list and ask the user to select.
 
