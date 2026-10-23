@@ -5,7 +5,11 @@ exact-token `sync commit --source reminders --token <token>` after memory read-b
 The daemon must already be running. Do not read or edit reminder partitions directly.
 Each batch contains at most 20 changed records (possibly fewer for the byte budget).
 Process at most three nonempty batches for this source per run, independently of
-other sources. Default scope is all unconsumed current records; no due date is
+other sources. For **each** batch, including later edits to the same memory file:
+read current memory, write/edit, issue a separate Read and inspect it, then commit
+in a later tool call. Reading the file only after all commits is too late. After
+committing, use that batch's `remainingInScope`: stop at zero or three processed
+batches; do not fetch again merely to verify that the source is empty. Default scope is all unconsumed current records; no due date is
 required. Unfinished records are returned before completed records.
 
 An explicit `--date` or `--from-date` / `--to-date` selects the source-local day of
@@ -33,3 +37,9 @@ current record. Ordinary `reminders list/get` does not advance consumption.
 - A pending batch stays frozen through retries. Commit acknowledges exactly those
   versions; changes arriving after fetch remain pending. Never commit merely
   because a query succeeded or a memory write returned without read-back.
+
+When shaping batch JSON for inspection, retain `due`, completion state, creation/
+modification times, identity and version. A field omitted by your projection is
+not a source null. Compute any reported counts from all processed records with
+Python/jq, not by visual counting or extrapolating from the first batch. Do not
+describe every reminder as undated merely because all unfinished ones are undated.
