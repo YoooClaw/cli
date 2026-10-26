@@ -29,14 +29,18 @@ func NewAdapter(client HTTPClient, rawURL string, maxBytes int64, allowFallback 
 
 // Download reuses the caller's private checkpoint directory across attempts.
 // Key and destination remain stable even when a signed URL changes.
-func Download(ctx context.Context, client HTTPClient, rawURL, key, dest, checkpoint string, maxBytes int64, allowFallback bool) error {
+func Download(ctx context.Context, client HTTPClient, rawURL, key, dest, checkpoint string, maxBytes int64, allowFallback bool, progress ...func(int64, int64, int64)) error {
 	downloader := oss.NewDownloader(NewAdapter(client, rawURL, maxBytes, allowFallback), func(o *oss.DownloaderOptions) {
 		o.PartSize = 8 << 20
 		o.ParallelNum = 3
 		o.EnableCheckpoint = true
 		o.CheckpointDir = checkpoint
 	})
-	_, err := downloader.DownloadFile(ctx, &oss.GetObjectRequest{Bucket: oss.Ptr("download"), Key: oss.Ptr(key)}, dest)
+	request := &oss.GetObjectRequest{Bucket: oss.Ptr("download"), Key: oss.Ptr(key)}
+	if len(progress) > 0 {
+		request.ProgressFn = progress[0]
+	}
+	_, err := downloader.DownloadFile(ctx, request, dest)
 	return err
 }
 

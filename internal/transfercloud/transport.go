@@ -18,14 +18,14 @@ const partSize int64 = 8 << 20
 
 func retry(ctx context.Context, fn func() error) error {
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 4; attempt++ {
 		if ctx.Err() != nil {
 			return failure("CANCELLED", "迁移已取消或超时")
 		}
 		if err = fn(); err == nil {
 			return nil
 		}
-		if attempt < 2 {
+		if attempt < 3 {
 			timer := time.NewTimer(time.Duration(attempt+1) * time.Second)
 			select {
 			case <-ctx.Done():
@@ -103,6 +103,10 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 }
 
 func (c *Client) Download(ctx context.Context, id, path string) error {
+	return c.download(ctx, id, path, nil)
+}
+
+func (c *Client) download(ctx context.Context, id, path string, progress func(int64, int64, int64)) error {
 	if !ValidTaskID(id) {
 		return failure("INVALID_TASK", "迁移 taskId 无效")
 	}
@@ -118,7 +122,7 @@ func (c *Client) Download(ctx context.Context, id, path string) error {
 		if e != nil {
 			return e
 		}
-		e = ossdownload.Download(ctx, c.http, rawURL, id, downloaded, checkpoint, MaxBytes, false)
+		e = ossdownload.Download(ctx, c.http, rawURL, id, downloaded, checkpoint, MaxDownloadBytes, false, progress)
 		if e != nil {
 			return failure("CLOUD_DOWNLOAD_FAILED", "迁移包下载失败，任务 "+id)
 		}

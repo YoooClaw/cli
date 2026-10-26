@@ -3,6 +3,7 @@ package transfercloud
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,7 +45,22 @@ func TestSDKDownloadResumesInterruptedRange(t *testing.T) {
 	payload := bytes.Repeat([]byte("migration-data-"), 1300000)
 	var mu sync.Mutex
 	interrupted, resumed := false, false
+	var reports []int
 	c := mockOSSClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/fulfillment/transfer/tr_test/download-progress" {
+			var body struct {
+				Progress int `json:"progress"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil {
+				t.Error("invalid progress body")
+			}
+			mu.Lock()
+			reports = append(reports, body.Progress)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"success":true,"code":"000000","data":null}`))
+			return
+		}
 		if r.URL.Path == apiPath+"/download-url" {
 			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL})
 			return
@@ -93,8 +109,8 @@ func TestSDKDownloadResumesInterruptedRange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "package.tar.gz")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := c.Download(ctx, testID, path); err != nil {
-		t.Fatal(err)
+	if err, reportErr := c.DownloadWithProgress(ctx, testID, path, ProgressOptions{TransferID: "tr_test", BaseURL: "https://api.example/fulfillment/transfer"}); err != nil || reportErr != nil {
+		t.Fatalf("download=%v report=%v", err, reportErr)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -105,6 +121,10 @@ func TestSDKDownloadResumesInterruptedRange(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if len(reports) != 2 || reports[0] != 0 || reports[1] != 100 {
+		t.Fatalf("progress: %v", reports)
+	}
+	t.Logf("interrupted range recovered; bytes=%d; fulfillment progress=%v", len(got), reports)
 	if !interrupted || !resumed {
 		t.Fatalf("interrupted=%v resumed=%v", interrupted, resumed)
 	}

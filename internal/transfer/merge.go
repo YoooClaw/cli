@@ -1,11 +1,13 @@
 package transfer
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/image"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/recording"
@@ -107,7 +109,7 @@ func compare(r Record, current map[string]any, root string) (string, error) {
 
 // materialize 生成要写入目标索引的条目：附件按内容寻址落到 files/，
 // 不覆盖任何无关文件。必须在存储的临界区内调用。
-func materialize(r Record, root, packageRoot string, current map[string]any) (map[string]any, error) {
+func materialize(ctx context.Context, r Record, root, packageRoot string, current map[string]any) (map[string]any, error) {
 	base := current
 	if base == nil {
 		base = r.Data
@@ -148,7 +150,10 @@ func materialize(r Record, root, packageRoot string, current map[string]any) (ma
 			if err != nil {
 				return nil, err
 			}
-			if err := copyFile(src, dest); err != nil {
+			if e := fsutil.RequireSpace(root, a.Bytes); e != nil {
+				return nil, fail("INSUFFICIENT_SPACE")
+			}
+			if err := copyFileContext(ctx, src, dest); err != nil {
 				_ = os.Remove(dest)
 				return nil, err
 			}
@@ -229,7 +234,7 @@ func toMap(v any) map[string]any {
 }
 
 // mergeEntry 是录音/图片/网页共用的「比较 → 需要时物化」流程，在各存储的锁内执行。
-func mergeEntry[T any](r Record, root, packageRoot string, current *T, outcome *string) (*T, error) {
+func mergeEntry[T any](ctx context.Context, r Record, root, packageRoot string, current *T, outcome *string) (*T, error) {
 	var cur map[string]any
 	if current != nil {
 		cur = toMap(current)
@@ -242,7 +247,7 @@ func mergeEntry[T any](r Record, root, packageRoot string, current *T, outcome *
 	if result != OutcomeAdded && result != OutcomeSupplemented {
 		return nil, nil
 	}
-	entry, err := materialize(r, root, packageRoot, cur)
+	entry, err := materialize(ctx, r, root, packageRoot, cur)
 	if err != nil {
 		return nil, err
 	}

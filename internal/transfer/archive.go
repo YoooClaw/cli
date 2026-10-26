@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
+	"context"
 	"errors"
+	"github.com/YoooClaw/cli/internal/fsutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -140,6 +142,9 @@ func addFile(tw *tar.Writer, name, path string) error {
 
 // ExtractArchive 严格解包到一个已存在、含空 blobs/ 的 staging 目录。失败时由调用方清理目录。
 func ExtractArchive(file, dest string) error {
+	return extractArchiveContext(context.Background(), file, dest)
+}
+func extractArchiveContext(ctx context.Context, file, dest string) error {
 	info, err := os.Stat(file)
 	if err != nil {
 		return err
@@ -152,12 +157,12 @@ func ExtractArchive(file, dest string) error {
 		return err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(bufio.NewReaderSize(f, 1<<20))
+	gz, err := gzip.NewReader(bufio.NewReaderSize(contextReader{ctx, f}, 1<<20))
 	if err != nil {
 		return fail("ARCHIVE_INVALID")
 	}
 	defer gz.Close()
-	limit := info.Size()*MaxExpansionRatio + MaxManifestBytes
+	limit := min(info.Size()*MaxExpansionRatio+MaxManifestBytes, MaxFullBytes+MaxManifestBytes)
 	tr := tar.NewReader(gz)
 	seen := map[string]bool{}
 	var total int64
@@ -196,6 +201,9 @@ func ExtractArchive(file, dest string) error {
 		}
 		if total += hdr.Size; total > limit {
 			return fail("ARCHIVE_TOO_LARGE")
+		}
+		if err := fsutil.RequireSpace(dest, hdr.Size); err != nil {
+			return fail("INSUFFICIENT_SPACE")
 		}
 		if err := writeEntry(tr, filepath.Join(dest, filepath.FromSlash(name)), hdr.Size); err != nil {
 			return err

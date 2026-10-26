@@ -20,6 +20,9 @@ import (
 )
 
 const MaxBytes int64 = 5 << 30
+
+// Full imports allow 10 GB raw data plus manifest and tar/gzip overhead.
+const MaxDownloadBytes int64 = 10_000_000_000 + (256 << 20)
 const apiPath = "/api/device/file/plugin"
 
 var taskRE = regexp.MustCompile(`^[a-f0-9]{32}$`)
