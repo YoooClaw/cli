@@ -184,8 +184,8 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 | Skill                           | Description |
 | ------------------------------- | ----------- |
 | `yoooclaw-media-generate`     | Generates images and videos up to 30 seconds with Python 3; reads `MODEL_PROXY_API_KEY` from `~/.config/yoooclaw/credentials` |
-| `yoooclaw-context-query`        | The sole query Skill for fresh notifications, voice input, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
-| `yoooclaw-notification-to-memory` | Distills notifications into personal, daily, and long-term agent memory; commits each batch only after verified persistence |
+| `yoooclaw-context-query`        | The sole query Skill for fresh notifications, calendars, location history, health statistics, voice input, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
+| `yoooclaw-context-to-memory` | Distills notifications, calendars, locations, health snapshots, and web pages into attributed persistent memory; confirms exact batches after verification |
 | `yoooclaw-recordings-process`   | Routes meeting minutes, translation, mind maps, interview restructuring, and entity extraction through one recording-source workflow |
 | `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
 | `yoooclaw-todo`                 | Query, create, edit, complete / reopen and delete personal todos; default for generic schedule / todo requests, confirms before deletion |
@@ -490,6 +490,18 @@ Audio downloads reuse the Alibaba Cloud OSS Go SDK v2 multipart downloader (8 Mi
 
 Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
 
+### Health Data Ingest
+
+`POST /health-data` accepts platform-neutral daily snapshots (`schemaVersion: 3`) through existing ingest authentication. `/health` advertises `health-data-daily-v3`. Relay uses `path: "health-data"` and the JSON string as `payload` of `/api/message/messageBridge/send`.
+
+Each day contains `date`, ordinary `items` (`metric/name/value/unit`) and `sleepSessions`. Complete sleep sessions include observed start/end, sleep and stage minutes, awake minutes/count/longest interval, unknown minutes, boundary status, sources and the full ordered stage timeline. Sleep belongs to its **end date** and is never split at midnight. Stage minutes round each interval endpoint to the nearest minute before summing; unknown intervals are neither sleep nor awake. Source selection and the 60-minute session gap are product rules, not a claim to reproduce Apple's private algorithm.
+
+Each supplied date atomically replaces `profiles/<profile>/health-data/YYYY-MM-DD.jsonl`. The first line contains version/date/timezone/update/provider metadata; remaining lines contain ordinary metrics or `type:sleepSession` records with complete sessions. The CLI validates summaries against timelines. Limits: 256 metrics and 32 sessions per day, 4096 segments per session, 4 MiB stored per day. iOS recalculates the latest 30 days with 36 hours of sleep lookback, uploads whole dates in bounded batches, and never treats invisible data as a deletion. Old collection times cannot overwrite newer snapshots.
+
+`GET /assets/health-data` returns date summaries (7 by default, 14 maximum), with `revision` and `segmentCount` instead of full sleep timelines. `GET /assets/health-data/{date}/sleep-sessions/{id}` uses the list revision plus limit/cursor (100 by default, 500 maximum, 256 KiB response cap). Snapshot changes invalidate the detail cursor. Both routes support the read-only messageBridge envelope.
+
+Old v1/v2 uploads are rejected, old stored formats are skipped by asset reads, and historical files are not bulk migrated or deleted. A newly uploaded v3 day replaces that same date. See [the full v3 contract](docs/design/health-sessions-v3.md) and [asset pagination rules](docs/design/assets-read-v1.md).
+
 ### Data Transfer
 
 `yoooclaw transfer` moves local data between environments (new computer, reinstall, another profile) as a plaintext package: a single `.tar.gz` file (since 0.12.0, when `--out` ends in `.tar.gz`/`.tgz`) or a package directory (any other path). The package format is the same as the OpenClaw plugin's `ntf transfer` (schema 1), so packages and capability files work in both directions; targets older than CLI 0.12.0 / plugin 1.18.0 only read directories, and `--target-capabilities` refuses a tar.gz export for them with `YOOOCLAW_TRANSFER_ARCHIVE_UNSUPPORTED_BY_TARGET`. Compression is not encryption.
@@ -559,6 +571,7 @@ Full documentation lives at [yc-docs/src/cli](https://github.com/YoooClaw/yc-doc
 | [internal/paths/paths.go](internal/paths/paths.go)      | `~/.yoooclaw/` directory layout resolution |
 | [internal/daemon/server.go](internal/daemon/server.go)  | daemon HTTP server, auth, Relay wiring |
 | [internal/daemon/server_ingest.go](internal/daemon/server_ingest.go) | notifications / recordings / images ingest |
+| [internal/healthdata](internal/healthdata) / [internal/daemon/server_healthdata.go](internal/daemon/server_healthdata.go) | raw health-batch JSONL storage and authenticated ingest |
 | [internal/relay/dispatcher.go](internal/relay/dispatcher.go) | in-process dispatch from inbound Relay frames to daemon HTTP/gateway |
 | [internal/recording](internal/recording)                | recording OSS download, state machine, ASR, transcript storage |
 | [internal/capturerecording](internal/capturerecording)  | read-only daily indexes and artifact checks for YoooClaw Capture recordings |
@@ -621,3 +634,9 @@ yc daemon restart
 The setting is read at daemon startup, without periodic reloading. If the daemon is stopped, the next start picks it up. Add `--profile <name>` for a non-default profile. To restore automatic updates, set it to `true` and restart the daemon.
 
 Manual checks report `scheduled` and `notBefore`. Scheduling requires a running matching standalone daemon and enabled auto-update; repeated checks restart the ten-minute delay. Recording activity and failure cooldown can postpone installation. The daemon consumes the request on its 30-second tick; installation rechecks rollout eligibility. `--check-only` does not cancel an existing schedule.
+
+## System reminders
+
+`POST /reminders` accepts complete iOS system-reminder snapshots, including completed and undated items. The CLI maintains per-source current mirrors in JSONL with a compact `index.json`; `state.json` tracks accepted collection times.
+
+`GET /assets/reminders` provides filtered, revision-bound pagination (50 default, 100 maximum, 256 KiB response cap); `GET /assets/reminders/{recordId}` returns full details. Both support the existing read-only messageBridge envelope. Agents use `yoooclaw reminders list/get` against the same daemon API. See [the V1 protocol](docs/design/reminders-v1.md) for fields, storage, consistency and query semantics.

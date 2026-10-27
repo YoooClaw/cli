@@ -182,8 +182,8 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | Skill                           | 说明 |
 | ------------------------------- | ---- |
 | `yoooclaw-media-generate`     | 使用 Python 3 生成图片和最长 30 秒的视频；从 `~/.config/yoooclaw/credentials` 读取 `MODEL_PROXY_API_KEY` |
-| `yoooclaw-context-query`        | 查询最新通知、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
-| `yoooclaw-notification-to-memory` | 从通知提炼个人画像、每日记录与长期记忆，验证持久写入后逐批提交学习进度 |
+| `yoooclaw-context-query`        | 查询最新通知、日程、位置、健康统计、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
+| `yoooclaw-context-to-memory` | 从通知、日程、位置、健康与网页提炼有来源的记忆，验证持久写入后确认精确批次 |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
 | `yoooclaw-light`                | 通过独立 CLI 播放一次性灯效并管理「通知 → 灯效」持久规则 |
 | `yoooclaw-todo`                 | 个人待办的查询、创建、修改、完成 / 恢复与删除；泛指日程 / 待办时默认使用，删除前确认 |
@@ -418,6 +418,101 @@ yoooclaw api GET /daemon/status
 yoooclaw api POST /images --data @image.json
 echo '{"...":"..."}' | yoooclaw api POST /recordings --data -
 ```
+
+### 日程上报
+
+CLI 接收 `POST /calendars`。客户端经现有 Relay
+`POST /api/message/messageBridge/send` 调用时，使用 `path: "calendars"`，
+`payload` 为请求体序列化后的 JSON 字符串，沿用现有鉴权和 `x-api-key-id` 路由。
+`/health` 的 `capabilities` 包含 `calendars`。
+
+```json
+{
+  "startDate": "2026-10-09",
+  "endDate": "2026-11-16",
+  "collectedAt": "2026-10-19T15:00:00+08:00",
+  "items": [
+    {
+      "id": "android:3:42:1792162800000",
+      "calendarName": "工作",
+      "title": "跨天活动",
+      "startAt": "2026-10-16T23:00:00+08:00",
+      "endAt": "2026-10-18T01:00:00+08:00",
+      "timeZone": "Asia/Shanghai",
+      "isAllDay": false
+    }
+  ]
+}
+```
+
+`startDate`、`endDate` 都是包含当天的 `YYYY-MM-DD` 日期；由客户端按当地日期
+计算前推一周至后推一个自然月的完整日期范围。每个请求是完整快照，不接收按日期
+分组的输入。`items` 必须显式提供，`[]` 表示该范围没有日程；不能省略或传 `null`。
+
+`collectedAt` 必填，是本次采集时刻（带偏移的 RFC3339 字符串），CLI 用它判断快照
+新旧并拒绝迟到的旧快照。为避免异常客户端按天展开时耗尽内存或磁盘，单次请求最多
+覆盖 366 天、最多 20000 条日程，跨天展开后的总大小上限为 16MB；超出返回 HTTP 400。
+`collectedAt` 超前本机时钟 24 小时以上同样按非法参数拒绝，避免错误时钟冻结后续上报。
+
+CLI 只解析 `startAt`、`endAt`、`timeZone` 以完成日期分组，其他字段原样保存。
+时间必须为带偏移的 RFC3339 字符串，`timeZone` 为 IANA 时区标识，偏移须与该时区
+对应时刻一致。全天日程也使用完整时间字符串；结束时刻不包含在内，次日 00:00
+结束不占用次日。示例活动会写入 16、17、18 日的文件，同一实例保留相同 ID 和完整内容。
+
+全量结果先解析完再按日期覆盖当前 profile 的 `calendars/YYYY-MM-DD.jsonl`，
+每行一条记录；范围内无日程的日期也写为空文件，范围外文件保留。沿用
+`YOOOCLAW_HOME` 和 profile 的数据根目录，不额外分来源目录，不比较 ID 或修改历史。
+单个日期文件通过临时文件原子替换，目录权限为 `0700`，文件权限为 `0600`。
+`calendars/state.json` 记录最近一次成功应用的 `collectedAt`；比它旧的快照整批跳过，
+避免离线队列或重试乱序时用旧快照覆盖新数据。状态文件缺失或损坏视为没有历史，
+继续应用，不会阻塞上报。
+
+成功返回 HTTP 200 `{"ok":true,"applied":true,"ingested":1,"filesWritten":39}`，其中
+跨天复制不重复计入 `ingested`；迟到的旧快照返回 HTTP 200
+`{"ok":true,"applied":false,"ingested":0,"filesWritten":0}`，不算失败、无需重试。
+非法请求为 HTTP 400，整批不开始写入；落盘失败为 HTTP 500、
+`CALENDAR_WRITE_FAILED`。客户端查询失败就不上报；通过 Relay 上报后须检查内层 HTTP
+状态和结果，不能只看 Relay 接受请求。重发相同完整快照会覆盖，不追加。
+当前仅提供接收和按日期存储，未增加日程查询命令或迁移包。
+
+### 位置上报
+
+CLI 接收 `POST /locations`，请求体为 `{"items":[位置记录,...]}`。客户端经 Relay
+的 `POST /api/message/messageBridge/send` 调用时，使用 `path: "locations"`，
+`payload` 为该请求体序列化后的 JSON 字符串，并沿用现有鉴权与 `x-api-key-id` 路由。
+
+```json
+{
+  "items": [
+    {
+      "longitude": 120.123456,
+      "latitude": 30.123456,
+      "deviceType": "iOS",
+      "horizontalAccuracy": 35,
+      "collectedAt": "2026-10-16T01:00:02.456Z",
+      "poiText": "示例地点",
+      "address": "示例市 示例路 1 号"
+    }
+  ]
+}
+```
+
+`deviceType` 表示上报设备，为可选字符串，可省略、传 `null` 或空字符串 `""`；
+CLI 原样保存，不限定设备名称或枚举值。
+
+只校验经纬度为数值且分别在 `[-180, 180]`、`[-90, 90]` 内，零值合法；其他字段
+不作业务校验，原样保存，不补充 `receivedAt`、`clientLabel`，也不去重。
+请求必须包含非空 `items` 数组，整批经纬度校验通过后才开始写入。
+
+记录按 **CLI 接收当天的本地日期** 追加到当前 profile 的
+`locations/YYYY-MM-DD.jsonl`，每行一条 JSON；`collectedAt` 不参与文件日期计算。
+目录与通知、录音使用同一数据根目录，遵循 `YOOOCLAW_HOME` 和 profile 配置，
+目录权限为 `0700`，文件权限为 `0600`。
+
+写入成功返回 HTTP 200 `{"ok":true,"ingested":1}`；非法请求返回 HTTP 400，
+保存失败返回 HTTP 500、错误码 `LOCATION_WRITE_FAILED`。客户端须检查 Relay
+返回的内层 HTTP 状态与 CLI 结果；重试会再次追加。当前仅提供上报和存储，
+尚未接入位置查询命令、同步或数据迁移包。
 
 ## 进阶用法
 
