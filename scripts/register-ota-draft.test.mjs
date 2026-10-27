@@ -27,3 +27,15 @@ test('rejects business failure without retry or raw response logging', async () 
   }), /OTA00004/);
   assert.equal(calls, 1);
 });
+test('accepts alpha, beta and stable versions', () => {
+  for (const version of ['0.13.1-alpha.448', '0.13.1-beta.0', '0.13.1']) {
+    const p = draftPayload(version, 'https://prod.example/cli');
+    assert.equal(p.version, version);
+    assert.equal(p.platformArtifacts['windows-x64'].url, `https://prod.example/cli/v${version}/yoooclaw-win32-x64.exe`);
+  }
+});
+test('rejects unsupported or malformed version formats', () => {
+  for (const version of ['v0.13.1', '0.13.1-test.1', '0.13.1-beta', '0.13.1-alpha.01', '00.13.1', '0.13.1+build']) {
+    assert.throws(() => draftPayload(version, 'https://prod.example/cli'), /Expected/);
+  }
+});

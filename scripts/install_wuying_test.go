@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,15 +11,15 @@ import (
 
 func TestWuyingInstallerConfiguresCredentialSkillAndDaemon(t *testing.T) {
 	t.Parallel()
-	testWuyingCredentials(t, true)
+	testWuyingCredentials(t, true, false)
 }
 
 func TestWuyingInstallerBetaUpgradePreservesCredentials(t *testing.T) {
 	t.Parallel()
-	testWuyingCredentials(t, false)
+	testWuyingCredentials(t, false, false)
 }
 
-func testWuyingCredentials(t *testing.T, supplyKey bool) {
+func testWuyingCredentials(t *testing.T, supplyKey, brokenCLI bool) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -70,6 +71,18 @@ esac
 exit 0
 `)
 
+	if brokenCLI {
+		mustMkdirAll(t, installDir)
+		writeExecutable(t, filepath.Join(installDir, "yoooclaw"), "#!/bin/sh\nexit 126\n")
+		writeExecutable(t, filepath.Join(mockBin, "uname"), "#!/bin/sh\necho Linux\n")
+		writeExecutable(t, filepath.Join(mockBin, "systemctl"), "#!/bin/sh\nexit 0\n")
+		writeExecutable(t, filepath.Join(mockBin, "flock"), "#!/bin/sh\nexit 0\n")
+		unitDir := filepath.Join(root, ".config/systemd/user")
+		mustMkdirAll(t, unitDir)
+		if err := os.WriteFile(filepath.Join(unitDir, "yoooclaw-daemon.service"), []byte("ExecStart=\""+filepath.Join(installDir, "yoooclaw")+"\" daemon run-service\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	secret := "ock-secret-for-wuying"
 	baseArgsLog := filepath.Join(root, "base-args.log")
 	if err := os.WriteFile(keyLog, []byte("existing-key"), 0600); err != nil {
@@ -683,4 +696,49 @@ exit 2
 			}
 		})
 	}
+}
+
+func TestWuyingRecoveryWithoutWorkingOldCLI(t *testing.T) {
+	for _, busy := range []bool{false, true} {
+		t.Run(fmt.Sprint(busy), func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "bin")
+			mustMkdirAll(t, bin)
+			cli := filepath.Join(root, "yoooclaw")
+			unitDir := filepath.Join(root, ".config/systemd/user")
+			mustMkdirAll(t, unitDir)
+			if err := os.WriteFile(filepath.Join(unitDir, "yoooclaw-daemon.service"), []byte("ExecStart=\""+cli+"\" daemon run-service\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			lockDir := filepath.Join(root, ".yoooclaw/profiles/default")
+			mustMkdirAll(t, lockDir)
+			if err := os.WriteFile(filepath.Join(lockDir, "daemon.flock"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			writeExecutable(t, filepath.Join(bin, "uname"), "#!/bin/sh\necho Linux\n")
+			writeExecutable(t, filepath.Join(bin, "systemctl"), "#!/bin/sh\n[ \"$*\" = '--user stop yoooclaw-daemon.service' ]\n")
+			code := "0"
+			if busy {
+				code = "1"
+			}
+			writeExecutable(t, filepath.Join(bin, "flock"), "#!/bin/sh\nexit "+code+"\n")
+			data, err := os.ReadFile("install-wuying.sh")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(data)
+			start := strings.Index(s, "stop_broken_cli_service() {")
+			end := strings.Index(s[start:], "\n# Stop an older") + start
+			cmd := exec.Command("sh", "-c", "warn() { :; }; "+s[start:end]+"\nstop_broken_cli_service")
+			cmd.Env = append(os.Environ(), "HOME="+root, "XDG_CONFIG_HOME="+filepath.Join(root, ".config"), "YOOOCLAW_HOME=", "CLI="+cli, "PATH="+bin+":"+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != busy {
+				t.Fatalf("busy=%v err=%v output=%s", busy, err, out)
+			}
+		})
+	}
+}
+
+func TestWuyingReinstallBrokenCLI(t *testing.T) {
+	testWuyingCredentials(t, false, true)
 }

@@ -46,6 +46,7 @@ func TestResolveIngressMode(t *testing.T) {
 
 func TestResolveProxyEgress(t *testing.T) {
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 	cfg := config.Default("/tmp/creds.json")
 
 	// 未配置回调 → NoopEgress（出站丢弃）。
@@ -73,6 +74,7 @@ func TestProxyEgressPushEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 
 	eg := NewProxyEgress(srv.URL, "cbtok", logger)
 	if err := eg.PushEvent("recording.status", map[string]any{"id": "r1"}); err != nil {

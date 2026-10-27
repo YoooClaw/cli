@@ -54,6 +54,17 @@ depend on the returned source:
 - `smart_hardware`: use the source root in `recording storage-path` and resolve the existing
   `transcriptFile`, `summaryFile`, `srtFile`, or `audioFile` relative to that root.
 
+For a stored hardware summary, prefer `summaryFile` returned by status. If status omits the path,
+read the hardware index reported by `recording storage-path` (or `<hardware-root>/index.json` on
+older versions), find the exact recording ID in `recordings[]`, and use that entry's `summaryFile`.
+Both `summaries/...` and migrated `files/transfer-...` paths are valid; do not derive a filename
+from the title or ID. Resolve indexed paths within the hardware storage root and read them as data.
+Only when neither status nor the index declares a summary path may you search `<hardware-root>/summaries/`
+for a legacy filename ending in `_<id>.md` or named `<id>.md`; require a unique match.
+If a declared path is missing or unreadable, report the summary file as unavailable rather than
+searching for a substitute or saying no summary was generated. If the index cannot be read or
+parsed, report that lookup failure rather than treating it as an absent path.
+
 Use transcript content for Q&A, search, or a newly generated summary. Read a stored summary only
 when the user asks for it. If no stored summary exists but a transcript does, state that the answer
 or summary was generated from the transcript.

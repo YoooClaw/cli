@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/calendar"
 	"github.com/YoooClaw/cli/internal/clictx"
@@ -27,6 +28,7 @@ func newTestServer(t *testing.T, token string) (*server, *httptest.Server) {
 	t.Setenv("YOOOCLAW_HOME", t.TempDir())
 	p := paths.For(paths.DefaultProfile)
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 	storage := notif.NewStorage(p.Notifications, notif.PluginConfig{}, logger)
 	if err := storage.Init(); err != nil {
 		t.Fatal(err)
@@ -171,6 +173,7 @@ func TestNotifyRecordingStatusPreservesAudioFailure(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "recordings")
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 	storage := recording.NewStorage(dir, logger)
 	if err := storage.Init(); err != nil {
 		t.Fatal(err)
@@ -280,6 +283,7 @@ func TestServerNotFound(t *testing.T) {
 func TestListenWithFallbackPortZeroReturnsActualPort(t *testing.T) {
 	t.Parallel()
 	logger := NewLogger(filepath.Join(t.TempDir(), "d.log"), "info", false)
+	t.Cleanup(func() { _ = logger.Close() })
 	ln, port, err := listenWithFallback("127.0.0.1", 0, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -352,5 +356,96 @@ func TestRetargetRelayIfStale(t *testing.T) {
 	}
 	if srv.retargetRelayIfStale() {
 		t.Error("地址已对齐后不应重复重指")
+	}
+}
+
+func TestPollingDoesNotBlockUpdate(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	now := time.Now()
+	srv.lastRecordingActivity.Store(now.Add(-11 * time.Minute).UnixNano())
+	for i := 0; i < 20; i++ {
+		for _, path := range []string{"/gateway/health", "/gateway/agents.list", "/gateway/sessions.list", "/gateway/channels.status"} {
+			res := httptest.NewRecorder()
+			srv.ServeHTTP(res, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`)))
+			if res.Code != http.StatusOK {
+				t.Fatalf("%s status %d", path, res.Code)
+			}
+		}
+	}
+	// 非录音的在途请求也不参与更新空闲判断。
+	srv.activeRequests.Add(1)
+	defer srv.activeRequests.Add(-1)
+	if !srv.updateIdle(now) {
+		t.Fatal("polling or ordinary request blocked update")
+	}
+}
+
+func TestRecordingWriteBlocksUpdateUntilIdle(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	now := time.Now()
+	srv.lastRecordingActivity.Store(now.Add(-time.Hour).UnixNano())
+	finish := srv.beginRecordingWrite()
+	if srv.updateIdle(now.Add(time.Hour)) {
+		t.Fatal("long running recording write must block update")
+	}
+	finish()
+	if srv.updateIdle(time.Now()) {
+		t.Fatal("completed recording write must start idle window")
+	}
+	if !srv.updateIdle(time.Now().Add(11 * time.Minute)) {
+		t.Fatal("completed write never becomes idle")
+	}
+	// 真实录音写入入口也必须更新计时（即使参数校验失败）。
+	srv.lastRecordingActivity.Store(now.Add(-time.Hour).UnixNano())
+	srv.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/gateway/recordings.result.write", strings.NewReader(`{}`)))
+	if srv.updateIdle(time.Now()) {
+		t.Fatal("recording endpoint bypassed activity tracking")
+	}
+}
+
+func TestRecordingDownloadBlocksUpdateAfterResponse(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	storage := withRecordings(t, srv)
+	release := make(chan struct{})
+	audio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		_, _ = w.Write([]byte("audio"))
+	}))
+	defer audio.Close()
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	body, _ := json.Marshal(map[string]any{
+		"recordingId": "update_busy", "ossUrl": audio.URL + "/audio.ogg",
+		"summary": map[string]any{"markdown": "test"},
+	})
+	response := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.result.write", "phone-a", string(body))
+	if response["ok"] != true {
+		t.Fatalf("write failed: %v", response)
+	}
+	if srv.activeRecordingWrites.Load() != 0 {
+		t.Fatal("request did not finish")
+	}
+	srv.lastRecordingActivity.Store(time.Now().Add(-time.Hour).UnixNano())
+	if storage.ActiveDownloads() == 0 || srv.updateIdle(time.Now()) {
+		t.Fatal("background download did not block update")
+	}
+	close(release)
+	released = true
+	deadline := time.Now().Add(3 * time.Second)
+	for storage.ActiveDownloads() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if storage.ActiveDownloads() != 0 {
+		t.Fatal("download did not complete")
+	}
+	if srv.updateIdle(time.Now()) {
+		t.Fatal("download completion skipped idle window")
+	}
+	if !srv.updateIdle(time.Now().Add(11 * time.Minute)) {
+		t.Fatal("completed download blocked update forever")
 	}
 }

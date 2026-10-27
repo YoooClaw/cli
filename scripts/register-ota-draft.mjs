@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export function draftPayload(version, baseUrl) {
-  if (!/^\d+\.\d+\.\d+-alpha\.\d+$/.test(version)) throw new Error('Expected alpha test version');
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta)\.(0|[1-9]\d*))?$/.test(version)) throw new Error('Expected x.y.z, x.y.z-alpha.N or x.y.z-beta.N');
   if (new URL(baseUrl).protocol !== 'https:') throw new Error('Artifact base URL must use HTTPS');
   const files = {
     'macos-arm64': 'yoooclaw-darwin-arm64', 'macos-x64': 'yoooclaw-darwin-x64',
@@ -14,7 +14,7 @@ export function draftPayload(version, baseUrl) {
     releaseName: `CLI ${version}`, component: 'CLI', version,
     platformArtifacts: Object.fromEntries(Object.entries(files).map(([platform, file]) =>
       [platform, { url: `${baseUrl.replace(/\/+$/, '')}/v${version}/${file}` }])),
-    releaseNotes: `CLI ${version} 测试构建；灰度策略及发布由平台操作。`,
+    releaseNotes: `CLI ${version}；由发布流水线登记，灰度策略及发布由平台操作。`,
   };
 }
 
@@ -40,7 +40,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const id = await registerDraft(process.env.OTA_DRAFT_URL, process.env.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN, payload);
     console.log(`OTA draft registered: releaseId=${id}, version=${payload.version}`);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-      `\n### CLI test draft\n\nVersion: ${payload.version}\n\nRelease ID: ${id}\n\nStatus: DRAFT\n`);
+      `\n### CLI OTA draft\n\nVersion: ${payload.version}\n\nRelease ID: ${id}\n\nStatus: DRAFT\n`);
   } catch (error) {
     console.error(error.message.replaceAll(process.env.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN || '\0', '[REDACTED]'));
     process.exitCode = 1;

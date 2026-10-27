@@ -151,6 +151,25 @@ repair_old_user_unit() {
   rm -f "$unit_dir"/*.wants/yoooclaw-daemon.service "$unit_file"
 }
 
+# A broken old executable must not be required to repair a stopped installation.
+# Only recover the conventional WUYING service; never kill an unknown process.
+stop_broken_cli_service() {
+  [ "$(uname -s)" = "Linux" ] || return 1
+  [ -z "${YOOOCLAW_HOME:-}" ] || return 1
+  command -v flock >/dev/null 2>&1 || return 1
+  unit_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/yoooclaw-daemon.service"
+  if [ -e "$unit_file" ]; then
+    grep -Fq "ExecStart=\"$CLI\" " "$unit_file" || return 1
+    systemctl --user stop yoooclaw-daemon.service || return 1
+  fi
+  # OS locks are released on crash. Keep lock files and all user data intact.
+  for lock_file in "$HOME/.yoooclaw/standalone-relay.flock" "$HOME/.yoooclaw"/profiles/*/daemon.flock; do
+    [ -e "$lock_file" ] || continue
+    flock -n "$lock_file" true || return 1
+  done
+  warn "旧 CLI 无法停服务，已确认标准服务停止且运行锁未占用，继续覆盖修复"
+}
+
 # Stop an older managed/detached installation before replacing its executable.
 # Otherwise the generic installer may restore that runtime mid-upgrade and the
 # WUYING owner handoff sees its Relay lock as a foreign owner.
@@ -158,7 +177,9 @@ if [ -x "$CLI" ]; then
   info "停止旧版 daemon/autostart…"
   if ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
     if ! repair_old_user_unit || ! "$CLI" --profile "$PROFILE" daemon autostart disable; then
-      err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+      if ! stop_broken_cli_service; then
+        err "无法停止旧版 daemon/autostart；未覆盖正在使用的 CLI"
+      fi
     fi
   fi
 fi
