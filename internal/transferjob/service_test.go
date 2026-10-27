@@ -3,9 +3,11 @@ package transferjob
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -180,5 +182,50 @@ func TestChangedIdentityNeverReportsOrImportsOldJob(t *testing.T) {
 	wait(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.jobs["old"].Result != nil })
 	if calls.Load() != 0 {
 		t.Fatal("old task used replacement account")
+	}
+}
+
+func TestLifecycleLogsCorrelateJobsAndRedactProviderErrors(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprint(failed), func(t *testing.T) {
+			var mu sync.Mutex
+			var lines []string
+			log := func(line string) { mu.Lock(); defer mu.Unlock(); lines = append(lines, line) }
+			d := deps()
+			d.Info = log
+			d.Warn = log
+			d.Run = func(_ context.Context, _ Request, _ string, emit func(string) error) error {
+				if failed {
+					return errors.New("https://private.example/?token=SECRET")
+				}
+				return emit("DOWNLOAD_COMPLETED")
+			}
+			s, err := New(t.TempDir(), d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Accept(request("log_job"), "main"); err != nil {
+				t.Fatal(err)
+			}
+			wait(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.jobs["log_job"].Reported })
+			if err = s.Accept(request("log_job"), "main"); err != nil {
+				t.Fatal(err)
+			}
+			s.Stop()
+			mu.Lock()
+			text := strings.Join(lines, "\n")
+			mu.Unlock()
+			for _, needle := range []string{"transferId=log_job", "import.accepted", "import.started", "event.reported", "import.finished", "import.duplicate"} {
+				if !strings.Contains(text, needle) {
+					t.Fatalf("missing %s: %s", needle, text)
+				}
+			}
+			if failed && !strings.Contains(text, "import.failed code=TRANSFER_IMPORT_FAILED") {
+				t.Fatal(text)
+			}
+			if strings.Contains(text, "SECRET") || strings.Contains(text, "private.example") {
+				t.Fatal("provider data leaked")
+			}
+		})
 	}
 }

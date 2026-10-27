@@ -24,6 +24,8 @@ type ProgressOptions struct {
 	TransferID string
 	BaseURL    string
 	Interval   time.Duration
+	// Called only for throttled report attempts, without exposing credentials or URLs.
+	ReportLog func(progress int, success bool)
 }
 
 func (c *Client) ValidateProgress(o ProgressOptions) error {
@@ -95,7 +97,13 @@ func (c *Client) DownloadWithProgress(ctx context.Context, id, path string, o Pr
 		interval = 15 * time.Second
 	}
 	interval += time.Duration(rand.Int64N(int64(time.Second)))
-	reporter := newProgressReporter(ctx, interval, func(ctx context.Context, n int) error { return c.sendProgress(ctx, o, n) })
+	reporter := newProgressReporter(ctx, interval, func(ctx context.Context, n int) error {
+		err := c.sendProgress(ctx, o, n)
+		if o.ReportLog != nil {
+			o.ReportLog(n, err == nil)
+		}
+		return err
+	})
 	downloadErr = c.download(ctx, id, path, func(_ int64, written int64, total int64) {
 		if total > 0 && written >= 0 && written <= total {
 			// SDK callbacks report absolute written bytes (including checkpoint bytes),

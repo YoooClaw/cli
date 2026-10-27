@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,6 +25,8 @@ type Event struct {
 	EventType    string `json:"eventType"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
+
+var safeErrorRE = regexp.MustCompile(`^TRANSFER_[A-Z0-9_]{1,100}$`)
 
 var idRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 var fileRE = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -44,6 +47,7 @@ type Dependencies struct {
 	Run      func(context.Context, Request, string, func(string) error) error
 	Report   func(context.Context, string, Event) error
 	Warn     func(string)
+	Info     func(string)
 	Timeout  time.Duration
 }
 type record struct {
@@ -95,6 +99,7 @@ func New(dir string, deps Dependencies) (*Service, error) {
 		// An interrupted import can have committed files. Never replay it silently.
 		if job.State == "running" {
 			job.State = "done"
+			s.info(job.Request.TransferID, "import.interrupted")
 			job.Result = &Event{job.Request.TransferID, "IMPORT_FAILED", "迁入进程中断，请联系客服核查"}
 			if e = s.save(&job); e != nil {
 				return nil, e
@@ -136,6 +141,7 @@ func (s *Service) Accept(req Request, label string) error {
 		if old.Request != req || old.Identity != identity || old.Label != label {
 			return ErrConflict
 		}
+		s.info(req.TransferID, "import.duplicate state="+old.State)
 		return nil
 	}
 	for _, job := range s.jobs {
@@ -148,6 +154,7 @@ func (s *Service) Accept(req Request, label string) error {
 		return err
 	}
 	s.jobs[req.TransferID] = job
+	s.info(req.TransferID, "import.accepted deadline="+job.Deadline.UTC().Format(time.RFC3339))
 	s.signal()
 	return nil
 }
@@ -156,6 +163,11 @@ func (s *Service) Stop()   { s.cancel(); <-s.done }
 func (s *Service) warn(msg string) {
 	if s.deps.Warn != nil {
 		s.deps.Warn(msg)
+	}
+}
+func (s *Service) info(id, event string) {
+	if s.deps.Info != nil {
+		s.deps.Info(fmt.Sprintf("[transfer] transferId=%s %s", id, event))
 	}
 }
 func (s *Service) valid(j *record) bool {
@@ -171,12 +183,16 @@ func (s *Service) emit(ctx context.Context, j *record, event Event) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		s.info(j.Request.TransferID, fmt.Sprintf("event.sending event=%s attempt=%d", event.EventType, i+1))
 		err = s.deps.Report(ctx, j.Label, event)
 		if err == nil {
+			s.info(j.Request.TransferID, "event.reported event="+event.EventType)
 			return nil
 		}
+		s.warn(fmt.Sprintf("[transfer] transferId=%s event.report_failed event=%s attempt=%d", j.Request.TransferID, event.EventType, i+1))
 		var permanent interface{ Permanent() bool }
 		if errors.As(err, &permanent) && permanent.Permanent() {
+			s.warn("[transfer] transferId=" + j.Request.TransferID + " event.report_blocked")
 			return err
 		}
 		if i < 3 {
@@ -226,6 +242,8 @@ func (s *Service) process() {
 		}
 		s.mu.Unlock()
 		if queued {
+			started := time.Now()
+			s.info(j.Request.TransferID, "import.started")
 			ctx, cancel := context.WithDeadline(s.ctx, j.Deadline)
 			err := s.emit(ctx, j, Event{TransferID: j.Request.TransferID, EventType: "IMPORT_STARTED"})
 			if err == nil {
@@ -244,8 +262,9 @@ func (s *Service) process() {
 				if errors.Is(err, context.DeadlineExceeded) {
 					result.ErrorMessage = "迁入超过配置时限，请联系客服"
 				}
-				s.warn("TRANSFER_IMPORT_FAILED")
+				s.warn("[transfer] transferId=" + j.Request.TransferID + " import.failed code=" + safeError(err))
 			}
+			s.info(j.Request.TransferID, fmt.Sprintf("import.finished event=%s elapsedMs=%d", result.EventType, time.Since(started).Milliseconds()))
 			s.mu.Lock()
 			j.State = "done"
 			j.Result = result
@@ -269,7 +288,7 @@ func (s *Service) process() {
 			err := s.emit(ctx, j, *j.Result)
 			cancel()
 			if err != nil {
-				s.warn("TRANSFER_RESULT_REPORT_FAILED")
+				s.warn("[transfer] transferId=" + j.Request.TransferID + " TRANSFER_RESULT_REPORT_FAILED")
 				continue
 			}
 			s.mu.Lock()
@@ -281,4 +300,18 @@ func (s *Service) process() {
 			s.mu.Unlock()
 		}
 	}
+}
+
+// Never log raw provider errors: they can contain signed URLs or user content.
+func safeError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "TRANSFER_IMPORT_TIMEOUT"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "TRANSFER_IMPORT_CANCELLED"
+	}
+	if err != nil && safeErrorRE.MatchString(err.Error()) {
+		return err.Error()
+	}
+	return "TRANSFER_IMPORT_FAILED"
 }
