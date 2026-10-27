@@ -64,10 +64,10 @@ func TestList(t *testing.T) {
 	}
 	want := []string{
 		"yoooclaw-context-query",
+		"yoooclaw-context-to-memory",
 		"yoooclaw-data-transfer",
 		"yoooclaw-light",
 		"yoooclaw-media-generate",
-		"yoooclaw-notification-to-memory",
 		"yoooclaw-recordings-process",
 		"yoooclaw-todo",
 		"yoooclaw-tunnel-debug",
@@ -515,5 +515,27 @@ func TestForceInstallPreservesWuyingCommand(t *testing.T) {
 	}
 	if strings.Count(string(raw), block) != 1 || strings.Contains(string(raw), "old content") {
 		t.Fatal("lost command binding or kept stale skill")
+	}
+}
+
+func TestMemoryRenamePreservesBindingAndRemovesOldRouter(t *testing.T) {
+	target := t.TempDir()
+	legacy := filepath.Join(target, "yoooclaw-notification-to-memory")
+	if err := os.MkdirAll(legacy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	block := "<!-- yoooclaw-wuying-command:start -->\n'/custom/yc' --profile 'work'\n<!-- yoooclaw-wuying-command:end -->"
+	if err := os.WriteFile(filepath.Join(legacy, "SKILL.md"), []byte("old\n"+block), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Install(target, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatal("old router still exists", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(target, "yoooclaw-context-to-memory", "SKILL.md"))
+	if err != nil || strings.Count(string(raw), block) != 1 {
+		t.Fatal("missing bound command", err)
 	}
 }

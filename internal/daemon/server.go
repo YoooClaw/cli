@@ -21,17 +21,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/assets"
+	"github.com/YoooClaw/cli/internal/calendar"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/envhost"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/healthdata"
 	"github.com/YoooClaw/cli/internal/light"
 	"github.com/YoooClaw/cli/internal/lightrule"
+	"github.com/YoooClaw/cli/internal/location"
 	"github.com/YoooClaw/cli/internal/notif"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
+	"github.com/YoooClaw/cli/internal/reminders"
 	"github.com/YoooClaw/cli/internal/transfer"
 	updater "github.com/YoooClaw/cli/internal/update"
 	"github.com/YoooClaw/cli/internal/version"
@@ -41,7 +46,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -159,7 +164,11 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 	srv := &server{
 		ctx: ctx, cfg: cfg, logger: logger, st: st, storage: storage,
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
-		token: token, credentialSet: credentialSet, ignored: ignored, bind: bind,
+		locationStorage:   location.NewStorage(ctx.Paths.Locations),
+		calendarStorage:   calendar.NewStorage(ctx.Paths.Calendars),
+		reminderStorage:   reminders.NewStorage(ctx.Paths.Reminders),
+		healthDataStorage: healthdata.NewStorage(ctx.Paths.HealthData),
+		token:             token, credentialSet: credentialSet, ignored: ignored, bind: bind,
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
 		ingressMode: mode, egress: NoopEgress{},
 		transfer: &transfer.Service{
@@ -309,6 +318,12 @@ type server struct {
 	executable            string
 	shutdown              func(string)
 	shutdownOnce          sync.Once
+	locationStorage       *location.Storage
+	calendarStorage       *calendar.Storage
+	reminderStorage       *reminders.Storage
+	healthDataStorage     *healthdata.Storage
+	assetReader           *assets.Service
+	assetOnce             sync.Once
 
 	// shareMu 保护下面三个字段：/daemon/reload 会在请求 goroutine 里整体替换它们，
 	// 而每个并发请求都在读（鉴权、status、egress 推送）。
@@ -359,6 +374,15 @@ func (s *server) currentEgress() Egress {
 // 没有上限的话一个恶意/异常的大 POST 就能把 daemon 直接 OOM。
 const maxRequestBodyBytes = 64 << 20
 
+// maxIngestFutureSkew 是采集时间允许超前本机时钟的偏差。手机时钟偶有漂移，
+// 但一个远在未来的 collectedAt 会让「旧快照不覆盖新快照」的比较把后续正常
+// 上报全部挡掉，因此在入口直接拒绝。
+const maxIngestFutureSkew = 24 * time.Hour
+
+func collectedAtTooFarInFuture(collected time.Time) bool {
+	return !collected.IsZero() && collected.After(time.Now().Add(maxIngestFutureSkew))
+}
+
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -372,14 +396,22 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	}
 	path := r.URL.Path
+	if assetKind(path) != "" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+	}
 
 	if path == "/health" && r.Method == http.MethodGet {
-		writeJSON(w, 200, map[string]any{"server": "yoooclaw", "version": version.Version, "protocol": ProtocolVersion, "capabilities": Capabilities})
+		writeJSON(w, 200, map[string]any{"server": "yoooclaw", "version": version.Version, "protocol": ProtocolVersion, "capabilities": s.capabilities()})
 		return
 	}
 
 	authCtx, ok := s.authContext(r, path)
 	if !ok {
+		if assetKind(path) != "" {
+			writeAssetError(w, &assets.Error{Status: 401, Code: "UNAUTHORIZED", Message: "token 不一致或缺失", Action: "reauth"})
+			return
+		}
 		writeJSON(w, 401, map[string]any{"ok": false, "error": map[string]any{"code": errs.CodeUnauthorized, "message": "token 不一致或缺失"}})
 		return
 	}
@@ -389,6 +421,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer s.activeRequests.Add(-1)
 	}
 	switch {
+	case assetKind(path) != "":
+		s.handleAssetRequest(w, r, assetKind(path))
 	case path == "/daemon/status" && r.Method == http.MethodGet:
 		s.handleStatus(w)
 	case path == "/daemon/stop" && r.Method == http.MethodPost:
@@ -405,6 +439,14 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	case path == "/notifications" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "notifications")
+	case path == "/locations" && r.Method == http.MethodPost:
+		s.handleLocationIngest(w, r)
+	case path == "/reminders" && r.Method == http.MethodPost:
+		s.handleReminderIngest(w, r)
+	case path == "/calendars" && r.Method == http.MethodPost:
+		s.handleCalendarIngest(w, r)
+	case path == "/health-data" && r.Method == http.MethodPost:
+		s.handleHealthDataIngest(w, r)
 	case path == "/gateway/notifications.push" && r.Method == http.MethodPost:
 		s.handleIngest(w, r, authCtx, "items")
 	case strings.HasPrefix(path, "/gateway/recordings.") && r.Method == http.MethodPost:
@@ -707,8 +749,11 @@ func (s *server) relayStatusPayload() map[string]any {
 // ── helpers ──
 
 func isIngestPath(path string) bool {
+	if assetKind(path) != "" {
+		return true
+	}
 	switch path {
-	case "/notifications", "/images",
+	case "/notifications", "/locations", "/calendars", "/reminders", "/health-data", "/images",
 		// 网页三条路由同属扩展这一个来源：ingest 与它的两条只读回显端点要么
 		// 一起能用 api-key，要么一起不能，分开授权只会让 popup 一半功能可用。
 		"/web-pages", "/web-pages/status", "/web-pages/index", "/web-pages/tracking",

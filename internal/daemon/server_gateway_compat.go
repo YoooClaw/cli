@@ -61,11 +61,11 @@ func (s *server) gatewayHealthPayload(echo any) map[string]any {
 		"ok": !stale, "time": time.Now().UTC().Format(time.RFC3339), "sessionDb": false,
 		"lastInboundAt": nilIfEmptyStr(lastIngest),
 		"status":        "ok", "healthy": true, "server": "yoooclaw", "version": version.Version,
-		"protocol": ProtocolVersion, "capabilities": Capabilities, "profile": s.ctx.Profile,
+		"protocol": ProtocolVersion, "capabilities": s.capabilities(), "profile": s.ctx.Profile,
 		"bind": s.bind, "port": s.port, "startedAt": s.st.startedAt,
 		"lastIngestAt": nilIfEmptyStr(lastIngest), "ingestCount": ingestCount,
 		"relay":    relayStatus,
-		"features": map[string]any{"methods": gatewayMethodNames(), "capabilities": Capabilities},
+		"features": map[string]any{"methods": gatewayMethodNames(), "capabilities": s.capabilities()},
 	}
 	if echo != nil {
 		payload["echo"] = echo
