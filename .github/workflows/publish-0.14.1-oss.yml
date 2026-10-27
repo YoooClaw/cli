@@ -1,0 +1,73 @@
+name: Publish 0.14.1 production OSS
+on:
+  push:
+    branches: [release/0.14.1]
+    paths: [.github/workflows/publish-0.14.1-oss.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: release-cli-oss
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VERSION: 0.14.1
+      OSS_REGION: oss-cn-hangzhou
+      OSS_BUCKET: yoooclaw-artifacts
+      OSS_PUBLIC_URL: https://artifact.yoooclaw.com
+      OSS_PREFIX: cli
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 591a49f304f1a9de7d2856faf38d972f18e0e08b
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: tools/oss-upload/go.sum
+      - name: Verify signed build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/YoooClaw/cli/actions/runs/40467421593 --jq '.head_sha' | grep -Fx 591a49f304f1a9de7d2856faf38d972f18e0e08b
+          gh api repos/YoooClaw/cli/actions/runs/40467421593/attempts/2/jobs --jq '.jobs[] | select(.name == "build-release") | .conclusion' | grep -Fx success
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '12730601119'
+          path: dist-native
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: YoooClaw/cli
+          run-id: 40467421593
+      - name: Validate artifacts
+        run: |
+          set -euo pipefail
+          chmod +x dist-native/yoooclaw-linux-x64
+          test "$(dist-native/yoooclaw-linux-x64 --version)" = "$VERSION"
+          cd dist-native
+          test "$(find . -maxdepth 1 -name 'yoooclaw-*' -type f | wc -l)" -eq 5
+          sha256sum yoooclaw-* > checksums.txt
+      - name: Publish production OSS
+        timeout-minutes: 40
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: go -C tools/oss-upload run . --version "$VERSION"
+      - name: Verify public production artifacts
+        run: |
+          set -euo pipefail
+          base="$OSS_PUBLIC_URL/$OSS_PREFIX"
+          test "$(curl -fsSL "$base/latest")" = "$VERSION"
+          curl -fsSL "$base/v$VERSION/checksums.txt" | cmp - dist-native/checksums.txt
+          mkdir verify
+          cd verify
+          while read -r hash file; do
+            curl --retry 3 -fsSL "$base/v$VERSION/$file" -o "$file"
+          done < ../dist-native/checksums.txt
+          sha256sum -c ../dist-native/checksums.txt
+          for file in install.sh install.ps1 install-wuying.sh; do
+            curl -fsSL "$base/$file" | cmp - <(curl -fsSL "$base/v$VERSION/installer/$file")
+          done
