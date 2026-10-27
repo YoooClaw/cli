@@ -14,10 +14,12 @@ package transfer
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,12 +71,17 @@ type Record struct {
 
 // Manifest 是 manifest.json 的内容。
 type Manifest struct {
-	SchemaVersion       int      `json:"schemaVersion"`
-	PackageID           string   `json:"packageId"`
-	CreatedAt           string   `json:"createdAt"`
-	SourcePluginVersion string   `json:"sourcePluginVersion"`
-	Records             []Record `json:"records"`
-	Warnings            []string `json:"warnings"`
+	Passive             map[string]bool      `json:"-"`
+	Files               []FullFile           `json:"files,omitempty"`
+	Sources             []FullSource         `json:"sources,omitempty"`
+	OriginalBytes       int64                `json:"originalBytes,omitempty"`
+	Seen                map[string]SeenIndex `json:"-"`
+	SchemaVersion       int                  `json:"schemaVersion"`
+	PackageID           string               `json:"packageId"`
+	CreatedAt           string               `json:"createdAt"`
+	SourcePluginVersion string               `json:"sourcePluginVersion"`
+	Records             []Record             `json:"records"`
+	Warnings            []string             `json:"warnings"`
 }
 
 // ExportOptions 是导出范围。
@@ -884,6 +891,7 @@ func marshalManifest(m *Manifest) ([]byte, error) {
 
 // ReadOptions 控制包校验强度。
 type ReadOptions struct {
+	Context context.Context
 	// SkipBlobHash 只保留结构、身份与体积校验，跳过逐字节重算——仅用于本机
 	// 0700 staging 目录里已经全量校验过的副本。外部来源的包必须全量校验。
 	SkipBlobHash bool
@@ -909,6 +917,9 @@ func ReadPackage(root string, opts ReadOptions) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, failf("VERSION_UNSUPPORTED", "invalid manifest: %s", err.Error())
+	}
+	if m.SchemaVersion == 2 {
+		return readFullPackage(root, raw, opts)
 	}
 	if m.SchemaVersion != 1 || m.Records == nil || len(m.Records) > MaxRecords || m.Warnings == nil || m.PackageID == "" {
 		return nil, fail("VERSION_UNSUPPORTED")
@@ -961,7 +972,8 @@ func Capabilities() map[string]any {
 	return map[string]any{
 		"pluginVersion":                   version.Version,
 		"host":                            "yoooclaw-cli",
-		"supportedSchemaVersions":         []int{1},
+		"supportedSchemaVersions":         []int{1, 2},
+		"schemaVersions":                  []int{1, 2},
 		"supportedRecordVersions":         []int{1},
 		"supportedDataTypes":              Types,
 		"notificationImportPolicyVersion": 1,
@@ -1025,7 +1037,8 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) error { return copyFileContext(context.Background(), src, dst) }
+func copyFileContext(ctx context.Context, src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -1035,7 +1048,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := out.ReadFrom(in); err != nil {
+	if _, err := io.Copy(out, contextReader{ctx, in}); err != nil {
 		out.Close()
 		return err
 	}

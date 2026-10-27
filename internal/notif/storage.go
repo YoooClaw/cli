@@ -46,15 +46,17 @@ type IngestResult struct {
 // Storage 是 date-keyed JSONL 通知存储（含 id / content-key 双重去重）。
 // 文件格式见 dayfile.go：每天一个 .jsonl 追加写；旧 .json 数组只读兼容 + 懒迁移。
 type Storage struct {
-	dir            string
-	idIndexDir     string
-	contentKeyDir  string
-	cfg            PluginConfig
-	logger         Logger
-	mu             sync.Mutex
-	idCache        map[string]map[string]bool
-	contentKeyCach map[string]map[string]bool
-	dayCache       map[string][]StoredNotification
+	transferredIDs  map[string]map[string]bool
+	transferredKeys map[string]bool
+	dir             string
+	idIndexDir      string
+	contentKeyDir   string
+	cfg             PluginConfig
+	logger          Logger
+	mu              sync.Mutex
+	idCache         map[string]map[string]bool
+	contentKeyCach  map[string]map[string]bool
+	dayCache        map[string][]StoredNotification
 }
 
 // NewStorage 构造存储；dir 为 notifications 目录。
@@ -128,6 +130,9 @@ func (s *Storage) quarantineDay(dateKey, filePath string, cause error) {
 
 // Init 准备目录；content-key 索引每次启动重建。
 func (s *Storage) Init() error {
+	if err := s.loadTransferSeen(); err != nil {
+		return err
+	}
 	if err := fsutil.EnsureDir(s.dir, fsutil.DirMode); err != nil {
 		return err
 	}
@@ -433,6 +438,9 @@ func (s *Storage) idSet(dateKey string) map[string]bool {
 }
 
 func (s *Storage) hasID(dateKey, label, id string) bool {
+	if s.transferredIDs[dateKey][s.idKey(label, id)] {
+		return true
+	}
 	set := s.idSet(dateKey)
 	if set[s.idKey(label, id)] {
 		return true
@@ -484,7 +492,7 @@ func (s *Storage) hasContentKey(dateKey string, existing []StoredNotification, e
 	for _, label := range contentKeyLabels(e.ClientLabel) {
 		probe := e
 		probe.ClientLabel = label
-		if set[contentKey(probe)] {
+		if set[contentKey(probe)] || s.transferredKeys[contentKey(probe)] {
 			return true
 		}
 	}

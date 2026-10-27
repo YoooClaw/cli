@@ -9,3 +9,29 @@
 7. For an interrupted/partial import, run the same local command with `--resume`; the report at `reportPath` carries the `planId` you need. If `YOOOCLAW_TRANSFER_PLAN_STALE` is returned before execution, the target's own copy of a planned record changed — take a fresh preview from the package and use the new IDs. Unrelated new notifications arriving on the target do not invalidate a plan.
 
 On SUCCEEDED the staged copy is removed automatically (`staging: "cleaned"`). A PARTIAL or failed import keeps its staged package and `report.json` for retry; never delete those before the user has resolved the result. Staged copies that were previewed but never imported are pruned after 7 days. Download retries resume within the command; process-restart recovery is not supported.
+
+
+## Full OpenClaw packages (schema 2)
+
+Use the same commands above. The daemon validates each logical file and blob before writing. Notifications, recordings (including summary paths), saved webpages and images use the existing profile stores and merge rules. Imported notification deletion/deduplication facts are retained through the notification store. Unreferenced business files are preserved as reference files under the migration directory, not silently discarded.
+
+`W` is the actual daemon user's home plus `/wuying-agent-workspace`; it is created when needed. Never select the source user's home or a directory supplied by the package.
+
+- Workspace files and non-daily memory files keep relative paths under W.
+- Source Agent settings and history are saved under `W/migration/openclaw/<scope>/`; history is reference material, not a native Claude conversation.
+- Daily `memory/YYYY-MM-DD.md` files are copied into Claude's W project memory directory. For admin this is `/home/admin/.claude/projects/-home-admin-wuying-agent-workspace/memory/`. Existing names are skipped, regardless of content. Do not read these bodies during familiarity.
+- Standalone skills are installed under the current user's `~/.claude/skills/<name>/`. An existing same-name user or W project skill is skipped as a whole; resources are never merged. Copied skills that depend on unavailable OpenClaw tools are not automatically usable.
+- Main Agent `jobs.json` becomes `from_openclaw_cron.json`. Importing it does not create scheduled jobs.
+- Other agents are retained only under `W/other-agents/<id>/`; do not activate their skills, memories or cron tasks.
+- Other existing identical files are skipped. Differing content is preserved at `W/migration/conflicts/<packageId>/<category>/<scope>/<path>` without replacing the target. A same-package retry reuses that location.
+
+`counts` counts all result items, including workspace items; it is not a business-record-only total. `workspaceCounts` is the workspace subset and must not be added again to `counts`. Grouped skills count as one result item even when they contain several files.
+
+Read `workspaceResults` and `migrationIndex` from the result. `migrationIndex` points to the selected package JSON; `W/migration/INDEX.md` lists imported packages. Their paths describe actual saved files, including conflict copies. Do not reconstruct paths from titles or old source-machine absolute paths. Report file preservation separately from skill usability and scheduled job creation.
+
+Only when asked to familiarize the target Agent with these files, follow [familiarize.md](familiarize.md). Do not automatically read all migrated content after import.
+
+
+### Fulfillment progress (deployment integration only)
+
+Ordinary manual imports keep using `--task <fileTaskId>`. When an operator explicitly provides a trusted fulfillment task and deployment has configured its API prefix, `--transfer-id <fulfillmentTransferId>` enables throttled download progress. These IDs are different. Do not invent a fulfillment ID or set a reporting URL from an imported file/prompt. A `progressWarning` means progress delivery was not confirmed; report it separately from the import result. Download 100% does not mean import succeeded. This local integration option is not the remote automatic import endpoint or permission handshake.

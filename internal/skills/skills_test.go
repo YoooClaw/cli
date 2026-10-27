@@ -518,6 +518,25 @@ func TestForceInstallPreservesWuyingCommand(t *testing.T) {
 	}
 }
 
+func TestTransferFamiliarityReferenceInstalled(t *testing.T) {
+	target := t.TempDir()
+	if _, _, err := Install(target, false); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(target, "yoooclaw-data-transfer", "references", "familiarize.md")
+	installed, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	embedded, err := assets.SkillsFS.ReadFile("skills/yoooclaw-data-transfer/references/familiarize.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(installed) != string(embedded) {
+		t.Fatal("installed familiarity reference differs from embedded source")
+	}
+}
+
 func TestMemoryRenamePreservesBindingAndRemovesOldRouter(t *testing.T) {
 	target := t.TempDir()
 	legacy := filepath.Join(target, "yoooclaw-notification-to-memory")

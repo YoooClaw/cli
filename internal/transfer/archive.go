@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
+	"context"
 	"errors"
+	"github.com/YoooClaw/cli/internal/fsutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,9 +22,6 @@ import (
 // 解包只认白名单条目：普通文件 manifest.json、blobs/<sha256> 与 blobs/ 目录项；
 // 链接、PAX/GNU 扩展头、路径穿越、重复条目一律拒绝。解出的内容仍须经 ReadPackage
 // 全量校验后才能使用。
-
-// MaxExpansionRatio 限制解压后体积 = 压缩包体积 × 该倍数 + manifest 上限，挡住压缩炸弹。
-const MaxExpansionRatio = 100
 
 // PackageFormats 是本端能读写的包形态。旧版本的能力文件没有该字段，视为只支持 directory。
 var PackageFormats = []string{"directory", "tar.gz"}
@@ -140,6 +139,9 @@ func addFile(tw *tar.Writer, name, path string) error {
 
 // ExtractArchive 严格解包到一个已存在、含空 blobs/ 的 staging 目录。失败时由调用方清理目录。
 func ExtractArchive(file, dest string) error {
+	return extractArchiveContext(context.Background(), file, dest)
+}
+func extractArchiveContext(ctx context.Context, file, dest string) error {
 	info, err := os.Stat(file)
 	if err != nil {
 		return err
@@ -152,12 +154,13 @@ func ExtractArchive(file, dest string) error {
 		return err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(bufio.NewReaderSize(f, 1<<20))
+	gz, err := gzip.NewReader(bufio.NewReaderSize(contextReader{ctx, f}, 1<<20))
 	if err != nil {
 		return fail("ARCHIVE_INVALID")
 	}
 	defer gz.Close()
-	limit := info.Size()*MaxExpansionRatio + MaxManifestBytes
+	// Bound actual extracted bytes; valid workspace text can compress beyond any fixed ratio.
+	limit := MaxFullBytes + MaxManifestBytes
 	tr := tar.NewReader(gz)
 	seen := map[string]bool{}
 	var total int64
@@ -196,6 +199,9 @@ func ExtractArchive(file, dest string) error {
 		}
 		if total += hdr.Size; total > limit {
 			return fail("ARCHIVE_TOO_LARGE")
+		}
+		if err := fsutil.RequireSpace(dest, hdr.Size); err != nil {
+			return fail("INSUFFICIENT_SPACE")
 		}
 		if err := writeEntry(tr, filepath.Join(dest, filepath.FromSlash(name)), hdr.Size); err != nil {
 			return err

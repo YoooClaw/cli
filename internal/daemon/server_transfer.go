@@ -34,7 +34,7 @@ func (s *server) handleTransfer(w http.ResponseWriter, r *http.Request, auth aut
 		writeJSON(w, 400, errBody("INVALID_PARAMS", "请求体不是合法 JSON"))
 		return
 	}
-	result, err := s.transfer.Handle(req)
+	result, err := s.transfer.HandleContext(r.Context(), req)
 	if err != nil {
 		code := transfer.ErrorCode(err)
 		if code == "" {
