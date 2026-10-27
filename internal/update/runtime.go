@@ -30,8 +30,22 @@ func ScheduleCheck(id Identity, offer Artifact, now time.Time) (time.Time, error
 	}
 	defer release()
 	due := now.Add(10 * time.Minute)
+	var previous ScheduledCheck
+	found, err := fsutil.ReadJSON(filepath.Join(id.Directory(), "scheduled-check.json"), &previous)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if found && previous.From == id.CurrentVersion {
+		due = previous.NotBefore
+	}
 	err = fsutil.WriteJSON(filepath.Join(id.Directory(), "scheduled-check.json"), ScheduledCheck{id.CurrentVersion, offer, due}, 0600)
-	return due, err
+	if err != nil {
+		return time.Time{}, err
+	}
+	if err := os.Remove(filepath.Join(id.Directory(), "install-cooldown.json")); err != nil && !os.IsNotExist(err) {
+		return time.Time{}, err
+	}
+	return due, nil
 }
 
 type Scheduler struct {

@@ -105,7 +105,7 @@ func updateCheck(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 		return nil, err
 	}
 	result["scheduled"], result["notBefore"] = true, due
-	result["message"] = "已安排至少 10 分钟后空闲安装；录音业务繁忙或失败冷却期间将延后"
+	result["message"] = "已安排至少 10 分钟后空闲安装；已清除失败冷却，重复检查不延长倒计时，录音业务繁忙时将延后"
 	return result, nil
 }
 func updateInstall(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {

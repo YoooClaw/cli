@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -21,9 +22,16 @@ import (
 type importDependencies struct {
 	download func(context.Context, string, string, transfercloud.ProgressOptions) (error, error)
 	handle   func(context.Context, transfer.Request) (any, error)
+	log      func(string)
 }
 
 func executeTransferImport(ctx context.Context, req transferjob.Request, progress transfercloud.ProgressOptions, deps importDependencies, emit func(string) error) error {
+	log := func(stage string) {
+		if deps.log != nil {
+			deps.log("[transfer] transferId=" + req.TransferID + " " + stage)
+		}
+	}
+	log("download.started")
 	dir, err := os.MkdirTemp("", "yoooclaw-async-import-*")
 	if err != nil {
 		return err
@@ -33,6 +41,8 @@ func executeTransferImport(ctx context.Context, req transferjob.Request, progres
 	if err, _ = deps.download(ctx, req.FileTaskID, path, progress); err != nil {
 		return err
 	}
+	log("download.completed")
+	log("validation.started")
 	preview, err := deps.handle(ctx, transfer.Request{Action: "preview", File: path, CloudTaskID: req.FileTaskID})
 	if err != nil {
 		return err
@@ -46,10 +56,12 @@ func executeTransferImport(ctx context.Context, req transferjob.Request, progres
 	if local == "" || plan == "" {
 		return errors.New("TRANSFER_PLAN_INVALID")
 	}
+	log("validation.completed")
 	// Preview performs the existing archive/manifest/blob checks before reporting download completion.
 	if err = emit("DOWNLOAD_COMPLETED"); err != nil {
 		return err
 	}
+	log("import.writing")
 	result, err := deps.handle(ctx, transfer.Request{Action: "import", LocalTransferID: local, PlanID: plan})
 	if err != nil {
 		return err
@@ -90,17 +102,25 @@ func (s *server) startTransferImports() error {
 		return err
 	}
 	service, err := transferjob.New(filepath.Join(s.ctx.Paths.Dir, "transfer-import-jobs"), transferjob.Dependencies{
-		Timeout: transfer.Timeout(), Identity: identity, Warn: s.logger.Warn,
+		Timeout: transfer.Timeout(), Identity: identity, Warn: s.logger.Warn, Info: s.logger.Info,
 		Report: func(ctx context.Context, label string, event transferjob.Event) error {
 			return client(label).ReportEvent(ctx, base, event)
 		},
 		Run: func(ctx context.Context, req transferjob.Request, label string, emit func(string) error) error {
 			cloud := client(label)
-			err := executeTransferImport(ctx, req, transfercloud.ProgressOptions{TransferID: req.TransferID, BaseURL: base}, importDependencies{
+			err := executeTransferImport(ctx, req, transfercloud.ProgressOptions{TransferID: req.TransferID, BaseURL: base, ReportLog: func(n int, ok bool) {
+				line := fmt.Sprintf("[transfer] transferId=%s download_progress progress=%d reported=%t", req.TransferID, n, ok)
+				if ok {
+					s.logger.Info(line)
+				} else {
+					s.logger.Warn(line)
+				}
+			}}, importDependencies{
+				log: s.logger.Info,
 				download: func(ctx context.Context, id, path string, options transfercloud.ProgressOptions) (error, error) {
 					downloadErr, reportErr := cloud.DownloadWithProgress(ctx, id, path, options)
 					if reportErr != nil {
-						s.logger.Warn("[transfer] TRANSFER_PROGRESS_REPORT_FAILED")
+						s.logger.Warn("[transfer] transferId=" + req.TransferID + " TRANSFER_PROGRESS_REPORT_FAILED")
 					}
 					return downloadErr, reportErr
 				}, handle: s.transfer.HandleContext,
@@ -111,11 +131,24 @@ func (s *server) startTransferImports() error {
 	if err != nil {
 		return err
 	}
+	s.logger.Info("[transfer] import.worker_ready")
 	s.transferImports = service
 	return nil
 }
 func (s *server) handleTransferImportStart(w http.ResponseWriter, r *http.Request, auth authResult) {
+	transferID := "unknown"
+	if s.logger != nil {
+		s.logger.Info("[transfer] import.request_received")
+	}
 	reply := func(status int, message string) {
+		if s.logger != nil {
+			line := fmt.Sprintf("[transfer] transferId=%s import.response status=%d code=%s", transferID, status, message)
+			if status == 200 {
+				s.logger.Info(line)
+			} else {
+				s.logger.Warn(line)
+			}
+		}
 		code := "000000"
 		if status != 200 {
 			code = http.StatusText(status)
@@ -143,6 +176,7 @@ func (s *server) handleTransferImportStart(w http.ResponseWriter, r *http.Reques
 		reply(400, "TRANSFER_INVALID_REQUEST")
 		return
 	}
+	transferID = req.TransferID
 	err := s.transferImports.Accept(req, auth.clientLabel)
 	switch {
 	case err == nil:

@@ -304,3 +304,50 @@ func TestSkillRootDocumentsDoNotCollideWithWorkspaceDocuments(t *testing.T) {
 		}
 	}
 }
+
+func TestMainWorkspaceFilesImportDirectly(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	pkg := fullFixture(t)
+	existing := filepath.Join(dst.svc.Home, workspaceBase(), "AGENTS.md")
+	testutil.WriteFile(t, existing, []byte("target instructions"))
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	raw, err := os.ReadFile(result["migrationIndex"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index struct {
+		MemoryFiles map[string]string `json:"memoryFiles"`
+	}
+	if err := json.Unmarshal(raw, &index); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"USER.md", "SOUL.md", "IDENTITY.md", "TOOLS.md", "MEMORY.md"} {
+		expected := filepath.Join(dst.svc.Home, workspaceBase(), name)
+		if index.MemoryFiles[name] != expected {
+			t.Fatalf("%s: %s", name, index.MemoryFiles[name])
+		}
+		if _, err := os.Stat(expected); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project := filepath.Join(dst.svc.Home, workspaceBase(), "projects/readme.md")
+	if data, err := os.ReadFile(project); err != nil || string(data) != "imported project" {
+		t.Fatalf("project: %s %v", data, err)
+	}
+	if data, err := os.ReadFile(existing); err != nil || string(data) != "target instructions" {
+		t.Fatal("overwrote target instructions", err)
+	}
+	if index.MemoryFiles["AGENTS.md"] == existing {
+		t.Fatal("familiarity must reference the isolated source")
+	}
+	if data, err := os.ReadFile(index.MemoryFiles["AGENTS.md"]); err != nil || string(data) != "source AGENTS.md" {
+		t.Fatal("missing isolated source", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst.svc.Home, workspaceBase(), "migration/openclaw/main/agent-settings")); !os.IsNotExist(err) {
+		t.Fatal("settings still archived", err)
+	}
+}

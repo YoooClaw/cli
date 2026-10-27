@@ -65,7 +65,7 @@ v2 不携带 v1 完整的跨迁移来源身份时，不伪造已有 origin。新
 | `workspace` | `W/<path>` | 保留项目目录、文档和附件相对结构 |
 | 长期 `memory`：`MEMORY.md` 及非每日记录 | `W/<path>` | 保留原文；主 Agent 的 `MEMORY.md` 在熟悉阶段阅读，其余资料按需查询 |
 | 主 Agent 每日日志 | 当前用户 `~/.claude/projects/<W 对应项目目录名>/memory/<日志文件名>` | 导入阶段只搬运；同名直接跳过，不覆盖、不合并、不生成冲突副本；熟悉阶段不阅读 |
-| `agent-settings` | `W/migration/openclaw/<scope>/agent-settings/<path>` | 保留 USER/SOUL/AGENTS 等源设定；不直接覆盖 Claude 当前指令 |
+| `agent-settings` | `W/<path>` | main／默认 Agent 工作区的 USER/SOUL/AGENTS 等源文件直接进入目标 workspace；同名同内容跳过，不同内容隔离保留，不覆盖目标文件 |
 | `sessions` | `W/migration/openclaw/<scope>/sessions/<path>` | 保留 JSON/JSONL、提示词资源、旧会话分支和新版 `sqlite/` 转换资料 |
 | 主 Agent 独立 `skills` | 当前用户 `~/.claude/skills/<name>/...`；同时检查 W 项目级同名 Skill | 识别源技能前缀，按整个 Skill 处理；存在同名 Skill 则整个跳过，不合并、不覆盖 |
 | 共享 `skills` | 同一目标 Claude Skill 目录 | 同名整个跳过，不另建一个可被加载的副本；报告来源及跳过原因 |
@@ -233,3 +233,15 @@ admin 用户的每日日志目标为 `/home/admin/.claude/projects/-home-admin-w
 ## 12. 0.15.0 分支基线
 
 `release/0.15.0` 从远端主干 `origin/master`（770f734）建立；迁移实现提交到 `feat/0.15.0-data-transfer`。仅迁入本次迁移改动，不携带旧工作分支的 0.14.0 功能提交。新基线已重新通过全仓测试、异步迁入 race 验收及本机／Linux 构建；前述云机验收基于切分支前的构建，不将其表述为新基线已重新部署。
+
+## 异步迁入日志
+
+daemon 使用 `[transfer]` 前缀及 `transferId=<履约任务 ID>` 关联请求应答、受理／去重、下载、包校验、落盘、完成／失败、进度与阶段事件回报。请求解析之前 ID 为 `unknown`；入口之前被认证层拒绝的请求需结合 daemon／Relay 通用日志。
+
+默认 profile 的持久日志（无影 admin 用户）为 `/home/admin/.yoooclaw/profiles/default/logs/daemon.log`：
+
+```bash
+tail -F /home/admin/.yoooclaw/profiles/default/logs/daemon.log | grep --line-buffered '\[transfer\]'
+```
+
+其他用户使用 `$HOME/.yoooclaw/profiles/<profile>/logs/daemon.log`。日志已有轮转机制。`import.finished` 只代表本地结果，`event.reported event=IMPORT_SUCCEEDED` 才表示履约接受成功事件。失败事件和超时也有独立记录；进度回报日志仅随限频尝试产生。仅记录阶段、任务 ID、整数进度、耗时和安全错误码，不输出凭据、签名 URL、用户内容或原始服务响应。
