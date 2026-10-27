@@ -633,7 +633,7 @@ yc daemon restart
 
 The setting is read at daemon startup, without periodic reloading. If the daemon is stopped, the next start picks it up. Add `--profile <name>` for a non-default profile. To restore automatic updates, set it to `true` and restart the daemon.
 
-Manual checks report `scheduled` and `notBefore`. Scheduling requires a running matching standalone daemon and enabled auto-update; repeated checks restart the ten-minute delay. Recording activity and failure cooldown can postpone installation. The daemon consumes the request on its 30-second tick; installation rechecks rollout eligibility. `--check-only` does not cancel an existing schedule.
+Manual checks report `scheduled` and `notBefore`. Scheduling requires a running matching standalone daemon and enabled auto-update; manual checks clear the four-hour failure cooldown and preserve any pending ten-minute deadline. Recording activity can postpone installation. The daemon consumes the request on its 30-second tick; installation rechecks rollout eligibility. `--check-only` does not cancel an existing schedule.
 
 ## System reminders
 
