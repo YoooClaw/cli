@@ -184,7 +184,9 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 				skipExisting = true
 				reason = "daily-log"
 			}
-		case "agent-settings", "sessions", "notifications", "recordings", "images", "web-pages":
+		case "agent-settings":
+			dest = workspaceBase() + "/" + f.Path
+		case "sessions", "notifications", "recordings", "images", "web-pages":
 			dest = workspaceBase() + "/migration/openclaw/" + f.Scope + "/" + f.Category + "/" + f.Path
 		case "cron":
 			if f.Path != "jobs.json" {

@@ -65,7 +65,7 @@ v2 不携带 v1 完整的跨迁移来源身份时，不伪造已有 origin。新
 | `workspace` | `W/<path>` | 保留项目目录、文档和附件相对结构 |
 | 长期 `memory`：`MEMORY.md` 及非每日记录 | `W/<path>` | 保留原文；主 Agent 的 `MEMORY.md` 在熟悉阶段阅读，其余资料按需查询 |
 | 主 Agent 每日日志 | 当前用户 `~/.claude/projects/<W 对应项目目录名>/memory/<日志文件名>` | 导入阶段只搬运；同名直接跳过，不覆盖、不合并、不生成冲突副本；熟悉阶段不阅读 |
-| `agent-settings` | `W/migration/openclaw/<scope>/agent-settings/<path>` | 保留 USER/SOUL/AGENTS 等源设定；不直接覆盖 Claude 当前指令 |
+| `agent-settings` | `W/<path>` | main／默认 Agent 工作区的 USER/SOUL/AGENTS 等源文件直接进入目标 workspace；同名同内容跳过，不同内容隔离保留，不覆盖目标文件 |
 | `sessions` | `W/migration/openclaw/<scope>/sessions/<path>` | 保留 JSON/JSONL、提示词资源、旧会话分支和新版 `sqlite/` 转换资料 |
 | 主 Agent 独立 `skills` | 当前用户 `~/.claude/skills/<name>/...`；同时检查 W 项目级同名 Skill | 识别源技能前缀，按整个 Skill 处理；存在同名 Skill 则整个跳过，不合并、不覆盖 |
 | 共享 `skills` | 同一目标 Claude Skill 目录 | 同名整个跳过，不另建一个可被加载的副本；报告来源及跳过原因 |

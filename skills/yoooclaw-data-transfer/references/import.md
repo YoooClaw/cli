@@ -18,7 +18,8 @@ Use the same commands above. The daemon validates each logical file and blob bef
 `W` is the actual daemon user's home plus `/wuying-agent-workspace`; it is created when needed. Never select the source user's home or a directory supplied by the package.
 
 - Workspace files and non-daily memory files keep relative paths under W.
-- Source Agent settings and history are saved under `W/migration/openclaw/<scope>/`; history is reference material, not a native Claude conversation.
+- Main/default Agent workspace files, including USER/SOUL/IDENTITY/AGENTS/TOOLS and MEMORY, are placed directly under `W`, preserving relative paths. Existing identical files are skipped; differing files are preserved in the conflict archive without overwriting target files.
+- History remains under `W/migration/openclaw/<scope>/`; it is reference material, not a native Claude conversation.
 - Daily `memory/YYYY-MM-DD.md` files are copied into Claude's W project memory directory. For admin this is `/home/admin/.claude/projects/-home-admin-wuying-agent-workspace/memory/`. Existing names are skipped, regardless of content. Do not read these bodies during familiarity.
 - Standalone skills are installed under the current user's `~/.claude/skills/<name>/`. An existing same-name user or W project skill is skipped as a whole; resources are never merged. Copied skills that depend on unavailable OpenClaw tools are not automatically usable.
 - Main Agent `jobs.json` becomes `from_openclaw_cron.json`. Importing it does not create scheduled jobs.
