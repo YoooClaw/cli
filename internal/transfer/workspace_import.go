@@ -173,6 +173,10 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 		switch f.Category {
 		case "workspace":
 			dest = workspaceBase() + "/" + f.Path
+			// Shared skill-root documents are archives, not current workspace files.
+			if f.Scope == "shared" {
+				dest = workspaceBase() + "/migration/openclaw/shared/skills/" + f.Path
+			}
 		case "memory":
 			dest = workspaceBase() + "/" + f.Path
 			if dailyLogRE.MatchString(f.Path) {

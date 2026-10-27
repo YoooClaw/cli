@@ -23,9 +23,6 @@ import (
 // 链接、PAX/GNU 扩展头、路径穿越、重复条目一律拒绝。解出的内容仍须经 ReadPackage
 // 全量校验后才能使用。
 
-// MaxExpansionRatio 限制解压后体积 = 压缩包体积 × 该倍数 + manifest 上限，挡住压缩炸弹。
-const MaxExpansionRatio = 100
-
 // PackageFormats 是本端能读写的包形态。旧版本的能力文件没有该字段，视为只支持 directory。
 var PackageFormats = []string{"directory", "tar.gz"}
 
@@ -162,7 +159,8 @@ func extractArchiveContext(ctx context.Context, file, dest string) error {
 		return fail("ARCHIVE_INVALID")
 	}
 	defer gz.Close()
-	limit := min(info.Size()*MaxExpansionRatio+MaxManifestBytes, MaxFullBytes+MaxManifestBytes)
+	// Bound actual extracted bytes; valid workspace text can compress beyond any fixed ratio.
+	limit := MaxFullBytes + MaxManifestBytes
 	tr := tar.NewReader(gz)
 	seen := map[string]bool{}
 	var total int64

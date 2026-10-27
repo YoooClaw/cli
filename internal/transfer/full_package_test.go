@@ -280,3 +280,27 @@ func TestFullCronConflictKeepsRenamedFilename(t *testing.T) {
 		t.Fatal(doc.CronFile)
 	}
 }
+
+func TestSkillRootDocumentsDoNotCollideWithWorkspaceDocuments(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	pkg := t.TempDir()
+	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), Files: []FullFile{}}
+	for _, f := range []struct{ scope, path, body string }{{"main", "skills/README.md", "workspace notes"}, {"shared", "README.md", "shared notes"}} {
+		h := sha(f.body)
+		testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), []byte(f.body))
+		m.Files = append(m.Files, FullFile{"workspace", f.scope, f.path, h, int64(len(f.body))})
+		m.OriginalBytes += int64(len(f.body))
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatalf("%v", result)
+	}
+	for p, want := range map[string]string{"skills/README.md": "workspace notes", "migration/openclaw/shared/skills/README.md": "shared notes"} {
+		got, err := os.ReadFile(filepath.Join(dst.svc.Home, workspaceBase(), p))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s: %q %v", p, got, err)
+		}
+	}
+}
