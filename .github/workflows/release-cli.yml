@@ -45,6 +45,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify OTA draft registration
+        run: node --test scripts/register-ota-draft.test.mjs
+
       - name: Verify Go source
         run: |
           go test ./...
@@ -288,8 +291,62 @@ jobs:
             security delete-keychain "$SIGNING_KEYCHAIN_PATH"
           fi
 
-  release:
+  # Promote the signed build unchanged; register a draft without starting rollout.
+  deploy-test:
     needs: build-release
+    runs-on: ubuntu-latest
+    environment: test
+    concurrency:
+      group: cli-test-deploy
+      cancel-in-progress: false
+    env:
+      OSS_PREFIX: cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: tools/oss-upload/go.sum
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-native
+          path: dist-native
+      - name: Resolve version and checksums
+        run: |
+          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+          cd dist-native
+          sha256sum yoooclaw-* > checksums.txt
+      - name: Upload release artifacts to test OSS
+        timeout-minutes: 40
+        env:
+          OSS_REGION: ${{ secrets.OSS_REGION }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          OSS_PUBLIC_URL: ${{ secrets.OSS_PUBLIC_URL }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          missing=()
+          for key in OSS_REGION OSS_BUCKET OSS_PUBLIC_URL OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET; do
+            [ -n "${!key}" ] || missing+=("$key")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::缺少 test environment secrets: ${missing[*]}"
+            exit 1
+          fi
+          go -C tools/oss-upload run . --version "$VERSION"
+      - name: Register test OTA draft
+        timeout-minutes: 4
+        env:
+          OTA_DRAFT_URL: https://openclaw-service-test.yoooclaw.com/api/ota/pipeline/plugin/releases
+          OTA_PLUGIN_RELEASE_PIPELINE_TOKEN: ${{ secrets.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN }}
+          OTA_ARTIFACT_BASE_URL: ${{ secrets.OSS_PUBLIC_URL }}/cli
+        run: node scripts/register-ota-draft.mjs
+
+  release:
+    needs: [build-release, deploy-test]
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -459,6 +516,7 @@ jobs:
           go -C tools/oss-upload run . --version "$VERSION"
 
       - name: Register production OTA draft
+        timeout-minutes: 4
         env:
           OTA_DRAFT_URL: https://openclaw-service.yoooclaw.com/api/ota/pipeline/plugin/releases
           OTA_PLUGIN_RELEASE_PIPELINE_TOKEN: ${{ secrets.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN }}
