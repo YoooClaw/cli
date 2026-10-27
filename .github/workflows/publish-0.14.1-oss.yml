@@ -1,20 +1,19 @@
-name: Publish 0.14.1 production OSS
+name: Complete 0.14.1 production release
 on:
   push:
     branches: [release/0.14.1]
     paths: [.github/workflows/publish-0.14.1-oss.yml]
 permissions:
-  contents: read
+  contents: write
   actions: read
 concurrency:
   group: release-cli-oss
   cancel-in-progress: false
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     environment: production
     env:
-      VERSION: 0.14.1
       OSS_REGION: oss-cn-hangzhou
       OSS_BUCKET: yoooclaw-artifacts
       OSS_PUBLIC_URL: https://artifact.yoooclaw.com
@@ -22,11 +21,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           ref: 591a49f304f1a9de7d2856faf38d972f18e0e08b
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: tools/oss-upload/go.sum
+
       - name: Verify signed build provenance
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,28 +41,168 @@ jobs:
           set -euo pipefail
           gh api repos/YoooClaw/cli/actions/runs/40467421593 --jq '.head_sha' | grep -Fx 591a49f304f1a9de7d2856faf38d972f18e0e08b
           gh api repos/YoooClaw/cli/actions/runs/40467421593/attempts/2/jobs --jq '.jobs[] | select(.name == "build-release") | .conclusion' | grep -Fx success
-      - uses: actions/download-artifact@v4
+      - name: Download native binaries
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: '12730601119'
-          path: dist-native
           merge-multiple: true
           github-token: ${{ github.token }}
           repository: YoooClaw/cli
           run-id: 40467421593
-      - name: Validate artifacts
+          path: dist-native
+
+      - name: Download npm packages
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '12730331444'
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: YoooClaw/cli
+          run-id: 40467421593
+          path: dist-npm
+
+      - name: Resolve version and channel
         run: |
-          set -euo pipefail
-          chmod +x dist-native/yoooclaw-linux-x64
-          test "$(dist-native/yoooclaw-linux-x64 --version)" = "$VERSION"
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="0.14.1"
+          if [ "$VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $TAG_VERSION 与 package.json $VERSION 不一致"
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "NPM_TAG=beta" >> "$GITHUB_ENV"
+            echo "PRERELEASE=1" >> "$GITHUB_ENV"
+          else
+            echo "NPM_TAG=latest" >> "$GITHUB_ENV"
+            echo "PRERELEASE=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Verify npm token
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::发布 npm 需要配置 NPM_TOKEN"
+            exit 1
+          fi
+
+      - name: Smoke test Linux binary
+        run: |
+          chmod +x dist-native/yoooclaw-*
+          VERSION_OUT="$(./dist-native/yoooclaw-linux-x64 --version)"
+          if [ "$VERSION_OUT" != "$VERSION" ]; then
+            echo "::error::linux native --version 输出 $VERSION_OUT，期望 $VERSION"
+            exit 1
+          fi
+
+      - name: Pack npm tarballs
+        run: |
+          mkdir -p release-tarballs
+          for dir in dist-npm/cli-* dist-npm/cli; do
+            npm pack "./$dir" --pack-destination release-tarballs --json
+          done
+
+      - name: Publish npm packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # npm 已限制自动化 token 做账号/权限类变更（2FA bypass 收紧），
+          # `npm access set status=public` 会返回 403。发布本身用 --access public
+          # 就已经是公开的，这里只作为兜底，失败不阻塞发布。
+          ensure_public() {
+            npm access set status=public "$1" \
+              || echo "::warning::npm access set status=public $1 失败（token 无权限），已忽略"
+          }
+
+          publish_pkg() {
+            local dir="$1"
+            local name
+            local version
+            name="$(node -p "require('./${dir}/package.json').name")"
+            version="$(node -p "require('./${dir}/package.json').version")"
+
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "::notice::$name@$version 已存在，跳过"
+              ensure_public "$name"
+              return
+            fi
+
+            echo "::notice::发布 $name@$version --tag $NPM_TAG"
+            npm publish "./$dir" --access public --tag "$NPM_TAG"
+            ensure_public "$name"
+          }
+
+          for dir in dist-npm/cli-*; do
+            publish_pkg "$dir"
+          done
+          publish_pkg dist-npm/cli
+
+      - name: Deprecate broken beta.0
+        if: env.VERSION == '0.2.0-beta.1'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          message="@yoooclaw/cli 0.2.0-beta.0 的平台二进制缺少 executable bit，请升级到 0.2.0-beta.1。"
+          npm deprecate "@yoooclaw/cli@0.2.0-beta.0" "$message"
+
+      - name: Compute checksums
+        run: |
           cd dist-native
-          test "$(find . -maxdepth 1 -name 'yoooclaw-*' -type f | wc -l)" -eq 5
           sha256sum yoooclaw-* > checksums.txt
-      - name: Publish production OSS
+          expected=5
+          actual="$(wc -l < checksums.txt | tr -d ' ')"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::checksums.txt 应包含 $expected 个 native 产物，实际为 $actual"
+            exit 1
+          fi
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=(
+            dist-native/yoooclaw-darwin-arm64 \
+            dist-native/yoooclaw-darwin-x64 \
+            dist-native/yoooclaw-linux-arm64 \
+            dist-native/yoooclaw-linux-x64 \
+            dist-native/yoooclaw-win32-x64.exe \
+            dist-native/checksums.txt \
+            release-tarballs/*.tgz
+          )
+
+          if gh release view "cli-v$VERSION" >/dev/null 2>&1; then
+            gh release upload "cli-v$VERSION" "${assets[@]}" --clobber
+          else
+            args=(--generate-notes)
+            if [ "$PRERELEASE" = "1" ]; then
+              args+=(--prerelease)
+            fi
+            gh release create "cli-v$VERSION" "${assets[@]}" "${args[@]}"
+          fi
+
+      - name: Upload artifacts to Alibaba OSS
         timeout-minutes: 40
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-        run: go -C tools/oss-upload run . --version "$VERSION"
+        run: |
+          if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ]; then
+            echo "::error::缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET GitHub Secrets（production environment）"
+            exit 1
+          fi
+          go -C tools/oss-upload run . --version "$VERSION"
+
+      - name: Register production OTA draft
+        timeout-minutes: 4
+        env:
+          OTA_DRAFT_URL: https://openclaw-service.yoooclaw.com/api/ota/pipeline/plugin/releases
+          OTA_PLUGIN_RELEASE_PIPELINE_TOKEN: ${{ secrets.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN }}
+          OTA_ARTIFACT_BASE_URL: ${{ env.OSS_PUBLIC_URL }}/${{ env.OSS_PREFIX }}
+        run: node scripts/register-ota-draft.mjs
+
       - name: Verify public production artifacts
         run: |
           set -euo pipefail
@@ -71,3 +218,65 @@ jobs:
           for file in install.sh install.ps1 install-wuying.sh; do
             curl -fsSL "$base/$file" | cmp - <(curl -fsSL "$base/v$VERSION/installer/$file")
           done
+
+      - name: Notify Feishu
+        if: success()
+        env:
+          HOOK_2: ${{ secrets.FEISHU_WEBHOOK_2 }}
+        run: |
+          CURRENT_TAG="cli-v${VERSION}"
+          PREV_TAG="cli-v0.14.0"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${CURRENT_TAG}"
+            LOG_ARGS=("$RANGE")
+          else
+            RANGE="最近 20 条"
+            LOG_ARGS=(-20 "$CURRENT_TAG")
+          fi
+
+          CHANGES=$(git log --no-merges --pretty=format:'%H' "${LOG_ARGS[@]}" | while read -r h; do
+            subj=$(git log -1 --pretty=format:'%s' "$h")
+            if grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.].*)?$' <<< "$subj"; then
+              continue
+            fi
+            printf '• %s\n' "$subj"
+            git log -1 --pretty=format:'%b' "$h" \
+              | grep -v -i -E '^(Co-Authored-By|Signed-off-by|Co-developed-by|Reviewed-by):' \
+              | sed '/^[[:space:]]*$/d' \
+              | sed 's/^/    /' || true
+          done)
+          [ -z "$CHANGES" ] && CHANGES="（无业务改动）"
+
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${CURRENT_TAG}"
+          CHANNEL="稳定版"
+          [ "$PRERELEASE" = "1" ] && CHANNEL="预发布"
+
+          # 预发布版只能按版本号装：live 安装脚本与 latest 标记不会被 beta 覆盖。
+          INSTALL_FLAGS=""
+          [ "$PRERELEASE" = "1" ] && INSTALL_FLAGS=" -s -- --version ${VERSION}"
+
+          WINDOWS_INSTALL_COMMAND="irm ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1 | iex"
+          if [ "$PRERELEASE" = "1" ]; then
+            WINDOWS_INSTALL_COMMAND="& ([scriptblock]::Create((irm '${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.ps1'))) -Version ${VERSION}"
+          fi
+
+          TEXT="🚀 @yoooclaw/cli ${CURRENT_TAG}（${CHANNEL}）已发布
+
+          📥 macOS / Linux 安装（阿里云 OSS）：
+          curl -fsSL ${OSS_PUBLIC_URL}/${OSS_PREFIX}/install.sh | sh${INSTALL_FLAGS}
+
+          📥 Windows PowerShell 安装（无需 Node/npm）：
+          ${WINDOWS_INSTALL_COMMAND}
+
+          📝 改动（${RANGE}）：
+          ${CHANGES}
+
+          🔗 ${URL}"
+
+          PAYLOAD=$(jq -nc --arg t "$TEXT" '{msg_type:"text", content:{text:$t}}')
+
+          test -n "$HOOK_2" || { echo "::error::FEISHU_WEBHOOK_2 is missing"; exit 1; }
+          response=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$HOOK_2")
+          code=$(printf '%s' "$response" | jq -r '.code // .StatusCode // empty')
+          test "$code" = 0 || { echo "::error::Feishu rejected notification: $response"; exit 1; }
+          echo "Feishu notification accepted: code=0"
