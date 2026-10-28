@@ -245,3 +245,9 @@ tail -F /home/admin/.yoooclaw/profiles/default/logs/daemon.log | grep --line-buf
 ```
 
 其他用户使用 `$HOME/.yoooclaw/profiles/<profile>/logs/daemon.log`。日志已有轮转机制。`import.finished` 只代表本地结果，`event.reported event=IMPORT_SUCCEEDED` 才表示履约接受成功事件。失败事件和超时也有独立记录；进度回报日志仅随限频尝试产生。仅记录阶段、任务 ID、整数进度、耗时和安全错误码，不输出凭据、签名 URL、用户内容或原始服务响应。
+
+### 履约默认地址云机验证（2026-10-28）
+
+在无影 admin 用户运行 a8f06f6 编译的 Linux/x64 本地验证版。未设置 `YOOOCLAW_TRANSFER_REPORT_BASE_URL`，15:45:08 输出 `import.worker_ready`，15:45:09 Relay 重连成功。真实 daemon 已启动自动迁入服务；未重放此前失败的业务迁移请求。
+
+同机执行真实生产绑定与模拟远端服务的 6 场景验收：成功、包损坏、下载失败、开始事件被拒、结果补报、超时全部通过。成功场景 ACK=200，进度为 0/100，事件为 IMPORT_STARTED → DOWNLOAD_COMPLETED → IMPORT_SUCCEEDED。此验收不代表真实履约任务已经完成迁入。
