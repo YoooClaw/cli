@@ -81,9 +81,8 @@ func (s *server) transferKey(label string) string {
 	return ""
 }
 func (s *server) startTransferImports() error {
-	base := os.Getenv("YOOOCLAW_TRANSFER_REPORT_BASE_URL")
-	// Source and target use the same deployment-supplied fulfillment prefix.
 	host := config.ResolveCloudHost(s.cfg)
+	base := transfercloud.New("configuration-check", host).ReportBaseURL(os.Getenv("YOOOCLAW_TRANSFER_REPORT_BASE_URL"))
 	keys := map[string]string{}
 	for _, e := range s.snapshotCreds().Entries {
 		keys[e.Label] = e.Key

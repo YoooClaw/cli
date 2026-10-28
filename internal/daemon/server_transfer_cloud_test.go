@@ -36,8 +36,7 @@ func TestTransferCloudAcceptance(t *testing.T) {
 			srv.credentialSet = creds.CredentialSet{Entries: []creds.ApiKeyEntry{{Label: "target", Key: "acceptance-key"}}}
 			srv.transfer = &transfer.Service{Dir: filepath.Join(t.TempDir(), "transfers"), Roots: transfer.Roots{transfer.TypeNotifications: srv.ctx.Paths.Notifications}, Notifications: srv.storage}
 			host := config.ResolveCloudHost(srv.cfg)
-			base := "https://" + host + "/fulfillment/transfer"
-			t.Setenv("YOOOCLAW_TRANSFER_REPORT_BASE_URL", base)
+			t.Setenv("YOOOCLAW_TRANSFER_REPORT_BASE_URL", "")
 			t.Setenv("YOOOCLAW_TRANSFER_TIMEOUT", "45s")
 			if scenario == "timeout" {
 				t.Setenv("YOOOCLAW_TRANSFER_TIMEOUT", "150ms")
@@ -69,14 +68,14 @@ func TestTransferCloudAcceptance(t *testing.T) {
 			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				ok := func() { w.Write([]byte(`{"success":true,"code":"000000","data":null}`)) }
-				if strings.HasPrefix(r.URL.Path, "/fulfillment/") || strings.HasPrefix(r.URL.Path, "/api/device/") {
+				if strings.HasPrefix(r.URL.Path, "/api/fulfillment/") || strings.HasPrefix(r.URL.Path, "/api/device/") {
 					if r.Header.Get("X-Api-Key-Id") != "acceptance-key" {
 						t.Error("wrong outbound credential")
 						w.WriteHeader(403)
 						return
 					}
 				}
-				if r.URL.Path == "/fulfillment/transfer/events" {
+				if r.URL.Path == "/api/fulfillment/plugin/transfer/events" {
 					var b struct {
 						TransferID   string `json:"transferId"`
 						EventType    string `json:"eventType"`
@@ -112,7 +111,7 @@ func TestTransferCloudAcceptance(t *testing.T) {
 					}
 					return
 				}
-				if r.URL.Path == "/fulfillment/transfer/"+transferID+"/download-progress" {
+				if r.URL.Path == "/api/fulfillment/plugin/transfer/"+transferID+"/download-progress" {
 					var b struct {
 						Progress int `json:"progress"`
 					}

@@ -28,6 +28,22 @@ type ProgressOptions struct {
 	ReportLog func(progress int, success bool)
 }
 
+// ReportBaseURL uses the file service environment when no deployment override exists.
+// Validation remains mandatory before credentials are sent.
+func (c *Client) ReportBaseURL(override string) string {
+	base := strings.TrimRight(strings.TrimSpace(override), "/")
+	api, _ := url.Parse(c.baseURL)
+	if base == "" {
+		return api.Scheme + "://" + api.Host + "/api/fulfillment/plugin/transfer"
+	}
+	u, err := url.Parse(base)
+	if err == nil && u.Path == "/fulfillment/plugin/transfer" {
+		u.Path = "/api" + u.Path
+		base = u.String()
+	}
+	return base
+}
+
 func (c *Client) ValidateProgress(o ProgressOptions) error {
 	u, err := url.Parse(o.BaseURL)
 	api, _ := url.Parse(c.baseURL)

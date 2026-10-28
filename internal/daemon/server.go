@@ -185,7 +185,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		},
 	}
 	if err := srv.startTransferImports(); err != nil {
-		srv.logger.Warn("[transfer] automatic import unavailable: configure fulfillment report URL and restart daemon")
+		srv.logger.Warn("[transfer] automatic import unavailable: invalid fulfillment configuration; check cloud host and report URL override")
 	}
 	if srv.transferImports != nil {
 		defer srv.transferImports.Stop()
