@@ -196,7 +196,7 @@ admin 用户的每日日志目标为 `/home/admin/.claude/projects/-home-admin-w
 - 无影 runner 0.3.72 内置 `ac_scheduled_tasks`；目标机当天真实 Claude 工具记录显示 `mcp__ac_scheduled_tasks__scheduled_task_create` 创建成功，返回平台任务 ID、ACTIVE 和下次执行时间。熟悉提示词改为优先使用该工具及同服务查询接口；必须查重、转换 cron 格式并读回。裸 `claude -p` 未自动加载此 MCP，runner 的内部端点没有执行授权会返回 403，不能把裸 CLI 验证当作托管会话验证，也不能复制别的会话授权。首选工具缺失时继续查找其他可用调度工具，包括原生 CronList／CronCreate；查重后创建，支持 durable 则启用。工具存在 7 天有效期或会话存活限制时明确告知，不宣称无期限等价恢复；不能仅因首选工具未加载而停止。
 - `transfercloud.DownloadWithProgress` 已接入原 OSS 下载器；SDK 的绝对已写入字节用于计算进度，重试不累计流量，只保留最大已知进度。并发回调只更新一个最新值，独立协程串行 PUT；默认 15 秒加不足 1 秒错峰、至少增长 1%；无变化不发心跳；失败退避，上限为 2 分钟与配置间隔中的较大值；明确拒绝停止重试。0 可立即上报，100 在最终本地文件保存成功后上报；100 不是迁入成功。
 - 调用沿接口草稿 `PUT <履约 transfer 前缀>/{transferId}/download-progress`，Body 仅 `progress`；识别 `success=true`、`code="000000"`，允许 `data=null`。复用 API Key，禁止转发重定向；网关前缀须部署配置且与当前 API 同源，不从包里取地址。单次上报最多 3 秒，下载期间不阻塞文件传输；结束等待至多当前请求及最后一次请求。上报失败通过 `progressWarning` 返回，不把导入判为失败。
-- 联调入口：`yoooclaw transfer import --task <fileTaskId> --transfer-id <履约transferId>`；部署设置 `YOOOCLAW_TRANSFER_REPORT_BASE_URL` 为已确认的 HTTPS 履约 transfer 前缀，可设置 `YOOOCLAW_TRANSFER_PROGRESS_INTERVAL`（Go duration，至少 15s）。两个 ID 不混用；不提供 transferId 的旧手动迁移保持原行为。此入口用于已授权的本地联调，不代替履约许可，也不开放远程自动迁入。
+- 联调入口：`yoooclaw transfer import --task <fileTaskId> --transfer-id <履约transferId>`；默认按当前云环境使用 `https://<cloud host>/api/fulfillment/plugin/transfer`；可用 `YOOOCLAW_TRANSFER_REPORT_BASE_URL` 显式覆盖同主机 HTTPS 履约前缀，可设置 `YOOOCLAW_TRANSFER_PROGRESS_INTERVAL`（Go duration，至少 15s）。两个 ID 不混用；不提供 transferId 的旧手动迁移保持原行为。此入口用于已授权的本地联调，不代替履约许可，也不开放远程自动迁入。
 
 ### 对照 IMP／需求二反串讲仍未接通的内容
 
@@ -216,7 +216,7 @@ admin 用户的每日日志目标为 `/home/admin/.claude/projects/-home-admin-w
 ## 10. 2026-10-27 异步入口与回报
 
 - 生产 daemon 启动时创建 `transferjob.Service`，新增 `POST /transfer/import/start`；仅复用已认证 Relay 的目标凭据标识，Body 仅 `transferId/fileTaskId`，不允许路径、URL、命令或额外字段。快速成功响应使用 `success/code/message/data` 包装，仅代表任务已落盘。
-- 部署配置 `YOOOCLAW_TRANSFER_REPORT_BASE_URL`；配置无效时入口 503。缺失／变更的凭据不能受理旧任务，需要重新启动绑定。没有新增独立授权查询。
+- 按当前环境自动生成履约地址并启动迁入服务，无需额外环境变量；显式覆盖配置无效时入口 503。缺失／变更的凭据不能受理旧任务，需要重新启动绑定。没有新增独立授权查询。
 - 同任务同参数重复受理不重新导入、不延长截止；不同文件返回 409。一次只执行一个导入；待回报结果不占用导入槽。
 - `IMPORT_STARTED` 成功后才执行下载流程；下载及校验成功报 `DOWNLOAD_COMPLETED`，随后复用原 preview/import。PARTIAL 按失败处理。最终结果先落盘，再报 `IMPORT_SUCCEEDED/IMPORT_FAILED`，上报失败不重做导入。
 - 结果每轮最多首次＋3 次尝试，明确拒绝不重试；失败留本地记录，重启只补报原结果。运行中重启按中断失败处理，不静默重放可能已写入的数据。临时下载文件在正常成功／失败退出时清理。

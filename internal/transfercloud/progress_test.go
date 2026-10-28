@@ -255,3 +255,24 @@ func TestDownloadProgressSlowCloudProbe(t *testing.T) {
 	}
 	t.Logf("verified %d bytes; progress=%v", len(got), values)
 }
+
+func TestDefaultFulfillmentByEnvironment(t *testing.T) {
+	for _, host := range []string{"openclaw-service-test.yoooclaw.com", "openclaw-service.yoooclaw.com", "openclaw-service-dev.yoooclaw.com"} {
+		c := New("test-key", host)
+		want := "https://" + host + "/api/fulfillment/plugin/transfer"
+		for _, override := range []string{"", "  ", "https://" + host + "/fulfillment/plugin/transfer/", want} {
+			got := c.ReportBaseURL(override)
+			if got != want {
+				t.Fatalf("got %q want %q", got, want)
+			}
+			if err := c.ValidateProgress(ProgressOptions{TransferID: "test", BaseURL: got}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, override := range []string{"https://other.example/api/fulfillment/plugin/transfer", "http://" + host + "/api/fulfillment/plugin/transfer", "https://user:secret@" + host + "/api/fulfillment/plugin/transfer"} {
+			if err := c.ValidateProgress(ProgressOptions{TransferID: "test", BaseURL: c.ReportBaseURL(override)}); err == nil {
+				t.Fatal("accepted unsafe override")
+			}
+		}
+	}
+}

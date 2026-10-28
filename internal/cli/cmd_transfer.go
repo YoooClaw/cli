@@ -334,7 +334,7 @@ func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any
 	}
 	var progress *transfercloud.ProgressOptions
 	if transferID := flagStr(cmd, "transfer-id"); transferID != "" {
-		o := transfercloud.ProgressOptions{TransferID: transferID, BaseURL: os.Getenv("YOOOCLAW_TRANSFER_REPORT_BASE_URL")}
+		o := transfercloud.ProgressOptions{TransferID: transferID, BaseURL: cloud.ReportBaseURL(os.Getenv("YOOOCLAW_TRANSFER_REPORT_BASE_URL"))}
 		if raw := os.Getenv("YOOOCLAW_TRANSFER_PROGRESS_INTERVAL"); raw != "" {
 			var e error
 			o.Interval, e = time.ParseDuration(raw)
