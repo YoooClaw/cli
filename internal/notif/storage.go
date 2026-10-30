@@ -126,6 +126,7 @@ func (s *Storage) quarantineDay(dateKey, filePath string, cause error) {
 	_ = os.Remove(filepath.Join(s.contentKeyDir, dateKey+".keys"))
 	delete(s.idCache, dateKey)
 	delete(s.contentKeyCach, dateKey)
+	s.removeDailyStats(dateKey)
 }
 
 // Init 准备目录；content-key 索引每次启动重建。
@@ -280,6 +281,7 @@ func (s *Storage) flushDay(dateKey string, day *staged) error {
 		return nil
 	}
 	existing := s.loadDay(dateKey)
+	stats, _, statsErr := s.readDailyStats(dateKey)
 	err := s.writeDayLines(dateKey, existing, day.entries)
 	if err != nil {
 		s.invalidateDay(dateKey)
@@ -293,6 +295,7 @@ func (s *Storage) flushDay(dateKey string, day *staged) error {
 	for _, key := range day.contentKys {
 		appendLine(filepath.Join(s.contentKeyDir, dateKey+".keys"), key)
 	}
+	s.finishDailyStats(stats, statsErr, day.entries)
 	return nil
 }
 
@@ -360,6 +363,7 @@ func (s *Storage) invalidateDay(dateKey string) {
 	delete(s.dayCache, dateKey)
 	delete(s.idCache, dateKey)
 	delete(s.contentKeyCach, dateKey)
+	s.removeDailyStats(dateKey)
 }
 
 func (s *Storage) buildStored(n RawNotification, clientLabel string) StoredNotification {
@@ -519,6 +523,9 @@ func (s *Storage) prune() {
 	}, false)
 	pruneByDate(s.idIndexDir, cutoff, []string{".ids"}, func(k string) { delete(s.idCache, k) }, true)
 	pruneByDate(s.contentKeyDir, cutoff, []string{".keys"}, func(k string) { delete(s.contentKeyCach, k) }, true)
+	if s.statsDirectory() == nil {
+		pruneByDate(filepath.Join(s.dir, dailyStatsDirName), cutoff, []string{".json"}, func(string) {}, true)
+	}
 }
 
 func pruneByDate(dir, cutoff string, exts []string, evict func(string), filesOnly bool) {
