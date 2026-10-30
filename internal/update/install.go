@@ -414,6 +414,20 @@ func Activated(a Attempt) {
 	_ = fsutil.WriteJSON(JobPath(a), a, 0600)
 }
 func ConfirmPending(id Identity, executable string) {
+	forPending(id, executable, Activated)
+}
+
+// ReportAutostartFailure records a recoverable restart error without finalizing the update.
+// It runs in the newly installed CLI, including when an older worker starts it.
+func ReportAutostartFailure(id Identity, executable string, err error) {
+	forPending(id, executable, func(a Attempt) {
+		e := EventFor(a, "restart", "failed", fail("AUTOSTART_START_FAILED", err.Error()))
+		e.InstalledVersion = a.Artifact.TargetVersion
+		_ = recordEvent(a.Identity, e)
+	})
+}
+
+func forPending(id Identity, executable string, visit func(Attempt)) {
 	dirs, _ := os.ReadDir(filepath.Join(id.Root, "update", "attempts"))
 	for _, d := range dirs {
 		if !d.IsDir() || !regexpID(d.Name()) {
@@ -424,6 +438,6 @@ func ConfirmPending(id Identity, executable string) {
 		if err != nil || !a.Ready || a.Target != executable || a.Artifact.TargetVersion != id.CurrentVersion || a.Identity.Profile != id.Profile || a.Identity.KeyHash != id.KeyHash || a.Identity.BaseURL != id.BaseURL {
 			continue
 		}
-		Activated(a)
+		visit(a)
 	}
 }
