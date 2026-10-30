@@ -136,8 +136,8 @@ func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *
 		if !clientlabel.Visible(entry.ClientLabel, scope) {
 			continue
 		}
-		at, err := time.Parse(time.RFC3339Nano, entry.Metadata.CreatedAt)
-		if entry.ID == "" || err != nil {
+		at, ok := recording.ParseTime(entry.Metadata.CreatedAt)
+		if entry.ID == "" || !ok {
 			p.warn("INVALID_TIMESTAMP_SKIPPED")
 			continue
 		}

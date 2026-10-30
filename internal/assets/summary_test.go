@@ -223,6 +223,45 @@ func TestSummaryLatestPayloadCapsPreserveCounts(t *testing.T) {
 	}
 }
 
+func TestSummaryRecordingsCompatibleCreatedAt(t *testing.T) {
+	previous := time.Local
+	time.Local = time.FixedZone("review-local", 8*60*60)
+	t.Cleanup(func() { time.Local = previous })
+	for _, created := range []string{
+		"2026-10-22 09:00:00",
+		"2026-10-22T09:00:00",
+		"2026-10-22T09:00:00+0800",
+		"2026-10-22 09:00:00 +0800",
+		"2026-10-22",
+		"2026-10-21T20:00:00Z",
+	} {
+		t.Run(created, func(t *testing.T) {
+			s, stores := summaryFixture(t)
+			for id, stamp := range map[string]string{
+				"older":    "2026-10-22T00:00:00+09:00",
+				"latest":   created,
+				"next-day": "2026-10-23T00:00:00+08:00",
+				"invalid":  "not-a-time",
+			} {
+				if _, err := stores.Recordings.Ingest(id, recording.Metadata{Name: id, CreatedAt: stamp}, "phone-a"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}, "types": {"recordings"}})
+			r := out.Assets["recordings"]
+			if out.Partial || r.Count == nil || *r.Count != 1 || r.Latest == nil {
+				t.Fatalf("supported recording missing: %+v", r)
+			}
+			if str(r.Latest.Data, "recordingId") != "latest" || str(r.Latest.Data, "created_at") != created {
+				t.Fatalf("incorrect latest or changed original timestamp: %+v", r.Latest)
+			}
+			if len(r.Warnings) != 1 || r.Warnings[0].Code != "INVALID_TIMESTAMP_SKIPPED" || r.Warnings[0].Count != 1 {
+				t.Fatalf("expected only genuinely invalid timestamp to be skipped: %+v", r.Warnings)
+			}
+		})
+	}
+}
+
 func TestSummaryDayBoundariesUseHostZoneAndDST(t *testing.T) {
 	previous := time.Local
 	t.Cleanup(func() { time.Local = previous })
