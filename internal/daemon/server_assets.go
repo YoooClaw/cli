@@ -14,6 +14,9 @@ import (
 )
 
 func assetKind(path string) string {
+	if path == "/assets/summary" {
+		return "summary"
+	}
 	if _, ok := assets.ReminderRoute(path); ok {
 		return "reminders"
 	}
@@ -34,7 +37,7 @@ func assetKind(path string) string {
 func (s *server) capabilities() []string {
 	out := append([]string(nil), Capabilities...)
 	out = append(out, "assets.notifications.read.v1", "assets.web-pages.read.v1",
-		"assets.reminders.read.v1", "assets.locations.read.v1", "assets.calendars.read.v1", "assets.health-data.read.v1", "assets.health-data.sleep.read.v1")
+		"assets.reminders.read.v1", "assets.locations.read.v1", "assets.calendars.read.v1", "assets.health-data.read.v1", "assets.health-data.sleep.read.v1", "assets.summary.read.v1")
 	return out
 }
 
@@ -65,7 +68,7 @@ func writeAssetError(w http.ResponseWriter, e *assets.Error) {
 
 // messageBridge only forwards POST. Accept its bounded GET envelope without
 // exposing a write operation or changing the public GET/query/cursor contract.
-func (s *server) handleAssetRequest(w http.ResponseWriter, r *http.Request, kind string) {
+func (s *server) handleAssetRequest(w http.ResponseWriter, r *http.Request, kind string, auth authResult) {
 	if r.Method == http.MethodPost {
 		var envelope struct {
 			Method string          `json:"method"`
@@ -81,6 +84,10 @@ func (s *server) handleAssetRequest(w http.ResponseWriter, r *http.Request, kind
 	} else if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET, POST")
 		writeAssetError(w, &assets.Error{Status: 405, Code: "METHOD_NOT_ALLOWED", Message: "Only asset reads are supported", Action: "none"})
+		return
+	}
+	if kind == "summary" {
+		s.handleAssetSummary(w, r, auth)
 		return
 	}
 	if kind == "reminders" {

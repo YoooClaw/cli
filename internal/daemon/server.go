@@ -433,7 +433,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case assetKind(path) != "":
-		s.handleAssetRequest(w, r, assetKind(path))
+		s.handleAssetRequest(w, r, assetKind(path), authCtx)
 	case path == "/daemon/status" && r.Method == http.MethodGet:
 		s.handleStatus(w)
 	case path == "/daemon/stop" && r.Method == http.MethodPost:
