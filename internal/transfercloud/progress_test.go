@@ -186,7 +186,7 @@ func TestDownloadProgressSlowCloudProbe(t *testing.T) {
 	startTime := time.Now()
 	c := mockOSSClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == apiPath+"/download-url" {
-			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL})
+			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL, "expiresAt": time.Now().Add(time.Hour).UnixMilli()})
 			return
 		}
 		if r.URL.Path == "/fulfillment/transfer/tr_probe/download-progress" {
