@@ -74,6 +74,12 @@ func executeTransferImport(ctx context.Context, req transferjob.Request, progres
 		return errors.New("TRANSFER_PLAN_INVALID")
 	}
 	log(fmt.Sprintf("validation.completed elapsedMs=%d", time.Since(stageStarted).Milliseconds()))
+	// Preview owns a verified staging copy; release the download before target writes.
+	stage, stageStarted = "download_cleanup", time.Now()
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	log("download.archive_removed")
 	stage, stageStarted = "download_completion_report", time.Now()
 	// Preview performs the existing archive/manifest/blob checks before reporting download completion.
 	if err = emit("DOWNLOAD_COMPLETED"); err != nil {

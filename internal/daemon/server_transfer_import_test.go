@@ -93,7 +93,13 @@ func TestImportExecutorOrdersVerificationAndPreservesPartialFailure(t *testing.T
 				handle: func(_ context.Context, r transfer.Request) (any, error) {
 					steps = append(steps, r.Action)
 					if r.Action == "preview" {
+						if _, err := os.Stat(archive); err != nil {
+							t.Fatal("archive removed before validation", err)
+						}
 						return map[string]any{"localTransferId": "local", "planId": "plan"}, nil
+					}
+					if _, err := os.Stat(archive); !os.IsNotExist(err) {
+						t.Fatal("archive must be removed before target writes")
 					}
 					return map[string]any{"state": state}, nil
 				},
