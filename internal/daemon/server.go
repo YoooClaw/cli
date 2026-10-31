@@ -38,6 +38,7 @@ import (
 	"github.com/YoooClaw/cli/internal/relay"
 	"github.com/YoooClaw/cli/internal/reminders"
 	"github.com/YoooClaw/cli/internal/transfer"
+	"github.com/YoooClaw/cli/internal/transferjob"
 	updater "github.com/YoooClaw/cli/internal/update"
 	"github.com/YoooClaw/cli/internal/version"
 )
@@ -183,6 +184,12 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			Recordings:    recordingStorage,
 		},
 	}
+	if err := srv.startTransferImports(); err != nil {
+		srv.logger.Warn("[transfer] automatic import unavailable: invalid fulfillment configuration; check cloud host and report URL override")
+	}
+	if srv.transferImports != nil {
+		defer srv.transferImports.Stop()
+	}
 	if mode == config.IngressProxied {
 		srv.egress = resolveProxyEgress(opts, cfg, logger)
 	}
@@ -270,6 +277,9 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			if sup := srv.supervisor(); sup != nil {
 				sup.StopAll(reason)
 			}
+			if srv.transferImports != nil {
+				srv.transferImports.Cancel()
+			}
 			// 给 in-flight 请求 3 秒收尾（正在落盘的 ingest 批次能写完），
 			// 超时再硬关，保证退出不会被慢客户端拖死。
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -308,6 +318,7 @@ type server struct {
 	recordingStorage      *recording.Storage
 	recordingEventLog     *recording.EventLog
 	transfer              *transfer.Service
+	transferImports       *transferjob.Service
 	ingressMode           string
 	token                 string
 	ignored               map[string]bool
@@ -463,6 +474,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleWebPageIndex(w, r, authCtx)
 	case path == "/web-pages/tracking" && r.Method == http.MethodPost:
 		s.handleWebPageTracking(w, r, authCtx)
+	case path == "/transfer/import/start" && r.Method == http.MethodPost:
+		s.handleTransferImportStart(w, r, authCtx)
 	case path == "/transfer" && r.Method == http.MethodPost:
 		s.handleTransfer(w, r, authCtx)
 	case path == "/monitors" || strings.HasPrefix(path, "/monitors/"):

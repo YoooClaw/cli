@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -28,10 +29,12 @@ const notificationBatchSize = 500
 // 导入」是同一个约束。
 type Service struct {
 	// Dir 是 staging 目录（<profile>/transfers）。
+	Home          string // Trusted runtime override for tests; never accepted from requests.
 	Dir           string
 	Roots         Roots
 	Notifications *notif.Storage
 	Recordings    *recording.Storage
+	ctx           context.Context
 	mu            sync.Mutex
 }
 
@@ -61,19 +64,27 @@ type Result struct {
 }
 
 type plan struct {
-	Decisions                []Decision     `json:"decisions"`
-	TargetVersion            string         `json:"targetVersion"`
-	Warnings                 []string       `json:"warnings"`
-	TargetWarnings           []string       `json:"targetWarnings"`
-	NotificationMemoryPolicy string         `json:"notificationMemoryPolicy"`
-	Capabilities             map[string]any `json:"capabilities"`
-	CloudTaskID              string         `json:"cloudTaskId,omitempty"`
+	Decisions                []Decision      `json:"decisions"`
+	TargetVersion            string          `json:"targetVersion"`
+	Warnings                 []string        `json:"warnings"`
+	TargetWarnings           []string        `json:"targetWarnings"`
+	NotificationMemoryPolicy string          `json:"notificationMemoryPolicy"`
+	Capabilities             map[string]any  `json:"capabilities"`
+	Workspace                []WorkspaceItem `json:"workspace,omitempty"`
+	CloudTaskID              string          `json:"cloudTaskId,omitempty"`
 }
 
 // Handle 串行执行一个请求（同一时刻只跑一个迁移动作）。
-func (s *Service) Handle(req Request) (any, error) {
+func (s *Service) Handle(req Request) (any, error) { return s.HandleContext(context.Background(), req) }
+func (s *Service) HandleContext(parent context.Context, req Request) (any, error) {
+	ctx, cancel := context.WithTimeout(parent, Timeout())
+	defer cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if e := ctx.Err(); e != nil {
+		return nil, e
+	}
+	s.ctx = ctx
 	switch req.Action {
 	case "capabilities":
 		return Capabilities(), nil
@@ -145,11 +156,18 @@ func (s *Service) preview(m *Manifest) (*plan, error) {
 		items = append(items, planned{Type: r.Type, RecordID: r.RecordID, Action: action, Current: cur})
 		decisions = append(decisions, Decision{Type: r.Type, RecordID: r.RecordID, Action: action})
 	}
+	workspace, err := s.workspacePlan(m)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range workspace {
+		decisions = append(decisions, Decision{Type: item.Category, RecordID: item.ID, Action: item.Action})
+	}
 	// targetVersion 只覆盖计划涉及的记录的当前状态：通知 ingress 是持续的，
 	// 用全量目标数据做指纹的话，preview 与 import 之间任何一条无关新通知都会
 	// 让计划失效。收窄之后仍能挡住「目标那条记录变了」的真实漂移。
 	return &plan{
-		Decisions: decisions, TargetVersion: sha(canonical(items)), Warnings: m.Warnings,
+		Decisions: decisions, TargetVersion: sha(canonical(map[string]any{"records": items, "workspace": workspace})), Warnings: m.Warnings, Workspace: workspace,
 		TargetWarnings: targetWarnings, NotificationMemoryPolicy: notif.MemoryPolicySkipHistory,
 		Capabilities: Capabilities(),
 	}, nil
@@ -177,7 +195,7 @@ func (s *Service) pruneStaging() {
 
 // stagePackage 把外部包放进私有 staging 目录并全量校验。目录包只复制清单列出的
 // 资源；tar.gz 包严格解包后删掉清单没引用的 blob，两种来源在 staging 里形态一致。
-func stagePackage(source, local string) (*Manifest, error) {
+func stagePackage(ctx context.Context, source, local string) (*Manifest, error) {
 	info, err := os.Stat(source)
 	if err != nil {
 		return nil, err
@@ -186,18 +204,16 @@ func stagePackage(source, local string) (*Manifest, error) {
 		return nil, err
 	}
 	if info.Mode().IsRegular() {
-		if err := ExtractArchive(source, local); err != nil {
+		if err := extractArchiveContext(ctx, source, local); err != nil {
 			return nil, err
 		}
-		m, err := ReadPackage(local, ReadOptions{})
+		m, err := ReadPackage(local, ReadOptions{Context: ctx})
 		if err != nil {
 			return nil, err
 		}
 		listed := map[string]bool{}
-		for _, r := range m.Records {
-			for _, a := range r.Assets {
-				listed[a.Hash] = true
-			}
+		for _, h := range blobHashes(m) {
+			listed[h] = true
 		}
 		names, err := os.ReadDir(filepath.Join(local, "blobs"))
 		if err != nil {
@@ -212,9 +228,20 @@ func stagePackage(source, local string) (*Manifest, error) {
 		}
 		return m, nil
 	}
-	m, err := ReadPackage(source, ReadOptions{})
+	m, err := ReadPackage(source, ReadOptions{Context: ctx})
 	if err != nil {
 		return nil, err
+	}
+	var bytes int64
+	for _, h := range blobHashes(m) {
+		st, e := os.Stat(filepath.Join(source, "blobs", h))
+		if e != nil {
+			return nil, e
+		}
+		bytes += st.Size()
+	}
+	if e := fsutil.RequireSpace(local, bytes+MaxManifestBytes); e != nil {
+		return nil, fail("INSUFFICIENT_SPACE")
 	}
 	// 不递归复制包内任意内容，只复制校验过的清单与资源。
 	mf, err := safeFile(source, "manifest.json")
@@ -224,22 +251,16 @@ func stagePackage(source, local string) (*Manifest, error) {
 	if err := copyFile(mf, filepath.Join(local, "manifest.json")); err != nil {
 		return nil, err
 	}
-	for _, r := range m.Records {
-		for _, a := range r.Assets {
-			dest := filepath.Join(local, "blobs", a.Hash)
-			if pathExists(dest) {
-				continue
-			}
-			src, err := safeFile(source, "blobs/"+a.Hash)
-			if err != nil {
-				return nil, err
-			}
-			if err := copyFile(src, dest); err != nil {
-				return nil, err
-			}
+	for _, h := range blobHashes(m) {
+		src, err := safeFile(source, "blobs/"+h)
+		if err != nil {
+			return nil, err
+		}
+		if err := copyFileContext(ctx, src, filepath.Join(local, "blobs", h)); err != nil {
+			return nil, err
 		}
 	}
-	return ReadPackage(local, ReadOptions{})
+	return ReadPackage(local, ReadOptions{Context: ctx})
 }
 
 // stage 校验包、只复制清单列出的资源到私有 staging 目录，再生成预览计划。
@@ -259,7 +280,7 @@ func (s *Service) stage(file, taskID string) (any, error) {
 		_ = os.RemoveAll(local)
 		return nil, err
 	}
-	verified, err := stagePackage(source, local)
+	verified, err := stagePackage(s.ctx, source, local)
 	if err != nil {
 		return cleanup(err)
 	}
@@ -356,6 +377,9 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 		}
 	}
 	for _, unit := range units {
+		if e := s.ctx.Err(); e != nil {
+			return nil, e
+		}
 		var outcomes []string
 		var err error
 		if unit[0].Type == TypeNotifications {
@@ -372,7 +396,47 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 				results = append(results, Result{Type: r.Type, RecordID: r.RecordID, Outcome: outcomes[i]})
 			}
 		}
-		_ = progress()
+		if err := progress(); err != nil {
+			return nil, err
+		}
+	}
+	var workspaceResults []WorkspaceResult
+	var migrationIndex string
+	if m.SchemaVersion == 2 {
+		workspaceResults, err = s.applyWorkspace(m, local, fresh.Workspace)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range workspaceResults {
+			errText := ""
+			if r.Outcome == OutcomeFailed {
+				errText = r.Reason
+			}
+			results = append(results, Result{Type: r.Category, RecordID: r.ID, Outcome: r.Outcome, Error: errText})
+		}
+		migrationIndex, err = s.writeMigrationIndex(m, workspaceResults)
+		if err != nil {
+			results = append(results, Result{Type: "migration-index", Outcome: OutcomeFailed, Error: "INDEX_WRITE_FAILED"})
+		}
+		good := true
+		for _, r := range results {
+			if r.Outcome == OutcomeFailed || r.Outcome == OutcomeConflict {
+				good = false
+			}
+		}
+		if good && len(m.Seen) > 0 {
+			if s.Notifications == nil {
+				return nil, fail("STORAGE_UNAVAILABLE")
+			}
+			for day, v := range m.Seen {
+				if err := s.Notifications.ImportTransferSeen(day, v.IDs, v.Keys); err != nil {
+					results = append(results, Result{Type: "notification-index", RecordID: day, Outcome: OutcomeFailed, Error: "INDEX_WRITE_FAILED"})
+				}
+			}
+		}
+		if err := progress(); err != nil {
+			return nil, err
+		}
 	}
 	// 只按实际写入结果判定。源端导出的 warning 会一直跟着 manifest，
 	// 不能让同一个包每次导入都报 PARTIAL。
@@ -385,8 +449,9 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 	}
 	result := map[string]any{
 		"state": state, "planId": stored.PlanID, "localTransferId": localID, "results": results,
-		"cloudTaskId": stored.Plan.CloudTaskID,
-		"warnings":    m.Warnings, "targetWarnings": fresh.TargetWarnings, "reportPath": reportPath,
+		"cloudTaskId":      stored.Plan.CloudTaskID,
+		"workspaceResults": workspaceResults, "migrationIndex": migrationIndex,
+		"warnings": m.Warnings, "targetWarnings": fresh.TargetWarnings, "reportPath": reportPath,
 	}
 	if err := writePrivateJSON(reportPath, result); err != nil {
 		return nil, err
@@ -465,15 +530,15 @@ func (s *Service) importOne(r Record, packageRoot string) (string, error) {
 			return "", fail("STORAGE_UNAVAILABLE")
 		}
 		err = s.Recordings.ImportEntry(r.RecordID, func(cur *recording.Entry) (*recording.Entry, error) {
-			return mergeEntry(r, root, packageRoot, cur, &outcome)
+			return mergeEntry(s.ctx, r, root, packageRoot, cur, &outcome)
 		})
 	case TypeImages:
 		err = image.ImportEntry(root, r.RecordID, func(cur *image.Entry) (*image.Entry, error) {
-			return mergeEntry(r, root, packageRoot, cur, &outcome)
+			return mergeEntry(s.ctx, r, root, packageRoot, cur, &outcome)
 		})
 	case TypeWebPages:
 		err = webpage.ImportEntry(root, r.RecordID, func(cur *webpage.Entry) (*webpage.Entry, error) {
-			return mergeEntry(r, root, packageRoot, cur, &outcome)
+			return mergeEntry(s.ctx, r, root, packageRoot, cur, &outcome)
 		})
 	default:
 		err = fail("INVALID_SCOPE")

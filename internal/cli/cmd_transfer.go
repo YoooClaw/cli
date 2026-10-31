@@ -16,9 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// transferTimeout 覆盖大包的校验与复制；与插件 CLI 的 30 分钟一致。
-const transferTimeout = 30 * time.Minute
-
 // maxIssueRows 是输出里逐条列出的冲突/失败记录上限；完整明细在 report.json。
 const maxIssueRows = 50
 
@@ -59,6 +56,7 @@ func newTransferCmd() *cobra.Command {
 		RunE:  run(transferImport),
 	}
 	imp.Flags().String("task", "", "迁移 taskId；自动下载、校验、导入；云端包由服务端在 24 小时后自动删除")
+	imp.Flags().String("transfer-id", "", "履约 transferId；仅 --task 可用，需部署配置履约进度接口")
 	imp.Flags().String("file", "", "本地数据包（.tar.gz 压缩包或包目录）；只暂存、校验与预览，不合并")
 	imp.Flags().Bool("dry-run", false, "--task 只下载并预览；--file 本身只预览")
 	imp.Flags().String("local", "", "预览返回的 localTransferId")
@@ -85,7 +83,7 @@ func transferRequest(ctx *clictx.Context, req transfer.Request) (map[string]any,
 	if err != nil {
 		return nil, err
 	}
-	status, body, err := c.WithTimeout(transferTimeout).Request("POST", "/transfer", req)
+	status, body, err := c.WithTimeout(transfer.Timeout()).Request("POST", "/transfer", req)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +111,17 @@ func summarize(result map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range result {
 		out[k] = v
+	}
+	if rows, ok := out["workspaceResults"].([]any); ok {
+		counts := map[string]int{}
+		for _, raw := range rows {
+			if row, ok := raw.(map[string]any); ok {
+				outcome, _ := row["outcome"].(string)
+				counts[outcome]++
+			}
+		}
+		out["workspaceCounts"] = counts
+		delete(out, "workspaceResults") // Full paths remain in migrationIndex or the partial report.
 	}
 	for _, key := range []string{"decisions", "results"} {
 		rows, ok := result[key].([]any)
@@ -251,7 +260,7 @@ func transferExport(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, e
 		}
 	}
 	if cloud != nil {
-		uploadCtx, cancel := context.WithTimeout(cmd.Context(), transferTimeout)
+		uploadCtx, cancel := context.WithTimeout(cmd.Context(), transfer.Timeout())
 		defer cancel()
 		receipt, err := cloud.Upload(uploadCtx, output)
 		if err != nil {
@@ -272,6 +281,9 @@ func transferImport(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, e
 			return nil, errs.New(errs.CodeInvalidArgument, "--task 不能与 --file、--local、--plan 或 --resume 同用")
 		}
 		return transferImportTask(ctx, cmd, task)
+	}
+	if flagStr(cmd, "transfer-id") != "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "--transfer-id 只能与 --task 同用")
 	}
 	if file != "" && local != "" {
 		return nil, errs.New("YOOOCLAW_TRANSFER_FILE_OR_LOCAL", "--file 与 --local 只能二选一")
@@ -320,6 +332,21 @@ func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any
 	if err := cloud.CheckAuth(); err != nil {
 		return nil, err
 	}
+	var progress *transfercloud.ProgressOptions
+	if transferID := flagStr(cmd, "transfer-id"); transferID != "" {
+		o := transfercloud.ProgressOptions{TransferID: transferID, BaseURL: cloud.ReportBaseURL(os.Getenv("YOOOCLAW_TRANSFER_REPORT_BASE_URL"))}
+		if raw := os.Getenv("YOOOCLAW_TRANSFER_PROGRESS_INTERVAL"); raw != "" {
+			var e error
+			o.Interval, e = time.ParseDuration(raw)
+			if e != nil {
+				return nil, errs.New(errs.CodeInvalidArgument, "YOOOCLAW_TRANSFER_PROGRESS_INTERVAL 无效")
+			}
+		}
+		if e := cloud.ValidateProgress(o); e != nil {
+			return nil, e
+		}
+		progress = &o
+	}
 	// Refuse older daemons before download: they do not support OSS task provenance.
 	caps, err := transferRequest(ctx, transfer.Request{Action: "capabilities"})
 	if err != nil {
@@ -340,10 +367,16 @@ func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	downloadCtx, cancel := context.WithTimeout(cmd.Context(), transferTimeout)
+	downloadCtx, cancel := context.WithTimeout(cmd.Context(), transfer.Timeout())
 	defer cancel()
 	path := filepath.Join(dir, "migration.tar.gz")
-	if err = cloud.Download(downloadCtx, id, path); err != nil {
+	var progressErr error
+	if progress == nil {
+		err = cloud.Download(downloadCtx, id, path)
+	} else {
+		err, progressErr = cloud.DownloadWithProgress(downloadCtx, id, path, *progress)
+	}
+	if err != nil {
 		return nil, err
 	}
 	preview, err := transferRequest(ctx, transfer.Request{Action: "preview", File: path, CloudTaskID: id})
@@ -351,6 +384,9 @@ func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any
 		return nil, err
 	}
 	if flagBool(cmd, "dry-run") {
+		if progressErr != nil {
+			preview["progressWarning"] = progressErr.Error()
+		}
 		return summarize(preview), nil
 	}
 	local, _ := preview["localTransferId"].(string)
@@ -363,6 +399,9 @@ func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any
 		return nil, err
 	}
 	result["taskId"] = id
+	if progressErr != nil {
+		result["progressWarning"] = progressErr.Error()
+	}
 	if result["state"] != "SUCCEEDED" {
 		result["nextCommand"] = "yoooclaw transfer import --local " + local + " --plan " + plan + " --resume"
 	}

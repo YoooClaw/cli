@@ -107,6 +107,7 @@ func TestArchiveExportRefusesExistingAndSourceOutputs(t *testing.T) {
 type rawEntry struct {
 	name, body, typ, prefix string
 	badChecksum             bool
+	declaredSize            int64
 }
 
 // rawTar 手工拼 ustar 条目，用来构造导出端永远不会产出的恶意包。
@@ -120,6 +121,16 @@ func rawTar(entries ...rawEntry) []byte {
 		put(108, "0000000\x00")
 		put(116, "0000000\x00")
 		put(124, octal(len(e.body), 11)+"\x00")
+		if e.declaredSize > 0 {
+			// Base-256 tar size allows testing the byte ceiling without allocating 10 GB.
+			clear(h[124:136])
+			n := e.declaredSize
+			for i := 135; i > 124; i-- {
+				h[i] = byte(n)
+				n >>= 8
+			}
+			h[124] = 0x80
+		}
 		put(136, "00000000000\x00")
 		put(148, "        ")
 		typ := e.typ
@@ -188,27 +199,27 @@ func TestExtractArchiveRejectsUnsafeAndMalformedInput(t *testing.T) {
 	tw = tar.NewWriter(&gnu)
 	_ = tw.WriteHeader(&tar.Header{Name: "blobs/" + strings.Repeat("c", 64) + strings.Repeat("/x", 40), Size: 0, Mode: 0o600, Format: tar.FormatGNU})
 	_ = tw.Close()
-	bomb := rawTar(manifest, rawEntry{name: "blobs/" + strings.Repeat("b", 64), body: string(make([]byte, 80<<20))})
+	bomb := rawTar(manifest, rawEntry{name: "blobs/" + strings.Repeat("b", 64), declaredSize: MaxFullBytes + MaxManifestBytes + 1})
 	full := gz(t, rawTar(manifest))
 	cases := map[string]struct {
 		archive []byte
 		want    string
 	}{
-		"parent traversal":   {gz(t, rawTar(manifest, rawEntry{name: "../escape", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"absolute path":      {gz(t, rawTar(manifest, rawEntry{name: "/etc/passwd", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"symlink":            {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "2"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"hard link":          {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "1"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"pax header":         {gz(t, pax.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
-		"gnu long name":      {gz(t, gnu.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
-		"unknown file":       {gz(t, rawTar(manifest, rawEntry{name: "notes.txt", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"duplicate":          {gz(t, rawTar(manifest, manifest)), "ARCHIVE_DUPLICATE_ENTRY"},
-		"bad checksum":       {gz(t, rawTar(rawEntry{name: "manifest.json", body: "{}", badChecksum: true})), "ARCHIVE_INVALID"},
-		"missing manifest":   {gz(t, rawTar(rawEntry{name: blob, body: "x"})), "ARCHIVE_INVALID"},
-		"not gzip":           {[]byte("not a gzip file"), "ARCHIVE_INVALID"},
-		"truncated":          {full[:30], "ARCHIVE_INVALID"},
-		"compression bomb":   {gz(t, bomb), "ARCHIVE_TOO_LARGE"},
-		"minimal valid":      {full, "OK"},
-		"dot-slash accepted": {gz(t, rawTar(rawEntry{name: "./manifest.json", body: "{}"})), "OK"},
+		"parent traversal":      {gz(t, rawTar(manifest, rawEntry{name: "../escape", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"absolute path":         {gz(t, rawTar(manifest, rawEntry{name: "/etc/passwd", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"symlink":               {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "2"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"hard link":             {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "1"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"pax header":            {gz(t, pax.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
+		"gnu long name":         {gz(t, gnu.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
+		"unknown file":          {gz(t, rawTar(manifest, rawEntry{name: "notes.txt", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"duplicate":             {gz(t, rawTar(manifest, manifest)), "ARCHIVE_DUPLICATE_ENTRY"},
+		"bad checksum":          {gz(t, rawTar(rawEntry{name: "manifest.json", body: "{}", badChecksum: true})), "ARCHIVE_INVALID"},
+		"missing manifest":      {gz(t, rawTar(rawEntry{name: blob, body: "x"})), "ARCHIVE_INVALID"},
+		"not gzip":              {[]byte("not a gzip file"), "ARCHIVE_INVALID"},
+		"truncated":             {full[:30], "ARCHIVE_INVALID"},
+		"expanded byte ceiling": {gz(t, bomb), "ARCHIVE_TOO_LARGE"},
+		"minimal valid":         {full, "OK"},
+		"dot-slash accepted":    {gz(t, rawTar(rawEntry{name: "./manifest.json", body: "{}"})), "OK"},
 	}
 	names := make([]string, 0, len(cases))
 	for name := range cases {
@@ -238,5 +249,16 @@ func TestCapabilitiesAdvertiseArchiveSupport(t *testing.T) {
 		if IsArchivePath(path) != want {
 			t.Errorf("IsArchivePath(%q) != %v", path, want)
 		}
+	}
+}
+
+func TestExtractArchiveAcceptsHighlyCompressibleWorkspaceData(t *testing.T) {
+	raw := rawTar(rawEntry{name: "manifest.json", body: "{}"}, rawEntry{name: "blobs/" + strings.Repeat("b", 64), body: strings.Repeat("x", 100<<20)})
+	archive := gz(t, raw)
+	if len(archive) > 1<<20 {
+		t.Fatalf("fixture not highly compressed: %d", len(archive))
+	}
+	if code := extractCode(t, archive); code != "OK" {
+		t.Fatalf("legal high-ratio file rejected: %s", code)
 	}
 }

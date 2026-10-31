@@ -56,7 +56,7 @@ func TestScheduledCheckWaitsAcrossRestartAndRecordingActivity(t *testing.T) {
 	}
 }
 
-func TestRepeatedCheckResetsCountdown(t *testing.T) {
+func TestRepeatedCheckPreservesCountdown(t *testing.T) {
 	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected periodic check") })
 	now := time.Now()
 	offer := Artifact{TargetVersion: "0.13.0"}
@@ -64,14 +64,38 @@ func TestRepeatedCheckResetsCountdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &Scheduler{}
-	launch := func(Artifact) error { t.Fatal("installed before renewed deadline"); return nil }
+	launches := 0
+	launch := func(Artifact) error { launches++; return nil }
 	if err := s.Tick(context.Background(), id, c, now, true, true, launch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ScheduleCheck(id, offer, now.Add(5*time.Minute)); err != nil {
+	if due, err := ScheduleCheck(id, offer, now.Add(5*time.Minute)); err != nil || !due.Equal(now.Add(10*time.Minute)) {
 		t.Fatal(err)
 	}
 	if err := s.Tick(context.Background(), id, c, now.Add(10*time.Minute), true, true, launch); err != nil {
 		t.Fatal(err)
+	}
+	if launches != 1 {
+		t.Fatal(launches)
+	}
+}
+
+func TestManualCheckClearsFailureCooldown(t *testing.T) {
+	id, c := fixture(t, func(w http.ResponseWriter, r *http.Request) { t.Fatal("unexpected check") })
+	now := time.Now()
+	offer := Artifact{TargetVersion: "0.13.0"}
+	ScheduleCheck(id, offer, now.Add(-10*time.Minute))
+	s := &Scheduler{}
+	s.Tick(context.Background(), id, c, now, true, true, func(Artifact) error { return nil })
+	due, err := ScheduleCheck(id, offer, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	launched := false
+	if err := s.Tick(context.Background(), id, c, due, true, true, func(Artifact) error { launched = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !launched {
+		t.Fatal("manual check did not clear cooldown")
 	}
 }

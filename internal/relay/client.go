@@ -265,6 +265,12 @@ func (c *Client) readLoop(conn *websocket.Conn, done chan<- error, connectionID 
 			c.opts.Logger.Warn("Relay tunnel: received invalid frame, ignoring")
 			continue
 		}
+		if stringField(frame, "type") == "request" {
+			path := strings.SplitN(stringField(frame, "path"), "?", 2)[0]
+			if path == "/transfer/import/start" {
+				c.opts.Logger.Info(fmt.Sprintf("Relay HTTP received connection=%s id=%q method=%q path=%q", connectionID, preview(stringField(frame, "id"), 100), preview(stringField(frame, "method"), 20), preview(path, 160)))
+			}
+		}
 		if stringField(frame, "type") == "req" {
 			c.opts.Logger.Info(fmt.Sprintf("Relay RPC received connection=%s id=%q method=%q", connectionID, preview(stringField(frame, "id"), 100), preview(stringField(frame, "method"), 100)))
 		}
@@ -403,11 +409,16 @@ func (c *Client) observeWrite(conn *websocket.Conn, operation string) func() {
 
 func (c *Client) logConnectionEnd(id, source string, started time.Time, err error) {
 	code := 0
+	reason := "unknown"
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) {
 		code = closeErr.Code
+		// Recognize only this public protocol reason; arbitrary close text can contain secrets.
+		if closeErr.Text == "replaced_by_new_connection" {
+			reason = closeErr.Text
+		}
 	}
-	c.opts.Logger.Info(fmt.Sprintf("Relay connection ended connection=%s source=%s lifetimeMs=%d inboundIdleMs=%d closeCode=%d", id, source, time.Since(started).Milliseconds(), time.Since(c.lastInbound()).Milliseconds(), code))
+	c.opts.Logger.Info(fmt.Sprintf("Relay connection ended connection=%s source=%s lifetimeMs=%d inboundIdleMs=%d closeCode=%d reason=%s", id, source, time.Since(started).Milliseconds(), time.Since(c.lastInbound()).Milliseconds(), code, reason))
 }
 
 // Stop 优雅停止客户端。

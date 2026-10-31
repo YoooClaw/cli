@@ -131,7 +131,7 @@ func daemonStart(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, erro
 	if managed, _ := serviceManaged(); managed {
 		lock, err := startStandalone(ctx)
 		if err != nil {
-			return nil, err
+			return recoverManagedStart(ctx, opts, runtime.GOOS, err)
 		}
 		result := map[string]any{"ok": true, "supervised": true, "autostart": true}
 		if lock != nil && lock.PID > 0 {
