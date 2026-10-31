@@ -105,7 +105,11 @@ func New(dir string, deps Dependencies) (*Service, error) {
 				return nil, e
 			}
 		}
+		s.info(job.Request.TransferID, fmt.Sprintf("import.recovered state=%s reported=%t", job.State, job.Reported))
 		s.jobs[job.Request.TransferID] = &job
+	}
+	if s.deps.Info != nil {
+		s.deps.Info(fmt.Sprintf("[transfer] import.jobs_loaded count=%d", len(s.jobs)))
 	}
 	go s.loop()
 	s.signal()

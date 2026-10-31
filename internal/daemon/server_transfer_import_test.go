@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YoooClaw/cli/internal/creds"
+	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/relay"
 	"github.com/YoooClaw/cli/internal/transfer"
 	"github.com/YoooClaw/cli/internal/transfercloud"
@@ -41,6 +42,7 @@ func TestAutomaticTransferRouteUsesRelayAndRejectsArbitraryInput(t *testing.T) {
 		if relayed {
 			r.Header.Set(relay.InternalHTTPHeader, "1")
 			r.Header.Set(relay.InternalClientLabelHeader, "target")
+			r.Header.Set(relay.InternalRequestIDHeader, "relay_import_probe")
 		}
 		resp, e := http.DefaultClient.Do(r)
 		if e != nil {
@@ -61,13 +63,28 @@ func TestAutomaticTransferRouteUsesRelayAndRejectsArbitraryInput(t *testing.T) {
 			t.Fatal(got)
 		}
 	}
+	raw, err := os.ReadFile(srv.logger.logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{`import.request_received requestId="relay_import_probe"`, `client="target"`, `transferId=one import.request_validated fileTaskId=`, `transferId=one import.response status=200 code=success requestId="relay_import_probe"`, `pid=`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %s in %s", want, text)
+		}
+	}
+	if strings.Contains(text, body) {
+		t.Fatal("raw request body leaked")
+	}
 }
 func TestImportExecutorOrdersVerificationAndPreservesPartialFailure(t *testing.T) {
 	for _, state := range []string{"SUCCEEDED", "PARTIAL"} {
 		t.Run(state, func(t *testing.T) {
 			var steps []string
+			var logs []string
 			var archive string
 			d := importDependencies{
+				log: func(line string) { logs = append(logs, line) },
 				download: func(_ context.Context, _ string, path string, _ transfercloud.ProgressOptions) (error, error) {
 					archive = path
 					steps = append(steps, "download")
@@ -90,6 +107,18 @@ func TestImportExecutorOrdersVerificationAndPreservesPartialFailure(t *testing.T
 			}
 			if _, e = os.Stat(archive); !os.IsNotExist(e) {
 				t.Fatal("temporary archive retained")
+			}
+			text := strings.Join(logs, "\n")
+			for _, want := range []string{"transferId=one download.completed bytes=7 elapsedMs=", "transferId=one validation.completed elapsedMs=", "transferId=one import.writing"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("missing %s: %s", want, text)
+				}
+			}
+			if state == "SUCCEEDED" && !strings.Contains(text, "import.written records=0 workspaceItems=0 elapsedMs=") {
+				t.Fatal(text)
+			}
+			if state == "PARTIAL" && !strings.Contains(text, "import.failed code=TRANSFER_IMPORT_PARTIAL") {
+				t.Fatal(text)
 			}
 		})
 	}
@@ -176,5 +205,64 @@ func TestAutomaticImportUsesRealArchiveAndImporterWithoutMetadata(t *testing.T) 
 	}
 	if !found {
 		t.Fatal("imported notification missing")
+	}
+}
+
+func TestTransferStageFailureLogsPreserveCodesWithoutProviderData(t *testing.T) {
+	for _, stage := range []string{"download", "validation", "download_completion_report", "import"} {
+		t.Run(stage, func(t *testing.T) {
+			const secret = "https://private.example/?token=SECRET"
+			var lines []string
+			deps := importDependencies{
+				log: func(line string) { lines = append(lines, line) },
+				download: func(_ context.Context, _ string, path string, _ transfercloud.ProgressOptions) (error, error) {
+					if stage == "download" {
+						return errs.New("YOOOCLAW_TRANSFER_CLOUD_DOWNLOAD_FAILED", secret), nil
+					}
+					return os.WriteFile(path, []byte("archive"), 0600), nil
+				},
+				handle: func(_ context.Context, r transfer.Request) (any, error) {
+					if stage == "validation" || (stage == "import" && r.Action == "import") {
+						return nil, &transfer.Error{Code: "CHECKSUM_MISMATCH", Detail: secret}
+					}
+					return map[string]any{"localTransferId": "local", "planId": "plan"}, nil
+				},
+			}
+			err := executeTransferImport(context.Background(), transferjob.Request{TransferID: "trace_job", FileTaskID: strings.Repeat("a", 32)}, transfercloud.ProgressOptions{}, deps, func(string) error {
+				if stage == "download_completion_report" {
+					return errors.New(secret)
+				}
+				return nil
+			})
+			if err == nil {
+				t.Fatal("expected failure")
+			}
+			text := strings.Join(lines, "\n")
+			for _, want := range []string{"transferId=trace_job", stage + ".failed code=", "elapsedMs=", "totalElapsedMs="} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("missing %s: %s", want, text)
+				}
+			}
+			if stage == "download" && !strings.Contains(text, "code=YOOOCLAW_TRANSFER_CLOUD_DOWNLOAD_FAILED") {
+				t.Fatal(text)
+			}
+			if stage == "validation" && !strings.Contains(text, "code=CHECKSUM_MISMATCH") {
+				t.Fatal(text)
+			}
+			if strings.Contains(text, "SECRET") || strings.Contains(text, "private.example") {
+				t.Fatal("provider data leaked")
+			}
+		})
+	}
+}
+
+func TestTransferErrorLogDoesNotTreatBareUserTextAsCode(t *testing.T) {
+	for _, message := range []string{"PRIVATE_USER_TEXT", "https://private.example/?token=SECRET"} {
+		if got := transferLogErrorCode(errors.New(message)); got != "TRANSFER_STAGE_FAILED" {
+			t.Fatalf("unexpected logged code: %s", got)
+		}
+	}
+	if got := transferLogErrorCode(errors.New("TRANSFER_PLAN_INVALID")); got != "TRANSFER_PLAN_INVALID" {
+		t.Fatal(got)
 	}
 }
