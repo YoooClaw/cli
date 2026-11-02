@@ -199,8 +199,17 @@ type ImageSection struct {
 	MaxBytes int64 `json:"maxBytes"`
 }
 
+// DataSection limits opaque user objects. A nil retention keeps them indefinitely.
+type DataSection struct {
+	MaxObjectBytes int64 `json:"maxObjectBytes"`
+	MaxInlineBytes int64 `json:"maxInlineBytes"`
+	QuotaBytes     int64 `json:"quotaBytes"`
+	RetentionDays  *int  `json:"retentionDays"`
+}
+
 // Config 是 per-profile config.json 的完整结构。
 type Config struct {
+	Data         DataSection         `json:"data"`
 	Version      int                 `json:"version"`
 	Daemon       DaemonSection       `json:"daemon"`
 	Auth         AuthSection         `json:"auth"`
@@ -218,6 +227,7 @@ type Config struct {
 func Default(credentialsPath string) Config {
 	return Config{
 		Version: ConfigVersion,
+		Data:    DataSection{MaxObjectBytes: 32 << 20, MaxInlineBytes: 512 << 10, QuotaBytes: 1 << 30},
 		Daemon: DaemonSection{
 			Bind:     DefaultBind,
 			Port:     DefaultPort,
