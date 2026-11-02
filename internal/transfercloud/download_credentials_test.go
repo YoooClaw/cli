@@ -112,8 +112,15 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 		}
 		if end == 0 {
 			heads.Add(1)
+			// Cross the refresh window before returning metadata, so every
+			// concurrent part observes the same clock. Advancing on each part
+			// can expire a freshly renewed URL while its response is in flight.
+			now.Add(int64(26 * time.Minute / time.Millisecond))
 		} else {
 			ranges.Add(1)
+			if r.URL.Query().Get("renewed") != "1" {
+				t.Error("range request did not use renewed URL")
+			}
 		}
 		if heads.Load() > 1 {
 			t.Error("download restarted")
@@ -131,7 +138,6 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 			}
 			left -= n
 		}
-		now.Add(int64(26 * time.Minute / time.Millisecond))
 	})
 	p := &renewingDownloadClient{cloud: c, taskID: testID, link: downloadLink{testID, signedURL, Number(now.Load() + int64(30*time.Minute/time.Millisecond))}, now: func() time.Time { return time.UnixMilli(now.Load()) }}
 	dir := t.TempDir()
@@ -147,7 +153,7 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 	}
 	defer f.Close()
 	n, err := io.Copy(io.Discard, f)
-	if err != nil || n != size || heads.Load() != 1 || ranges.Load() != 8 || refreshes.Load() == 0 {
+	if err != nil || n != size || heads.Load() != 1 || ranges.Load() != 8 || refreshes.Load() != 1 {
 		t.Fatalf("bytes=%d heads=%d ranges=%d refreshes=%d err=%v", n, heads.Load(), ranges.Load(), refreshes.Load(), err)
 	}
 }
