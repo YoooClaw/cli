@@ -26,6 +26,8 @@ type ProgressOptions struct {
 	Interval   time.Duration
 	// Called only for throttled report attempts, without exposing credentials or URLs.
 	ReportLog func(progress int, success bool)
+	// Local diagnostic heartbeat; never sends an extra server request.
+	DownloadLog func(written, total int64, elapsed, idle time.Duration)
 }
 
 // ReportBaseURL uses the file service environment when no deployment override exists.
@@ -62,7 +64,10 @@ type progressError struct{ permanent bool }
 
 func (e *progressError) Error() string { return errProgress.Error() }
 
-func (c *Client) sendProgress(ctx context.Context, o ProgressOptions, value int) error {
+func (c *Client) sendProgress(ctx context.Context, o ProgressOptions, value int) (reportErr error) {
+	started := time.Now()
+	observation := ReportObservation{Event: "download_progress", Progress: value, Code: "request_failed"}
+	defer func() { finishReport(ctx, observation, started, reportErr) }()
 	body, _ := json.Marshal(struct {
 		Progress int `json:"progress"`
 	}{value})
@@ -76,9 +81,12 @@ func (c *Client) sendProgress(ctx context.Context, o ProgressOptions, value int)
 	req.Header.Set("X-Api-Key-Id", c.apiKey)
 	resp, err := c.http.Do(req)
 	if err != nil {
+		observation.Code = transportFailure(err)
 		return errProgress
 	}
 	defer resp.Body.Close()
+	observation.HTTPStatus = resp.StatusCode
+	observation.Code = "http_error"
 	permanent := func(code int) bool {
 		return code == 400 || code == 401 || code == 403 || code == 404 || code == 409 || code == 410
 	}
@@ -90,8 +98,10 @@ func (c *Client) sendProgress(ctx context.Context, o ProgressOptions, value int)
 		Code    string `json:"code"`
 	}
 	if json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&bean) != nil {
+		observation.Code = "invalid_response"
 		return errProgress
 	}
+	observation.Code = bean.Code
 	if !bean.Success || bean.Code != "000000" {
 		return &progressError{bean.Code == "400" || bean.Code == "401" || bean.Code == "403" || bean.Code == "404" || bean.Code == "409" || bean.Code == "410"}
 	}
@@ -113,14 +123,19 @@ func (c *Client) DownloadWithProgress(ctx context.Context, id, path string, o Pr
 		interval = 15 * time.Second
 	}
 	interval += time.Duration(rand.Int64N(int64(time.Second)))
+	attempt := 0
 	reporter := newProgressReporter(ctx, interval, func(ctx context.Context, n int) error {
-		err := c.sendProgress(ctx, o, n)
+		attempt++
+		err := c.sendProgress(context.WithValue(ctx, reportAttemptKey{}, attempt), o, n)
 		if o.ReportLog != nil {
 			o.ReportLog(n, err == nil)
 		}
 		return err
 	})
+	monitor := newDownloadMonitor(o.DownloadLog, time.Minute)
+	defer monitor.stop()
 	downloadErr = c.download(ctx, id, path, func(_ int64, written int64, total int64) {
+		monitor.update(written, total)
 		if total > 0 && written >= 0 && written <= total {
 			// SDK callbacks report absolute written bytes (including checkpoint bytes),
 			// not network traffic. Across retries use a high water mark, never a sum.

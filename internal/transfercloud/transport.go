@@ -118,11 +118,12 @@ func (c *Client) download(ctx context.Context, id, path string, progress func(in
 	// Work entirely inside a private directory, including the SDK's temporary file.
 	downloaded := filepath.Join(checkpoint, "package.tar.gz")
 	err = retry(ctx, func() error {
-		rawURL, e := c.downloadURL(ctx, id)
+		link, e := c.downloadLink(ctx, id)
 		if e != nil {
 			return e
 		}
-		e = ossdownload.Download(ctx, c.http, rawURL, id, downloaded, checkpoint, MaxDownloadBytes, false, progress)
+		client := &renewingDownloadClient{cloud: c, taskID: id, link: link, now: time.Now}
+		e = ossdownload.Download(ctx, client, link.SignedURL, id, downloaded, checkpoint, MaxDownloadBytes, false, progress)
 		if e != nil {
 			return failure("CLOUD_DOWNLOAD_FAILED", "迁移包下载失败，任务 "+id)
 		}

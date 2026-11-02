@@ -229,3 +229,39 @@ func TestLifecycleLogsCorrelateJobsAndRedactProviderErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestStartupLogsShowDurableJobRecoveryWithoutReexecution(t *testing.T) {
+	dir := t.TempDir()
+	var runs atomic.Int32
+	d := deps()
+	d.Run = func(context.Context, Request, string, func(string) error) error { runs.Add(1); return nil }
+	first, err := New(dir, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = first.Accept(request("restore_log"), "main"); err != nil {
+		first.Stop()
+		t.Fatal(err)
+	}
+	wait(t, func() bool { first.mu.Lock(); defer first.mu.Unlock(); return first.jobs["restore_log"].Reported })
+	first.Stop()
+	var lines []string
+	var mu sync.Mutex
+	d.Info = func(line string) { mu.Lock(); defer mu.Unlock(); lines = append(lines, line) }
+	restored, err := New(dir, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.Stop()
+	mu.Lock()
+	text := strings.Join(lines, "\n")
+	mu.Unlock()
+	for _, want := range []string{"transferId=restore_log import.recovered state=done reported=true", "import.jobs_loaded count=1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %s: %s", want, text)
+		}
+	}
+	if runs.Load() != 1 {
+		t.Fatal("recovered successful task was run again")
+	}
+}

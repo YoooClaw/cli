@@ -69,7 +69,7 @@ func TestTransferCloudCommandRoundTrip(t *testing.T) {
 				case "/api/device/file/plugin/complete":
 					cloudReply(map[string]any{"taskId": id, "objectKey": key, "status": "COMPLETED", "fileSize": strconv.Itoa(len(uploaded)), "signedUrl": "never-print-this"})
 				case "/api/device/file/plugin/download-url":
-					cloudReply(map[string]any{"taskId": id, "signedUrl": "https://bucket.oss-cn-hangzhou.aliyuncs.com/" + key + "?signature=never-print-this"})
+					cloudReply(map[string]any{"taskId": id, "signedUrl": "https://bucket.oss-cn-hangzhou.aliyuncs.com/" + key + "?signature=never-print-this", "expiresAt": time.Now().Add(time.Hour).UnixMilli()})
 				case "/api/device/file/plugin/delete":
 					deletes++
 					cloudReply(true)

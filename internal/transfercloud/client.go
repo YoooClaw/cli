@@ -204,24 +204,31 @@ func (c *Client) Complete(ctx context.Context, id, key string) (*Receipt, error)
 	}
 	return &receipt, nil
 }
-func (c *Client) downloadURL(ctx context.Context, id string) (string, error) {
+
+type downloadLink struct {
+	TaskID    string `json:"taskId"`
+	SignedURL string `json:"signedUrl"`
+	ExpiresAt Number `json:"expiresAt"`
+}
+
+func (c *Client) downloadLink(ctx context.Context, id string) (downloadLink, error) {
+	var result downloadLink
 	if !ValidTaskID(id) {
-		return "", failure("INVALID_TASK", "迁移 taskId 无效")
-	}
-	var result struct {
-		TaskID    string `json:"taskId"`
-		SignedURL string `json:"signedUrl"`
+		return result, failure("INVALID_TASK", "迁移 taskId 无效")
 	}
 	if err := c.call(ctx, http.MethodPost, "/download-url", map[string]string{"taskId": id}, &result); err != nil {
-		return "", err
+		return result, err
 	}
 	if result.TaskID != id {
-		return "", failure("CLOUD_RESPONSE_INVALID", "迁移任务不匹配")
+		return result, failure("CLOUD_RESPONSE_INVALID", "迁移任务不匹配")
 	}
 	if _, err := validateOSSURL(result.SignedURL); err != nil {
-		return "", err
+		return result, err
 	}
-	return result.SignedURL, nil
+	if int64(result.ExpiresAt) <= time.Now().UnixMilli() {
+		return result, failure("CLOUD_RESPONSE_INVALID", "迁移下载链接有效期缺失或已过期")
+	}
+	return result, nil
 }
 func validObjectKey(id, key string) bool {
 	match := objectKeyRE.FindStringSubmatch(key)

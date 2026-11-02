@@ -62,7 +62,7 @@ func TestSDKDownloadResumesInterruptedRange(t *testing.T) {
 			return
 		}
 		if r.URL.Path == apiPath+"/download-url" {
-			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL})
+			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL, "expiresAt": time.Now().Add(time.Hour).UnixMilli()})
 			return
 		}
 		if r.Method != "GET" {

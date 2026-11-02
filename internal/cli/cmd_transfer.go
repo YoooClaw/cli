@@ -383,6 +383,10 @@ func transferImportTask(ctx *clictx.Context, cmd *cobra.Command, id string) (any
 	if err != nil {
 		return nil, err
 	}
+	// The daemon has retained verified staging data. Drop only our temporary download.
+	if err := os.RemoveAll(dir); err != nil {
+		return nil, err
+	}
 	if flagBool(cmd, "dry-run") {
 		if progressErr != nil {
 			preview["progressWarning"] = progressErr.Error()

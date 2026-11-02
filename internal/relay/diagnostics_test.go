@@ -2,6 +2,8 @@ package relay
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,5 +64,46 @@ func TestStatusWriteFailureIsLogged(t *testing.T) {
 	c.writeStatus("connected", "")
 	if got := strings.Join(l.lines, "\n"); !strings.Contains(got, "Relay status directory failed state=connected") {
 		t.Fatal(got)
+	}
+}
+
+func TestHTTPReceiveLogConnectsRequestToConnectionWithoutPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteJSON(Frame{"type": "request", "id": "relay-import", "method": "POST", "path": "/transfer/import/start?token=SECRET", "body": "PRIVATE_BODY"})
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4000, "replaced_by_new_connection"), time.Now().Add(time.Second))
+	}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	logs := &diagnosticLogger{}
+	c := NewClient(ClientOptions{Logger: logs})
+	done := make(chan error, 1)
+	c.readLoop(conn, done, "connection-original")
+	c.logConnectionEnd("connection-original", "read", time.Now(), <-done)
+	var received string
+	for _, line := range logs.lines {
+		if strings.HasPrefix(line, "Relay HTTP received") {
+			received = line
+		}
+	}
+	for _, want := range []string{"connection=connection-original", `id="relay-import"`, `method="POST"`, `path="/transfer/import/start"`} {
+		if !strings.Contains(received, want) {
+			t.Fatalf("missing %s: %s", want, received)
+		}
+	}
+	if strings.Contains(received, "SECRET") || strings.Contains(received, "PRIVATE_BODY") {
+		t.Fatal("HTTP payload leaked into metadata log")
+	}
+	last := logs.lines[len(logs.lines)-1]
+	if !strings.Contains(last, "closeCode=4000 reason=replaced_by_new_connection") {
+		t.Fatal(last)
 	}
 }

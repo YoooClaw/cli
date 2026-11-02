@@ -63,7 +63,7 @@ func TestTaskAPIUsesCLIKeyAndHidesURL(t *testing.T) {
 			if body["taskId"] != testID {
 				t.Error("wrong download body")
 			}
-			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL})
+			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL, "expiresAt": time.Now().Add(time.Hour).UnixMilli()})
 		default:
 			t.Error("unexpected path")
 			w.WriteHeader(404)
@@ -84,7 +84,7 @@ func TestTaskAPIUsesCLIKeyAndHidesURL(t *testing.T) {
 	if strings.Contains(string(raw), "signature") {
 		t.Fatal("signed URL leaked")
 	}
-	if _, err = c.downloadURL(ctx, testID); err != nil {
+	if _, err = c.downloadLink(ctx, testID); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 3 {
