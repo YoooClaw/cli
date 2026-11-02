@@ -31,9 +31,6 @@ var (
 	archiveRE  = regexp.MustCompile(`(?i)\.(tar\.gz|tgz)$`)
 )
 
-// maxArchiveEntries 与插件一致：每条记录最多 5 个附件字段，外加 manifest 与 blobs/ 目录项。
-const maxArchiveEntries = MaxRecords*5 + 2
-
 // IsArchivePath 判断 --out/--file 路径是否指向单文件包。
 func IsArchivePath(path string) bool { return archiveRE.MatchString(path) }
 
@@ -159,21 +156,15 @@ func extractArchiveContext(ctx context.Context, file, dest string) error {
 		return fail("ARCHIVE_INVALID")
 	}
 	defer gz.Close()
-	// Bound actual extracted bytes; valid workspace text can compress beyond any fixed ratio.
-	limit := MaxFullBytes + MaxManifestBytes
 	tr := tar.NewReader(gz)
 	seen := map[string]bool{}
-	var total int64
-	for count := 1; ; count++ {
+	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return corrupt(err)
-		}
-		if count > maxArchiveEntries {
-			return fail("ARCHIVE_TOO_LARGE")
 		}
 		// 标准库会把 PAX/GNU 扩展头合并进 hdr；出现过就说明不是迁移导出产的包。
 		// 普通 ustar 头读出来 Format 是 unknown（与 PAX 无法区分），不能按它放行。
@@ -194,12 +185,6 @@ func extractArchiveContext(ctx context.Context, file, dest string) error {
 			return fail("ARCHIVE_DUPLICATE_ENTRY")
 		}
 		seen[name] = true
-		if name == "manifest.json" && hdr.Size > MaxManifestBytes {
-			return fail("MANIFEST_TOO_LARGE")
-		}
-		if total += hdr.Size; total > limit {
-			return fail("ARCHIVE_TOO_LARGE")
-		}
 		if err := fsutil.RequireSpace(dest, hdr.Size); err != nil {
 			return fail("INSUFFICIENT_SPACE")
 		}

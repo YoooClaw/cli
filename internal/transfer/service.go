@@ -240,7 +240,11 @@ func stagePackage(ctx context.Context, source, local string) (*Manifest, error) 
 		}
 		bytes += st.Size()
 	}
-	if e := fsutil.RequireSpace(local, bytes+MaxManifestBytes); e != nil {
+	manifestInfo, err := os.Stat(filepath.Join(source, "manifest.json"))
+	if err != nil {
+		return nil, err
+	}
+	if e := fsutil.RequireSpace(local, bytes+manifestInfo.Size()); e != nil {
 		return nil, fail("INSUFFICIENT_SPACE")
 	}
 	// 不递归复制包内任意内容，只复制校验过的清单与资源。

@@ -2,8 +2,10 @@ package transfer
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/YoooClaw/cli/internal/testutil"
@@ -118,7 +120,7 @@ func TestFullInstallSkillAndLogs(t *testing.T) {
 	}
 }
 func TestFullRejectUnsafeAndMissing(t *testing.T) {
-	for _, kind := range []string{"traversal", "missing", "symlink", "disabled-cron"} {
+	for _, kind := range []string{"traversal", "missing", "symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			dst := newEnv(t)
 			dst.svc.Home = t.TempDir()
@@ -134,16 +136,7 @@ func TestFullRejectUnsafeAndMissing(t *testing.T) {
 				os.Remove(filepath.Join(pkg, "blobs", m.Files[0].Hash))
 			case "symlink":
 				os.Symlink(t.TempDir(), filepath.Join(dst.svc.Home, workspaceBase()))
-			case "disabled-cron":
-				for i, f := range m.Files {
-					if f.Category == "cron" {
-						raw := []byte(`{"jobs":[{"id":"x","enabled":false}]}`)
-						m.Files[i].Hash = sha(string(raw))
-						m.Files[i].Bytes = int64(len(raw))
-						testutil.WriteFile(t, filepath.Join(pkg, "blobs", sha(string(raw))), raw)
-					}
-				}
-				writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+
 			}
 			if _, e := dst.svc.Handle(Request{Action: "preview", File: pkg}); e == nil {
 				t.Fatal("accepted unsafe package")
@@ -349,5 +342,279 @@ func TestMainWorkspaceFilesImportDirectly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst.svc.Home, workspaceBase(), "migration/openclaw/main/agent-settings")); !os.IsNotExist(err) {
 		t.Fatal("settings still archived", err)
+	}
+}
+
+func TestImportMoreThan100000BusinessRecords(t *testing.T) {
+	root := t.TempDir()
+	rows := make([]map[string]any, 100001)
+	for i := range rows {
+		rows[i] = map[string]any{"appName": "test", "title": fmt.Sprint(i), "content": "test", "timestamp": "2026-11-02T00:00:00Z"}
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha(string(raw))
+	testutil.WriteFile(t, filepath.Join(root, "blobs", h), raw)
+	writeJSON(t, filepath.Join(root, "manifest.json"), Manifest{SchemaVersion: 2, PackageID: newUUID(), OriginalBytes: int64(len(raw)), Files: []FullFile{{Category: TypeNotifications, Scope: "main", Path: "2026-11-02.json", Hash: h, Bytes: int64(len(raw))}}})
+	m, err := ReadPackage(root, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != len(rows) {
+		t.Fatalf("lost records: %d", len(m.Records))
+	}
+	// The legacy reader must also accept the same valid records, within its byte limit.
+	m.SchemaVersion = 1
+	m.Warnings = []string{}
+	writeJSON(t, filepath.Join(root, "manifest.json"), m)
+	m, err = ReadPackage(root, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != len(rows) {
+		t.Fatalf("lost legacy records: %d", len(m.Records))
+	}
+}
+
+func TestFullImportWithoutFileCountOrMetadataSizeCaps(t *testing.T) {
+	pkg := t.TempDir()
+	body := append([]byte(`{"jobs":[]}`), []byte(strings.Repeat(" ", 64*1024*1024))...)
+	h := sha(string(body))
+	testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), body)
+	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), Files: []FullFile{{"cron", "main", "jobs.json", h, int64(len(body))}}}
+	emptyHash := sha("")
+	testutil.WriteFile(t, filepath.Join(pkg, "blobs", emptyHash), nil)
+	for i := 0; i < 100001; i++ {
+		m.Files = append(m.Files, FullFile{"workspace", "main", fmt.Sprintf("files/%d.txt", i), emptyHash, 0})
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Valid JSON whitespace makes the manifest itself exceed the former 64 MiB cap.
+	b = append(b, []byte(strings.Repeat(" ", 64*1024*1024))...)
+	testutil.WriteFile(t, filepath.Join(pkg, "manifest.json"), b)
+	got, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != len(m.Files) {
+		t.Fatalf("files=%d", len(got.Files))
+	}
+}
+
+func TestFullImportLargeFileMetadata(t *testing.T) {
+	pkg := t.TempDir()
+	h := strings.Repeat("a", 64)
+	p := filepath.Join(pkg, "blobs", h)
+	testutil.WriteFile(t, p, nil)
+	const size int64 = 10_000_000_001
+	if err := os.Truncate(p, size); err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), OriginalBytes: size, Files: []FullFile{{"workspace", "main", "large.bin", h, size}}}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	// Sparse file tests metadata acceptance without reading 10 GB. Hash verification
+	// remains covered by normal import tests; this is the trusted staging read mode.
+	if _, err := ReadPackage(pkg, ReadOptions{SkipBlobHash: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestImportPreservesSkillDirectoryNamesAndResources(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	pkg := t.TempDir()
+	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), Files: []FullFile{}}
+	paths := []string{"skills/中文 技能.v2/SKILL.md", "skills/中文 技能.v2/scripts/run.py", "skills/中文 技能.v2/assets/data.txt", "skills/只有资源/readme.txt", "README.md"}
+	for _, p := range paths {
+		raw := []byte("original " + p)
+		h := sha(string(raw))
+		testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), raw)
+		m.Files = append(m.Files, FullFile{"skills", "main", p, h, int64(len(raw))})
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	for _, p := range paths {
+		dest := filepath.Join(dst.svc.Home, ".claude", p)
+		if p == "README.md" {
+			dest = filepath.Join(dst.svc.Home, workspaceBase(), "migration/openclaw/main/skills", p)
+		}
+		got, err := os.ReadFile(dest)
+		if err != nil || string(got) != "original "+p {
+			t.Fatalf("%s: %q %v", dest, got, err)
+		}
+	}
+	// Existing names remain untouched even if the new backup has different contents.
+	target := filepath.Join(dst.svc.Home, ".claude/skills/中文 技能.v2/SKILL.md")
+	testutil.WriteFile(t, target, []byte("local changes"))
+	result = runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "local changes" {
+		t.Fatalf("overwrote existing skill: %s", got)
+	}
+}
+
+func TestSkillPathStillRejectsTraversal(t *testing.T) {
+	for _, p := range []string{"skills/../escape.txt", "skills/./escape.txt", "/tmp/escape.txt", "skills/a/../../escape.txt"} {
+		name, _ := skillPath(FullFile{Path: p})
+		if name != "" {
+			t.Fatalf("accepted unsafe path %q", p)
+		}
+	}
+}
+
+func TestFullImportReferenceCronAndMalformedBusinessRows(t *testing.T) {
+	pkg := fullFixture(t)
+	before, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	originals := map[string]string{}
+	for i, f := range m.Files {
+		raw, err := os.ReadFile(filepath.Join(pkg, "blobs", f.Hash))
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case f.Category == "cron":
+			raw = []byte("not executable cron JSON; retain for Agent review")
+		case f.Path == "index.json" && indexKeys[f.Category] != "":
+			var index map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &index); err != nil {
+				t.Fatal(err)
+			}
+			var rows []json.RawMessage
+			if err := json.Unmarshal(index[indexKeys[f.Category]], &rows); err != nil {
+				t.Fatal(err)
+			}
+			rows = append(rows, json.RawMessage(`null`), json.RawMessage(`{"metadata":false}`))
+			index[indexKeys[f.Category]], _ = json.Marshal(rows)
+			raw, _ = json.Marshal(index)
+		case f.Category == TypeNotifications && f.Path == "2026-09-20.jsonl":
+			raw = []byte("{broken\nnull\n")
+		default:
+			continue
+		}
+		originals[logicalKey(f)] = string(raw)
+		m.OriginalBytes += int64(len(raw)) - f.Bytes
+		m.Files[i].Hash = sha(string(raw))
+		m.Files[i].Bytes = int64(len(raw))
+		testutil.WriteFile(t, filepath.Join(pkg, "blobs", m.Files[i].Hash), raw)
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	after, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Records) != len(before.Records) || len(after.Warnings) < 8 {
+		t.Fatalf("valid records lost or missing warnings: before=%d after=%d warnings=%v", len(before.Records), len(after.Records), after.Warnings)
+	}
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	index, err := os.ReadFile(result["migrationIndex"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Warnings []string `json:"warnings"`
+		CronFile string   `json:"cronFile"`
+	}
+	if err := json.Unmarshal(index, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Warnings) < 8 {
+		t.Fatalf("warnings not persisted: %s", index)
+	}
+	cron, err := os.ReadFile(doc.CronFile)
+	if err != nil || string(cron) != "not executable cron JSON; retain for Agent review" {
+		t.Fatalf("cron changed: %s %v", cron, err)
+	}
+	for _, f := range m.Files {
+		want, changed := originals[logicalKey(f)]
+		if !changed || f.Category == "cron" {
+			continue
+		}
+		p := filepath.Join(dst.svc.Home, workspaceBase(), "migration/openclaw", f.Scope, f.Category, f.Path)
+		got, err := os.ReadFile(p)
+		if err != nil || string(got) != want {
+			t.Fatalf("reference lost: %s: %v", p, err)
+		}
+	}
+}
+
+func TestImportShortensLongFilenames(t *testing.T) {
+	pkg := fullFixture(t)
+	raw, _ := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	var m Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	name := strings.Repeat("中文资料", 30) + ".pdf"
+	for _, suffix := range []string{"", "另一个"} {
+		p := "uploads/" + strings.TrimSuffix(name, ".pdf") + suffix + ".pdf"
+		data := "PDF sample " + suffix
+		h := sha(data)
+		testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), []byte(data))
+		m.Files = append(m.Files, FullFile{"workspace", "main", p, h, int64(len(data))})
+		m.OriginalBytes += int64(len(data))
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	for attempt := 0; attempt < 2; attempt++ {
+		result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+		if result["state"] != "SUCCEEDED" {
+			t.Fatal(result)
+		}
+		raw, err := os.ReadFile(result["migrationIndex"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			PathMappings map[string]string `json:"pathMappings"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range m.Files {
+			if !strings.HasPrefix(f.Path, "uploads/") {
+				continue
+			}
+			target := doc.PathMappings[logicalKey(f)]
+			b, err := os.ReadFile(target)
+			if err != nil || sha(string(b)) != f.Hash {
+				t.Fatalf("missing imported file: %s %v", target, err)
+			}
+			if len(filepath.Base(target)) > 255 || !strings.HasSuffix(target, ".pdf") {
+				t.Fatal(target)
+			}
+			if !strings.HasPrefix(filepath.Base(target), string([]rune(strings.TrimSuffix(name, ".pdf"))[:10])+"-") {
+				t.Fatal(target)
+			}
+		}
+	}
+	if portableDestination("normal/file.pdf") != "normal/file.pdf" {
+		t.Fatal("normal name changed")
 	}
 }
