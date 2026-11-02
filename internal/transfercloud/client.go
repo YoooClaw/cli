@@ -237,6 +237,12 @@ func validObjectKey(id, key string) bool {
 
 // RecordingDownloadURL refreshes a recording task without imposing migration ID syntax.
 func (c *Client) RecordingDownloadURL(ctx context.Context, id string) (string, error) {
+	return c.FileDownloadURL(ctx, id)
+}
+
+// FileDownloadURL reuses the existing file-service task lookup for uploaded objects.
+// The service authorizes the task against this client's API key.
+func (c *Client) FileDownloadURL(ctx context.Context, id string) (string, error) {
 	if strings.TrimSpace(id) == "" || len(id) > 256 {
 		return "", failure("INVALID_TASK", "录音 taskId 无效")
 	}

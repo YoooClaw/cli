@@ -48,7 +48,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"data", "notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"data", "data-oss-import", "notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -261,6 +261,11 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		logger.Info(fmt.Sprintf("[recording-recovery] 已恢复 %d 个缺失音频任务", count))
 	}
 
+	if err := srv.startDataImports(); err != nil {
+		return err
+	}
+	defer srv.dataImports.Stop()
+
 	if mode == config.IngressStandalone {
 		srv.lastRecordingActivity.Store(time.Now().UnixNano())
 		stopUpdates := updater.StartRuntime(func() (updater.Identity, error) { return updater.NewIdentity(ctx.Paths) }, executable,
@@ -280,6 +285,9 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			diagnostics.Write(root, "info", "daemon.shutdown", map[string]any{"profile": ctx.Profile, "reason": reason})
 			if sup := srv.supervisor(); sup != nil {
 				sup.StopAll(reason)
+			}
+			if srv.dataImports != nil {
+				srv.dataImports.Cancel()
 			}
 			if srv.transferImports != nil {
 				srv.transferImports.Cancel()
@@ -331,6 +339,7 @@ type server struct {
 	owner                 string
 	generation            string
 	executable            string
+	dataImports           *data.Imports
 	shutdown              func(string)
 	shutdownOnce          sync.Once
 	locationStorage       *location.Storage
@@ -436,7 +445,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer s.activeRequests.Add(-1)
 	}
 	switch {
-	case path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write":
+	case path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path):
 		s.handleData(w, r, authCtx)
 	case assetKind(path) != "":
 		s.handleAssetRequest(w, r, assetKind(path), authCtx)
@@ -770,7 +779,7 @@ func (s *server) relayStatusPayload() map[string]any {
 // ── helpers ──
 
 func isIngestPath(path string) bool {
-	if path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" {
+	if path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path) {
 		return true
 	}
 	if assetKind(path) != "" {
@@ -884,13 +893,14 @@ func (s *server) activityPayload() map[string]any {
 	if s.recordingStorage != nil {
 		downloads = s.recordingStorage.ActiveDownloads()
 	}
+	importsBusy := s.dataImports != nil && s.dataImports.Busy()
 	requests := s.activeRequests.Load()
-	return map[string]any{"busy": downloads > 0 || requests > 0, "activeRequests": requests, "recordingDownloads": downloads}
+	return map[string]any{"busy": downloads > 0 || requests > 0 || importsBusy, "dataImports": importsBusy, "activeRequests": requests, "recordingDownloads": downloads}
 }
 
-// 更新只保护录音业务；普通请求计数仅用于状态展示。
+// 更新保护录音与 OSS 导入业务；普通请求计数仅用于状态展示。
 func (s *server) updateIdle(now time.Time) bool {
-	if s.activeRecordingWrites.Load() > 0 || (s.recordingStorage != nil && s.recordingStorage.ActiveDownloads() > 0) {
+	if (s.dataImports != nil && s.dataImports.Busy()) || s.activeRecordingWrites.Load() > 0 || (s.recordingStorage != nil && s.recordingStorage.ActiveDownloads() > 0) {
 		s.lastRecordingActivity.Store(now.UnixNano())
 		return false
 	}

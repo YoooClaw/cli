@@ -32,6 +32,10 @@ func writeDataError(w http.ResponseWriter, e error) {
 		status = 400
 	case "TOO_LARGE", "QUOTA_EXCEEDED":
 		status = 413
+	case "IMPORT_BUSY":
+		status = 429
+	case "IMPORT_UNAVAILABLE":
+		status = 503
 	case "IDEMPOTENCY_CONFLICT":
 		status = 409
 	}
@@ -61,6 +65,10 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request, a authResult
 	store := s.dataStore()
 	path := r.URL.Path
 	scope := a.scope()
+	if dataImportPath(path) {
+		s.handleDataImport(w, r, a)
+		return
+	}
 	// Relay v1 is write-only, including requests forwarded as HTTP paths.
 	if a.authKind == "relay-api-key" && path != "/gateway/data.write" {
 		writeDataError(w, data.Error("NOT_FOUND", "endpoint not available over Relay"))

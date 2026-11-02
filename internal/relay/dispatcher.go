@@ -110,7 +110,7 @@ func (d *Dispatcher) handleReq(frame Frame) {
 		return
 	}
 	// data.write preserves the complete put result and structured DATA_* errors.
-	if method == "data.write" {
+	if method == "data.write" || method == "data.import" || method == "data.import.status" || method == "data.import.retry" {
 		var body struct {
 			OK    bool `json:"ok"`
 			Error any  `json:"error"`
