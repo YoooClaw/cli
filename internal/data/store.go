@@ -163,7 +163,7 @@ func validate(m *Metadata) error {
 		m.Name = ""
 	}
 	m.Name = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || r == '/' || r == '\\' {
 			return -1
 		}
 		return r

@@ -222,3 +222,16 @@ func TestInterruptedWriteAndPrivatePermissions(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestDisplayNameRootAndPreviewRuneBoundary(t *testing.T) {
+	s := New(t.TempDir(), config.DataSection{})
+	for _, name := range []string{"/", `\`, "../..", "dir/../file\n.txt"} {
+		a := put(t, s, []byte(strings.Repeat("字", 1000)), Metadata{Name: name}, "")
+		if strings.ContainsAny(a.Data.Name, "/\\\n") || strings.Contains(a.Data.Name, "..") {
+			t.Fatal(a.Data.Name)
+		}
+		if a.Data.Preview == nil || len(*a.Data.Preview) > 2048 {
+			t.Fatal("preview bound")
+		}
+	}
+}
