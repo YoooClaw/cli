@@ -9,8 +9,6 @@ import (
 	"strings"
 )
 
-const MaxFullBytes int64 = 10_000_000_000
-
 var scopeRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 var fullCategories = []string{"agent-settings", "memory", "sessions", "workspace", "skills", "notifications", "recordings", "images", "web-pages", "cron", "agent-backup"}
 
@@ -45,9 +43,6 @@ func validRelative(p string) bool {
 	return true
 }
 func fullBlob(root string, f FullFile) ([]byte, error) {
-	if f.Bytes > MaxManifestBytes {
-		return nil, fail("INDEX_TOO_LARGE")
-	}
 	p, e := safeFile(root, "blobs/"+f.Hash)
 	if e != nil {
 		return nil, e
@@ -56,7 +51,7 @@ func fullBlob(root string, f FullFile) ([]byte, error) {
 }
 func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, error) {
 	var m Manifest
-	if json.Unmarshal(raw, &m) != nil || !uuidRE.MatchString(m.PackageID) || m.Files == nil || len(m.Files) > MaxRecords || m.OriginalBytes < 0 || m.OriginalBytes > MaxFullBytes {
+	if json.Unmarshal(raw, &m) != nil || !uuidRE.MatchString(m.PackageID) || m.Files == nil || m.OriginalBytes < 0 {
 		return nil, fail("INVALID_FULL_MANIFEST")
 	}
 	m.Records = []Record{}
@@ -66,9 +61,8 @@ func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, erro
 	consumed := map[string]bool{}
 	files := map[string]FullFile{}
 	hashes := map[string]int64{}
-	var total int64
 	for _, f := range m.Files {
-		if !contains(fullCategories, f.Category) || !scopeRE.MatchString(f.Scope) || !validRelative(f.Path) || !hashRE.MatchString(f.Hash) || f.Bytes < 0 || f.Bytes > MaxFullBytes {
+		if !contains(fullCategories, f.Category) || !scopeRE.MatchString(f.Scope) || !validRelative(f.Path) || !hashRE.MatchString(f.Hash) || f.Bytes < 0 {
 			return nil, fail("INVALID_FULL_FILE")
 		}
 		if _, ok := files[logicalKey(f)]; ok {
@@ -99,10 +93,6 @@ func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, erro
 			}
 		}
 		hashes[f.Hash] = f.Bytes
-		total += f.Bytes
-		if total > MaxFullBytes {
-			return nil, fail("ORIGINAL_SIZE_EXCEEDED")
-		}
 	}
 	for _, f := range m.Files {
 		if f.Category == "cron" {
@@ -264,9 +254,6 @@ func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, erro
 				}
 			}
 			m.Records = append(m.Records, Record{Type: f.Category, Data: data, Assets: assets, RecordID: identity(f.Category, data), RecordVersion: recordVersion(data, assets), RecordSchemaVersion: 1, Origin: origin})
-			if len(m.Records) > MaxRecords {
-				return nil, fail("PACKAGE_TOO_MANY_RECORDS")
-			}
 		}
 	}
 	for _, f := range m.Files {
