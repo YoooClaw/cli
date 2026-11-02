@@ -2,8 +2,10 @@ package transfer
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/YoooClaw/cli/internal/testutil"
@@ -349,5 +351,83 @@ func TestMainWorkspaceFilesImportDirectly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst.svc.Home, workspaceBase(), "migration/openclaw/main/agent-settings")); !os.IsNotExist(err) {
 		t.Fatal("settings still archived", err)
+	}
+}
+
+func TestImportMoreThan100000BusinessRecords(t *testing.T) {
+	root := t.TempDir()
+	rows := make([]map[string]any, 100001)
+	for i := range rows {
+		rows[i] = map[string]any{"appName": "test", "title": fmt.Sprint(i), "content": "test", "timestamp": "2026-11-02T00:00:00Z"}
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha(string(raw))
+	testutil.WriteFile(t, filepath.Join(root, "blobs", h), raw)
+	writeJSON(t, filepath.Join(root, "manifest.json"), Manifest{SchemaVersion: 2, PackageID: newUUID(), OriginalBytes: int64(len(raw)), Files: []FullFile{{Category: TypeNotifications, Scope: "main", Path: "2026-11-02.json", Hash: h, Bytes: int64(len(raw))}}})
+	m, err := ReadPackage(root, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != len(rows) {
+		t.Fatalf("lost records: %d", len(m.Records))
+	}
+	// The legacy reader must also accept the same valid records, within its byte limit.
+	m.SchemaVersion = 1
+	m.Warnings = []string{}
+	writeJSON(t, filepath.Join(root, "manifest.json"), m)
+	m, err = ReadPackage(root, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != len(rows) {
+		t.Fatalf("lost legacy records: %d", len(m.Records))
+	}
+}
+
+func TestFullImportWithoutFileCountOrMetadataSizeCaps(t *testing.T) {
+	pkg := t.TempDir()
+	body := append([]byte(`{"jobs":[]}`), []byte(strings.Repeat(" ", 64*1024*1024))...)
+	h := sha(string(body))
+	testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), body)
+	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), Files: []FullFile{{"cron", "main", "jobs.json", h, int64(len(body))}}}
+	emptyHash := sha("")
+	testutil.WriteFile(t, filepath.Join(pkg, "blobs", emptyHash), nil)
+	for i := 0; i < 100001; i++ {
+		m.Files = append(m.Files, FullFile{"workspace", "main", fmt.Sprintf("files/%d.txt", i), emptyHash, 0})
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Valid JSON whitespace makes the manifest itself exceed the former 64 MiB cap.
+	b = append(b, []byte(strings.Repeat(" ", 64*1024*1024))...)
+	testutil.WriteFile(t, filepath.Join(pkg, "manifest.json"), b)
+	got, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != len(m.Files) {
+		t.Fatalf("files=%d", len(got.Files))
+	}
+}
+
+func TestFullImportLargeFileMetadata(t *testing.T) {
+	pkg := t.TempDir()
+	h := strings.Repeat("a", 64)
+	p := filepath.Join(pkg, "blobs", h)
+	testutil.WriteFile(t, p, nil)
+	const size int64 = 10_000_000_001
+	if err := os.Truncate(p, size); err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), OriginalBytes: size, Files: []FullFile{{"workspace", "main", "large.bin", h, size}}}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	// Sparse file tests metadata acceptance without reading 10 GB. Hash verification
+	// remains covered by normal import tests; this is the trusted staging read mode.
+	if _, err := ReadPackage(pkg, ReadOptions{SkipBlobHash: true}); err != nil {
+		t.Fatal(err)
 	}
 }
