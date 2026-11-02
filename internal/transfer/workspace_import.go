@@ -121,7 +121,7 @@ func skillPath(f FullFile) (name, prefix string) {
 	}
 	rest := strings.TrimPrefix(p, prefix)
 	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) != 2 || !scopeRE.MatchString(parts[0]) {
+	if len(parts) != 2 || !validRelative(p) {
 		return "", ""
 	}
 	return parts[0], prefix + parts[0] + "/"
@@ -201,7 +201,9 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 		case "skills":
 			name, p := skillPath(f)
 			if name == "" {
-				return nil, fail("INVALID_SKILL_PATH")
+				// Loose files from older packages are reference material, not skill directories.
+				dest = workspaceBase() + "/migration/openclaw/" + f.Scope + "/skills/" + f.Path
+				break
 			}
 			prefix = p
 			dest = ".claude/skills/" + name
@@ -262,15 +264,6 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 	for i := range items {
 		item := &items[i]
 		if item.SkillPrefix != "" {
-			hasDefinition := false
-			for _, f := range item.Files {
-				if f.Path == item.SkillPrefix+"SKILL.md" {
-					hasDefinition = true
-				}
-			}
-			if !hasDefinition {
-				return nil, fail("SKILL_DEFINITION_MISSING")
-			}
 			if claimed[item.Destination] {
 				item.Action = "skipped"
 				item.Reason = "duplicate-skill-name"
@@ -471,7 +464,7 @@ func (s *Service) writeMigrationIndex(m *Manifest, results []WorkspaceResult) (s
 			cron = r.Path
 		}
 	}
-	doc := map[string]any{"schemaVersion": 1, "owner": "yoooclaw-transfer", "packageId": m.PackageID, "workspace": filepath.Join(home, workspaceBase()), "memoryFiles": memory, "cronFile": cron, "dailyLogDirectory": filepath.Join(home, projectMemory(home)), "files": locations}
+	doc := map[string]any{"schemaVersion": 1, "owner": "yoooclaw-transfer", "packageId": m.PackageID, "workspace": filepath.Join(home, workspaceBase()), "memoryFiles": memory, "cronFile": cron, "dailyLogDirectory": filepath.Join(home, projectMemory(home)), "files": locations, "warnings": m.Warnings}
 	content, _ := json.MarshalIndent(doc, "", "  ")
 	// Only our own index can be replaced on resume; a user file is never overwritten.
 	if old, er := root.ReadFile(rel); er == nil {

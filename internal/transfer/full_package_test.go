@@ -120,7 +120,7 @@ func TestFullInstallSkillAndLogs(t *testing.T) {
 	}
 }
 func TestFullRejectUnsafeAndMissing(t *testing.T) {
-	for _, kind := range []string{"traversal", "missing", "symlink", "disabled-cron"} {
+	for _, kind := range []string{"traversal", "missing", "symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			dst := newEnv(t)
 			dst.svc.Home = t.TempDir()
@@ -136,16 +136,7 @@ func TestFullRejectUnsafeAndMissing(t *testing.T) {
 				os.Remove(filepath.Join(pkg, "blobs", m.Files[0].Hash))
 			case "symlink":
 				os.Symlink(t.TempDir(), filepath.Join(dst.svc.Home, workspaceBase()))
-			case "disabled-cron":
-				for i, f := range m.Files {
-					if f.Category == "cron" {
-						raw := []byte(`{"jobs":[{"id":"x","enabled":false}]}`)
-						m.Files[i].Hash = sha(string(raw))
-						m.Files[i].Bytes = int64(len(raw))
-						testutil.WriteFile(t, filepath.Join(pkg, "blobs", sha(string(raw))), raw)
-					}
-				}
-				writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+
 			}
 			if _, e := dst.svc.Handle(Request{Action: "preview", File: pkg}); e == nil {
 				t.Fatal("accepted unsafe package")
@@ -429,5 +420,145 @@ func TestFullImportLargeFileMetadata(t *testing.T) {
 	// remains covered by normal import tests; this is the trusted staging read mode.
 	if _, err := ReadPackage(pkg, ReadOptions{SkipBlobHash: true}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestImportPreservesSkillDirectoryNamesAndResources(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	pkg := t.TempDir()
+	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), Files: []FullFile{}}
+	paths := []string{"skills/中文 技能.v2/SKILL.md", "skills/中文 技能.v2/scripts/run.py", "skills/中文 技能.v2/assets/data.txt", "skills/只有资源/readme.txt", "README.md"}
+	for _, p := range paths {
+		raw := []byte("original " + p)
+		h := sha(string(raw))
+		testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), raw)
+		m.Files = append(m.Files, FullFile{"skills", "main", p, h, int64(len(raw))})
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	for _, p := range paths {
+		dest := filepath.Join(dst.svc.Home, ".claude", p)
+		if p == "README.md" {
+			dest = filepath.Join(dst.svc.Home, workspaceBase(), "migration/openclaw/main/skills", p)
+		}
+		got, err := os.ReadFile(dest)
+		if err != nil || string(got) != "original "+p {
+			t.Fatalf("%s: %q %v", dest, got, err)
+		}
+	}
+	// Existing names remain untouched even if the new backup has different contents.
+	target := filepath.Join(dst.svc.Home, ".claude/skills/中文 技能.v2/SKILL.md")
+	testutil.WriteFile(t, target, []byte("local changes"))
+	result = runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "local changes" {
+		t.Fatalf("overwrote existing skill: %s", got)
+	}
+}
+
+func TestSkillPathStillRejectsTraversal(t *testing.T) {
+	for _, p := range []string{"skills/../escape.txt", "skills/./escape.txt", "/tmp/escape.txt", "skills/a/../../escape.txt"} {
+		name, _ := skillPath(FullFile{Path: p})
+		if name != "" {
+			t.Fatalf("accepted unsafe path %q", p)
+		}
+	}
+}
+
+func TestFullImportReferenceCronAndMalformedBusinessRows(t *testing.T) {
+	pkg := fullFixture(t)
+	before, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	originals := map[string]string{}
+	for i, f := range m.Files {
+		raw, err := os.ReadFile(filepath.Join(pkg, "blobs", f.Hash))
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case f.Category == "cron":
+			raw = []byte("not executable cron JSON; retain for Agent review")
+		case f.Path == "index.json" && indexKeys[f.Category] != "":
+			var index map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &index); err != nil {
+				t.Fatal(err)
+			}
+			var rows []json.RawMessage
+			if err := json.Unmarshal(index[indexKeys[f.Category]], &rows); err != nil {
+				t.Fatal(err)
+			}
+			rows = append(rows, json.RawMessage(`null`), json.RawMessage(`{"metadata":false}`))
+			index[indexKeys[f.Category]], _ = json.Marshal(rows)
+			raw, _ = json.Marshal(index)
+		case f.Category == TypeNotifications && f.Path == "2026-09-20.jsonl":
+			raw = []byte("{broken\nnull\n")
+		default:
+			continue
+		}
+		originals[logicalKey(f)] = string(raw)
+		m.OriginalBytes += int64(len(raw)) - f.Bytes
+		m.Files[i].Hash = sha(string(raw))
+		m.Files[i].Bytes = int64(len(raw))
+		testutil.WriteFile(t, filepath.Join(pkg, "blobs", m.Files[i].Hash), raw)
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	after, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Records) != len(before.Records) || len(after.Warnings) < 8 {
+		t.Fatalf("valid records lost or missing warnings: before=%d after=%d warnings=%v", len(before.Records), len(after.Records), after.Warnings)
+	}
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	index, err := os.ReadFile(result["migrationIndex"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Warnings []string `json:"warnings"`
+		CronFile string   `json:"cronFile"`
+	}
+	if err := json.Unmarshal(index, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Warnings) < 8 {
+		t.Fatalf("warnings not persisted: %s", index)
+	}
+	cron, err := os.ReadFile(doc.CronFile)
+	if err != nil || string(cron) != "not executable cron JSON; retain for Agent review" {
+		t.Fatalf("cron changed: %s %v", cron, err)
+	}
+	for _, f := range m.Files {
+		want, changed := originals[logicalKey(f)]
+		if !changed || f.Category == "cron" {
+			continue
+		}
+		p := filepath.Join(dst.svc.Home, workspaceBase(), "migration/openclaw", f.Scope, f.Category, f.Path)
+		got, err := os.ReadFile(p)
+		if err != nil || string(got) != want {
+			t.Fatalf("reference lost: %s: %v", p, err)
+		}
 	}
 }
