@@ -118,6 +118,9 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 			now.Add(int64(26 * time.Minute / time.Millisecond))
 		} else {
 			ranges.Add(1)
+			if r.URL.Query().Get("renewed") != "1" {
+				t.Error("range request did not use renewed URL")
+			}
 		}
 		if heads.Load() > 1 {
 			t.Error("download restarted")
