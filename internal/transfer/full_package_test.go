@@ -562,3 +562,59 @@ func TestFullImportReferenceCronAndMalformedBusinessRows(t *testing.T) {
 		}
 	}
 }
+
+func TestImportShortensLongFilenames(t *testing.T) {
+	pkg := fullFixture(t)
+	raw, _ := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	var m Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	name := strings.Repeat("中文资料", 30) + ".pdf"
+	for _, suffix := range []string{"", "另一个"} {
+		p := "uploads/" + strings.TrimSuffix(name, ".pdf") + suffix + ".pdf"
+		data := "PDF sample " + suffix
+		h := sha(data)
+		testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), []byte(data))
+		m.Files = append(m.Files, FullFile{"workspace", "main", p, h, int64(len(data))})
+		m.OriginalBytes += int64(len(data))
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	for attempt := 0; attempt < 2; attempt++ {
+		result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+		if result["state"] != "SUCCEEDED" {
+			t.Fatal(result)
+		}
+		raw, err := os.ReadFile(result["migrationIndex"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			PathMappings map[string]string `json:"pathMappings"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range m.Files {
+			if !strings.HasPrefix(f.Path, "uploads/") {
+				continue
+			}
+			target := doc.PathMappings[logicalKey(f)]
+			b, err := os.ReadFile(target)
+			if err != nil || sha(string(b)) != f.Hash {
+				t.Fatalf("missing imported file: %s %v", target, err)
+			}
+			if len(filepath.Base(target)) > 255 || !strings.HasSuffix(target, ".pdf") {
+				t.Fatal(target)
+			}
+			if !strings.HasPrefix(filepath.Base(target), string([]rune(strings.TrimSuffix(name, ".pdf"))[:10])+"-") {
+				t.Fatal(target)
+			}
+		}
+	}
+	if portableDestination("normal/file.pdf") != "normal/file.pdf" {
+		t.Fatal("normal name changed")
+	}
+}
