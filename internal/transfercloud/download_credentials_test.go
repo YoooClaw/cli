@@ -112,6 +112,10 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 		}
 		if end == 0 {
 			heads.Add(1)
+			// Advance once before the probe response is observable. Advancing
+			// 26 minutes in every concurrent part handler could expire a freshly
+			// issued 30-minute URL before currentURL validates the response.
+			now.Add(int64(26 * time.Minute / time.Millisecond))
 		} else {
 			ranges.Add(1)
 		}
@@ -131,7 +135,6 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 			}
 			left -= n
 		}
-		now.Add(int64(26 * time.Minute / time.Millisecond))
 	})
 	p := &renewingDownloadClient{cloud: c, taskID: testID, link: downloadLink{testID, signedURL, Number(now.Load() + int64(30*time.Minute/time.Millisecond))}, now: func() time.Time { return time.UnixMilli(now.Load()) }}
 	dir := t.TempDir()
@@ -147,7 +150,7 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 	}
 	defer f.Close()
 	n, err := io.Copy(io.Discard, f)
-	if err != nil || n != size || heads.Load() != 1 || ranges.Load() != 8 || refreshes.Load() == 0 {
+	if err != nil || n != size || heads.Load() != 1 || ranges.Load() != 8 || refreshes.Load() != 1 {
 		t.Fatalf("bytes=%d heads=%d ranges=%d refreshes=%d err=%v", n, heads.Load(), ranges.Load(), refreshes.Load(), err)
 	}
 }
