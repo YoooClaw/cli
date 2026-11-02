@@ -201,6 +201,7 @@ type ImageSection struct {
 
 // DataSection limits opaque user objects. A nil retention keeps them indefinitely.
 type DataSection struct {
+	MaxImportBytes int64 `json:"maxImportBytes"`
 	MaxObjectBytes int64 `json:"maxObjectBytes"`
 	MaxInlineBytes int64 `json:"maxInlineBytes"`
 	QuotaBytes     int64 `json:"quotaBytes"`
@@ -227,7 +228,7 @@ type Config struct {
 func Default(credentialsPath string) Config {
 	return Config{
 		Version: ConfigVersion,
-		Data:    DataSection{MaxObjectBytes: 32 << 20, MaxInlineBytes: 512 << 10, QuotaBytes: 1 << 30},
+		Data:    DataSection{MaxImportBytes: 1 << 30, MaxObjectBytes: 32 << 20, MaxInlineBytes: 512 << 10, QuotaBytes: 1 << 30},
 		Daemon: DaemonSection{
 			Bind:     DefaultBind,
 			Port:     DefaultPort,

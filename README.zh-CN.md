@@ -736,3 +736,14 @@ yc data gc
 HTTP：`POST /data` 上传原始 body，query 传元数据，`Idempotency-Key` 可选；`GET /data` 检索，`GET /data/{id}` 元数据，`GET|HEAD /data/{id}/content` 下载，`DELETE /data/{id}` 删除；本机可调用 `POST /data/gc?dryRun=true`。Relay `data.write`（`POST /gateway/data.write`）使用元数据加 `contentBase64`，v1 不支持 Relay 读取。下载固定 attachment/octet-stream、nosniff、sandbox CSP 和 no-store。
 
 本机写入标记 `local`，API key/Relay 只能访问自身 label 和共享历史对象。数据位于 `<profile>/data/`，目录 0700、文件 0600，**未静态加密，请勿保存高敏感密钥**。不接入 sync、memory、transfer。`daemon status` 提供用量及 `data` capability，`doctor` 检查目录与索引。详见 [data Skill](skills/yoooclaw-data/SKILL.md)。
+
+已通过现有 OSS 上传流程上传的大文件，可以异步导入：
+
+```sh
+yc data import --oss-task-id EXISTING_OSS_TASK --size 104857600 --sha256 SHA256 \
+  --name recording.m4a --tag meeting --idempotency-key upload-123 --format json
+yc data import-status IMPORT_TASK_ID --format json
+yc data import-retry IMPORT_TASK_ID --format json
+```
+
+也可传 `--url 'https://BUCKET.oss-REGION.aliyuncs.com/object?...'`，附加 `--oss-task-id` 可在失败后刷新链接。必须提供原始大小和 SHA-256；受理返回 taskId，只有 `state=succeeded` 才表示保存成功，结果包含 `objectId`。Relay 对应 `data.import`、`data.import.status`、`data.import.retry`，不开放通用内容读取。下载复用现有 OSS 分段/checkpoint 能力，支持 daemon 重启后恢复任务，校验实际大小、哈希和客户端身份。`data.maxImportBytes` 默认 **1 GiB**，可调至 5 GiB，与直传限额独立，最终仍受 profile 配额约束。OSS 原对象沿用现有上传服务的生命周期，daemon 不自动删除。详见[接口与恢复契约](docs/design/data-oss-import.md)。

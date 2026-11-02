@@ -31,6 +31,12 @@ const HardMaxBytes int64 = 64 << 20
 
 func Error(code, message string) error { return errs.New("YOOOCLAW_DATA_"+code, message) }
 func Limits(c config.DataSection) config.DataSection {
+	if c.MaxImportBytes <= 0 {
+		c.MaxImportBytes = 1 << 30
+	}
+	if c.MaxImportBytes > 5<<30 {
+		c.MaxImportBytes = 5 << 30
+	}
 	if c.MaxObjectBytes <= 0 {
 		c.MaxObjectBytes = 32 << 20
 	}
@@ -230,7 +236,20 @@ type PutResult struct {
 	Deduped bool   `json:"deduped"`
 }
 
-func (s *Store) Put(r io.Reader, m Metadata, label string) (result PutResult, err error) {
+func (s *Store) Put(r io.Reader, m Metadata, label string) (PutResult, error) {
+	return s.put(r, m, label, s.Config.MaxObjectBytes)
+}
+
+// ImportFile commits an already-downloaded private staging file. Network I/O never holds the store lock.
+func (s *Store) ImportFile(path string, m Metadata, label string) (PutResult, error) {
+	f, e := os.Open(path)
+	if e != nil {
+		return PutResult{}, e
+	}
+	defer f.Close()
+	return s.put(f, m, label, s.Config.MaxImportBytes)
+}
+func (s *Store) put(r io.Reader, m Metadata, label string, maxBytes int64) (result PutResult, err error) {
 	if e := validate(&m); e != nil {
 		return result, e
 	}
@@ -271,9 +290,9 @@ func (s *Store) Put(r io.Reader, m Metadata, label string) (result PutResult, er
 	defer f.Close()
 	h := sha256.New()
 	validator := &utf8Check{}
-	n, e := io.Copy(io.MultiWriter(f, h, validator), io.LimitReader(r, s.Config.MaxObjectBytes+1))
-	if n > s.Config.MaxObjectBytes {
-		return result, Error("TOO_LARGE", "object exceeds maxObjectBytes")
+	n, e := io.Copy(io.MultiWriter(f, h, validator), io.LimitReader(r, maxBytes+1))
+	if n > maxBytes {
+		return result, Error("TOO_LARGE", "object exceeds ingestion limit")
 	}
 	if e != nil {
 		var max *http.MaxBytesError
@@ -765,3 +784,27 @@ func (v *utf8Check) Write(p []byte) (int, error) {
 	return n, nil
 }
 func (v *utf8Check) valid() bool { return !v.invalid && len(v.tail) == 0 }
+
+// committedImport recovers the commit-before-journal crash window without downloading again.
+func (s *Store) committedImport(taskID, label, hash string, size int64) (PutResult, bool, error) {
+	x, e := s.read()
+	if e != nil {
+		return PutResult{}, false, e
+	}
+	id := x.Keys[label+"\x00oss-import:"+taskID]
+	if id == "" {
+		return PutResult{}, false, nil
+	}
+	for _, o := range x.Objects {
+		if o.ID == id {
+			if o.SHA256 != hash || o.SizeBytes != size {
+				return PutResult{}, false, Error("INTEGRITY_MISMATCH", "committed import does not match journal")
+			}
+			if _, e = s.Path(o); e != nil {
+				return PutResult{}, false, e
+			}
+			return PutResult{OK: true, Data: o, Deduped: true}, true, nil
+		}
+	}
+	return PutResult{}, false, nil
+}

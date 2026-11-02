@@ -30,6 +30,7 @@ func newDataCmd() *cobra.Command {
 	put.Flags().StringArray("tag", nil, "标签，可重复")
 	put.Flags().Int64("max-bytes", 0, "客户端上限，默认服务端配置")
 	root.AddCommand(put)
+	addDataImportCommands(root)
 	list := &cobra.Command{Use: "list", Args: cobra.NoArgs, Short: "按元数据检索", RunE: run(func(ctx *clictx.Context, c *cobra.Command, _ []string) (any, error) {
 		s, e := localData(ctx)
 		if e != nil {

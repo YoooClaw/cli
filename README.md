@@ -667,3 +667,14 @@ List filters: `--type`, repeatable `--tag` (AND), `--source`, `--client`, `--fro
 Configuration defaults: `data.maxObjectBytes=33554432` (32 MiB; hard ceiling 64 MiB), `data.maxInlineBytes=524288` (512 KiB), `data.quotaBytes=1073741824` (1 GiB), `data.retentionDays=null`. Positive retention days expire by creation time at startup and writes. Quota/usage count physical deduplicated blobs, including unreferenced blobs until GC. Direct HTTP accepts raw `POST /data` with metadata query parameters and optional `Idempotency-Key`; list/show/download/delete use `GET /data`, `GET /data/{id}`, `GET|HEAD /data/{id}/content`, `DELETE /data/{id}`. Owner-only `POST /data/gc?dryRun=true` handles cleanup. Relay `data.write` (`POST /gateway/data.write`) accepts metadata plus `contentBase64`; v1 has no Relay reads. Downloads always use attachment/octet-stream, nosniff, sandbox CSP and no-store.
 
 Gateway/local writes use `clientLabel=local`; API keys/Relay see only their own label plus shared legacy objects. Content is stored under `<profile>/data/` with directory/file permissions 0700/0600, **without encryption: do not store highly sensitive secrets**. Data is excluded from sync, memory, and transfer. `daemon status` reports usage and capability `data`; `doctor` checks directory access and index validity. See [data skill](skills/yoooclaw-data/SKILL.md).
+
+For larger files already uploaded through the existing OSS upload flow, use asynchronous **OSS import**:
+
+```sh
+yc data import --oss-task-id EXISTING_OSS_TASK --size 104857600 --sha256 SHA256 \
+  --name recording.m4a --tag meeting --idempotency-key upload-123 --format json
+yc data import-status IMPORT_TASK_ID --format json
+yc data import-retry IMPORT_TASK_ID --format json
+```
+
+Alternatively supply `--url 'https://BUCKET.oss-REGION.aliyuncs.com/object?...'`; an optional `--oss-task-id` enables URL refresh. Size and SHA-256 are required. Acceptance returns a task ID; only `state=succeeded` confirms a saved object (`objectId`). Import requests/status/retries also work through Relay `data.import`, `data.import.status`, `data.import.retry`; general Relay content reads remain unavailable. Downloads reuse the existing OSS range/checkpoint downloader, recover interrupted jobs after daemon restart, and enforce client isolation and final size/hash checks. `data.maxImportBytes` defaults to **1 GiB** (configurable up to 5 GiB), independent of the direct-upload limit; profile quota still applies. Existing OSS upload policies/TTL remain in effect; daemon does not delete source objects. See the [request contract and recovery details](docs/design/data-oss-import.md).
