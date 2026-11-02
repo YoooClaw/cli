@@ -707,3 +707,32 @@ yc daemon restart
 ```
 
 开关在 daemon 启动时读取，不会定时重新读取。若 daemon 尚未运行，保存配置后下次启动即生效；非默认 profile 请为上述命令添加 `--profile <名称>`。恢复自动更新时将 `false` 改为 `true`，再重启 daemon。
+
+### 通用文件通道（`yc data`）
+
+保存任意原始字节，不解析、不执行、不渲染、不自动上传：
+
+```sh
+yc data put ./财报.pdf --title '季度财报' --tag finance
+cat notes.md | yc data put - --name notes.md --mime text/markdown --tag meeting
+yc data put --text '下周切换灰度' --source agent --meta '{"project":"demo"}'
+yc data list --tag finance --type pdf --format json
+yc data show OBJECT_ID
+yc data get OBJECT_ID --out ./copy.pdf
+yc data path OBJECT_ID
+yc data cat OBJECT_ID > ./原始字节
+yc data usage
+yc data gc --dry-run
+yc data rm OBJECT_ID --yes
+yc data gc
+```
+
+`put/rm/gc` 要求 daemon 已运行（`yc daemon start`），不会自动启动；读取可离线。`get` 的目标文件必须不存在；`cat` 向终端输出二进制需 `--force`。每次写入新建不可变 UUID 对象，SHA-256 blob 去重。`--idempotency-key` 在同一客户端下对相同字节返回原对象，不同字节返回冲突。`--meta` 接受 JSON 对象或 `@file`；`--max-bytes` 增加客户端上限。
+
+检索支持 `--type/--tag/--source/--client/--from/--to/--query/--limit/--cursor`，重复标签为 AND；时间是包含边界的 RFC3339，纯日期表示 UTC 零点。query 仅匹配标题、文件名、标签、备注及最多 2 KiB UTF-8 预览。分页使用返回的 `nextCursor`，保持过滤条件不变。
+
+默认配置：`data.maxObjectBytes=33554432`（32 MiB，硬上限 64 MiB），`data.maxInlineBytes=524288`（Relay 解码后 512 KiB），`data.quotaBytes=1073741824`（1 GiB），`data.retentionDays=null`（永久保留）。正数 retention 在启动和写入时按创建时间清理。配额按去重后的磁盘 blob 统计；删除对象后需 GC 回收无引用 blob。
+
+HTTP：`POST /data` 上传原始 body，query 传元数据，`Idempotency-Key` 可选；`GET /data` 检索，`GET /data/{id}` 元数据，`GET|HEAD /data/{id}/content` 下载，`DELETE /data/{id}` 删除；本机可调用 `POST /data/gc?dryRun=true`。Relay `data.write`（`POST /gateway/data.write`）使用元数据加 `contentBase64`，v1 不支持 Relay 读取。下载固定 attachment/octet-stream、nosniff、sandbox CSP 和 no-store。
+
+本机写入标记 `local`，API key/Relay 只能访问自身 label 和共享历史对象。数据位于 `<profile>/data/`，目录 0700、文件 0600，**未静态加密，请勿保存高敏感密钥**。不接入 sync、memory、transfer。`daemon status` 提供用量及 `data` capability，`doctor` 检查目录与索引。详见 [data Skill](skills/yoooclaw-data/SKILL.md)。

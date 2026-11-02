@@ -26,6 +26,7 @@ import (
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
+	"github.com/YoooClaw/cli/internal/data"
 	"github.com/YoooClaw/cli/internal/envhost"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
@@ -47,7 +48,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"data", "notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {
@@ -146,6 +147,9 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		defer releaseRelayConsumer()
 	}
 
+	if err := data.New(ctx.Paths.Data, cfg.Data).Init(); err != nil {
+		return err
+	}
 	storage := notif.NewStorage(ctx.Paths.Notifications, notif.PluginConfig{
 		RetentionDays: cfg.Notification.RetentionDays, IgnoredApps: cfg.Notification.IgnoredApps,
 	}, logger)
@@ -432,6 +436,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer s.activeRequests.Add(-1)
 	}
 	switch {
+	case path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write":
+		s.handleData(w, r, authCtx)
 	case assetKind(path) != "":
 		s.handleAssetRequest(w, r, assetKind(path), authCtx)
 	case path == "/daemon/status" && r.Method == http.MethodGet:
@@ -691,6 +697,8 @@ func (s *server) handleStatus(w http.ResponseWriter) {
 		"ingressMode":    s.ingressMode,
 		"cloud":          s.cloudStatusPayload(),
 		"activity":       s.activityPayload(),
+		"data":           s.dataStatus(),
+		"capabilities":   s.capabilities(),
 		"relay":          relayStatus,
 		"tunnels":        relayStatus["tunnels"],
 		"credentialMode": set.Mode, "defaultLabel": defaultLabel,
@@ -762,6 +770,9 @@ func (s *server) relayStatusPayload() map[string]any {
 // ── helpers ──
 
 func isIngestPath(path string) bool {
+	if path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" {
+		return true
+	}
 	if assetKind(path) != "" {
 		return true
 	}

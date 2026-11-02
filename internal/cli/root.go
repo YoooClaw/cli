@@ -41,6 +41,7 @@ func newRootCmd() *cobra.Command {
 		newRecordingCmd(),
 		newVoiceCmd(),
 		newImageCmd(),
+		newDataCmd(),
 		newSyncedWebPageCmd(),
 		newMonitorCmd(),
 		newLightCmd(),

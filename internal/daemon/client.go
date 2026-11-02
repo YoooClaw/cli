@@ -134,3 +134,46 @@ func AssertRunning(p paths.Paths) error {
 	}
 	return nil
 }
+
+// RequestRaw streams opaque content without JSON marshaling or auto-starting daemon.
+func (c *Client) RequestRaw(path string, body io.Reader, mimeType, key string) (any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+	req, e := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, body)
+	if e != nil {
+		return nil, e
+	}
+	req.Header.Set("Content-Type", mimeType)
+	req.Header.Set("Idempotency-Key", key)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, e := http.DefaultClient.Do(req)
+	if e != nil {
+		if isTimeoutErr(e) {
+			return nil, errs.New(errs.CodeDaemonUnresponsive, "daemon 响应超时")
+		}
+		return nil, errs.New(errs.CodeDaemonNotRunning, "daemon 未运行；请执行 yc daemon start")
+	}
+	defer resp.Body.Close()
+	var result any
+	if e = json.NewDecoder(resp.Body).Decode(&result); e != nil {
+		return nil, e
+	}
+	return CheckedResponse(resp.StatusCode, result)
+}
+
+// CheckedResponse preserves daemon error codes and a nonzero CLI exit status.
+func CheckedResponse(status int, result any) (any, error) {
+	if status >= 400 {
+		if m, ok := result.(map[string]any); ok {
+			if v, ok := m["error"].(map[string]any); ok {
+				code, _ := v["code"].(string)
+				message, _ := v["message"].(string)
+				return nil, errs.New(code, message)
+			}
+		}
+		return nil, errs.New(errs.CodeNetworkError, "daemon request failed")
+	}
+	return result, nil
+}

@@ -82,6 +82,7 @@ type Paths struct {
 	Voice         string
 	Images        string
 	WebPages      string
+	Data          string
 	LightRules    string
 	State         string
 }
@@ -112,6 +113,7 @@ func ForRoot(root, profile string) Paths {
 		Voice:         filepath.Join(dir, "voice"),
 		Images:        filepath.Join(dir, "images"),
 		WebPages:      filepath.Join(dir, "web-pages"),
+		Data:          filepath.Join(dir, "data"),
 		LightRules:    filepath.Join(dir, "light-rules"),
 		State:         filepath.Join(dir, "state"),
 	}

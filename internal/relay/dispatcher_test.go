@@ -36,6 +36,15 @@ func TestClientDispatcherReqAndRequest(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok":true,"data":{"ok":true,"echo":"notifications.push"}}`))
+		case "/gateway/data.write":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["contentBase64"] == "bad" {
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"ok":false,"error":{"code":"YOOOCLAW_DATA_IDEMPOTENCY_CONFLICT","message":"conflict"}}`))
+			} else {
+				_, _ = w.Write([]byte(`{"ok":true,"data":{"id":"object"},"deduped":true}`))
+			}
 		case "/notifications":
 			if r.Header.Get(InternalRequestIDHeader) != "http_1" {
 				t.Fatalf("missing relay request id on %s: %q", r.URL.Path, r.Header.Get(InternalRequestIDHeader))
@@ -86,6 +95,32 @@ func TestClientDispatcherReqAndRequest(t *testing.T) {
 		}
 		if reqResp.Payload["echo"] != "notifications.push" {
 			t.Fatalf("unexpected req payload: %+v", reqResp.Payload)
+		}
+
+		for _, content := range []string{"AA==", "bad"} {
+			if err := conn.WriteJSON(map[string]any{"type": "req", "id": "data", "method": "data.write", "params": map[string]any{"contentBase64": content}}); err != nil {
+				done <- err
+				return
+			}
+			msg, err := readNonHeartbeat(conn)
+			if err != nil {
+				done <- err
+				return
+			}
+			var res map[string]any
+			if err = json.Unmarshal([]byte(msg), &res); err != nil {
+				done <- err
+				return
+			}
+			if content == "bad" {
+				if res["ok"] != false || res["error"].(map[string]any)["code"] != "YOOOCLAW_DATA_IDEMPOTENCY_CONFLICT" {
+					t.Errorf("data error: %s", msg)
+				}
+			} else {
+				if res["ok"] != true || res["payload"].(map[string]any)["deduped"] != true {
+					t.Errorf("data result: %s", msg)
+				}
+			}
 		}
 
 		if err := conn.WriteJSON(map[string]any{
