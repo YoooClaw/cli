@@ -445,7 +445,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer s.activeRequests.Add(-1)
 	}
 	switch {
-	case path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path):
+	case path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path) || dataRecordPath(path):
 		s.handleData(w, r, authCtx)
 	case assetKind(path) != "":
 		s.handleAssetRequest(w, r, assetKind(path), authCtx)
@@ -779,7 +779,7 @@ func (s *server) relayStatusPayload() map[string]any {
 // ── helpers ──
 
 func isIngestPath(path string) bool {
-	if path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path) {
+	if path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path) || dataRecordPath(path) {
 		return true
 	}
 	if assetKind(path) != "" {

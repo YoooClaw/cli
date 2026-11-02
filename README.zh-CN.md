@@ -733,7 +733,10 @@ yc data gc
 
 默认配置：`data.maxObjectBytes=33554432`（32 MiB，硬上限 64 MiB），`data.maxInlineBytes=524288`（Relay 解码后 512 KiB），`data.quotaBytes=1073741824`（1 GiB），`data.retentionDays=null`（永久保留）。正数 retention 在启动和写入时按创建时间清理。配额按去重后的磁盘 blob 统计；删除对象后需 GC 回收无引用 blob。
 
-HTTP：`POST /data` 上传原始 body，query 传元数据，`Idempotency-Key` 可选；`GET /data` 检索，`GET /data/{id}` 元数据，`GET|HEAD /data/{id}/content` 下载，`DELETE /data/{id}` 删除；本机可调用 `POST /data/gc?dryRun=true`。Relay `data.write`（`POST /gateway/data.write`）使用元数据加 `contentBase64`，v1 不支持 Relay 读取。下载固定 attachment/octet-stream、nosniff、sandbox CSP 和 no-store。
+HTTP：`POST /data` 上传原始 body，query 传元数据，`Idempotency-Key` 可选；`GET /data` 检索，`GET /data/{id}` 元数据，`GET|HEAD /data/{id}/content` 下载，`DELETE /data/{id}` 删除；本机可调用 `POST /data/gc?dryRun=true`。Relay `data.write`（`POST /gateway/data.write`）使用元数据加 `contentBase64`，原始 `/data` 路由不支持 Relay 读取；记录页使用新增的有界 `data.list/get/content/resolve` 接口。下载固定 attachment/octet-stream、nosniff、sandbox CSP 和 no-store。
+
+网页记录页还支持 `data.capabilities`、`data.upload.begin/chunk/status/commit/abort`。任意文件可以通过 Relay 分块上传和下载，无需新增平台 OSS 上传接口；文字、小文件继续用 `data.write`，已有 OSS 文件继续用 `data.import`。上传会话可断点恢复，只有提交后的 `succeeded + objectId` 表示保存成功。完整请求、权限和恢复约定见[记录与文件传输接口](docs/design/data-records-relay.md)。
+
 
 本机写入标记 `local`，API key/Relay 只能访问自身 label 和共享历史对象。数据位于 `<profile>/data/`，目录 0700、文件 0600，**未静态加密，请勿保存高敏感密钥**。不接入 sync、memory、transfer。`daemon status` 提供用量及 `data` capability，`doctor` 检查目录与索引。详见 [data Skill](skills/yoooclaw-data/SKILL.md)。
 
@@ -746,4 +749,4 @@ yc data import-status IMPORT_TASK_ID --format json
 yc data import-retry IMPORT_TASK_ID --format json
 ```
 
-也可传 `--url 'https://BUCKET.oss-REGION.aliyuncs.com/object?...'`，附加 `--oss-task-id` 可在失败后刷新链接。必须提供原始大小和 SHA-256；受理返回 taskId，只有 `state=succeeded` 才表示保存成功，结果包含 `objectId`。Relay 对应 `data.import`、`data.import.status`、`data.import.retry`，不开放通用内容读取。下载复用现有 OSS 分段/checkpoint 能力，支持 daemon 重启后恢复任务，校验实际大小、哈希和客户端身份。`data.maxImportBytes` 默认 **1 GiB**，可调至 5 GiB，与直传限额独立，最终仍受 profile 配额约束。OSS 原对象沿用现有上传服务的生命周期，daemon 不自动删除。详见[接口与恢复契约](docs/design/data-oss-import.md)。
+也可传 `--url 'https://BUCKET.oss-REGION.aliyuncs.com/object?...'`，附加 `--oss-task-id` 可在失败后刷新链接。必须提供原始大小和 SHA-256；受理返回 taskId，只有 `state=succeeded` 才表示保存成功，结果包含 `objectId`。Relay 对应 `data.import`、`data.import.status`、`data.import.retry`，通用内容通过独立的 `data.content` 分块读取。下载复用现有 OSS 分段/checkpoint 能力，支持 daemon 重启后恢复任务，校验实际大小、哈希和客户端身份。`data.maxImportBytes` 默认 **1 GiB**，可调至 5 GiB，与直传限额独立，最终仍受 profile 配额约束。OSS 原对象沿用现有上传服务的生命周期，daemon 不自动删除。详见[接口与恢复契约](docs/design/data-oss-import.md)。

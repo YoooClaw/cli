@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 
@@ -64,16 +62,7 @@ func (s *server) startDataImports() error {
 	return nil
 }
 func decodeDataImport(w http.ResponseWriter, r *http.Request, out any) bool {
-	b, e := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
-	if e != nil || len(b) > 64<<10 {
-		writeDataError(w, data.Error("TOO_LARGE", "import metadata exceeds 64 KiB"))
-		return false
-	}
-	if json.Unmarshal(b, out) != nil {
-		writeDataError(w, data.Error("INVALID_PARAMS", "invalid import request"))
-		return false
-	}
-	return true
+	return decodeDataBody(w, r, out, 64<<10)
 }
 func (s *server) handleDataImport(w http.ResponseWriter, r *http.Request, a authResult) {
 	w.Header().Set("Cache-Control", "no-store")

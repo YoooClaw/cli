@@ -36,6 +36,7 @@ func assetKind(path string) string {
 // Every profile belongs to one owner; reads include all sources in that profile.
 func (s *server) capabilities() []string {
 	out := append([]string(nil), Capabilities...)
+	out = append(out, "data.records.v1", "data.upload.chunked.v1", "data.content.chunked.v1")
 	out = append(out, "assets.notifications.read.v1", "assets.web-pages.read.v1",
 		"assets.reminders.read.v1", "assets.locations.read.v1", "assets.calendars.read.v1", "assets.health-data.read.v1", "assets.health-data.sleep.read.v1", "assets.summary.read.v1")
 	return out

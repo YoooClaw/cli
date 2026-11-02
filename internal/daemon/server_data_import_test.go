@@ -47,6 +47,15 @@ func TestDataImportHTTPAndRelayLifecycle(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &response)
 	id := response.Data.TaskID
+	found, resolveErr := service.Resolve("once", "a")
+	if resolveErr != nil || found == nil || found.TaskID != id {
+		t.Fatal(found, resolveErr)
+	}
+	other, resolveErr := service.Resolve("once", "b")
+	if resolveErr != nil || other != nil {
+		t.Fatal(other, resolveErr)
+	}
+
 	if id == "" || response.Data.State != "queued" {
 		t.Fatal(response)
 	}

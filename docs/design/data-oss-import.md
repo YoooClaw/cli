@@ -39,7 +39,7 @@ The task moves through `queued` → `downloading` → `succeeded` or `failed`. S
 - `GET /data/imports/{taskId}` or Relay `data.import.status` with `{"taskId":"..."}`.
 - `POST /data/imports/{taskId}/retry` with `{}` or `{"url":"new-signed-url"}`; Relay `data.import.retry` also requires `taskId`.
 - Best-effort `data.import.status` terminal events go only to the submitting client label. Poll the durable status after reconnect; event delivery is not an exactly-once completion guarantee.
-- General object content/list reads remain unavailable over Relay. Task status does not expose signed URLs, metadata, or content.
+- General `/data` routes remain unavailable over Relay. The separate [record API](data-records-relay.md) provides scoped history, content ranges and idempotency-key lookup. Task status does not expose signed URLs, metadata, or content.
 
 ```sh
 # The file has already been uploaded using the existing OSS upload flow.

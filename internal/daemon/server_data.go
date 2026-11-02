@@ -32,9 +32,9 @@ func writeDataError(w http.ResponseWriter, e error) {
 		status = 400
 	case "TOO_LARGE", "QUOTA_EXCEEDED":
 		status = 413
-	case "IMPORT_BUSY":
+	case "IMPORT_BUSY", "UPLOAD_BUSY":
 		status = 429
-	case "IMPORT_UNAVAILABLE":
+	case "IMPORT_UNAVAILABLE", "UPLOAD_UNAVAILABLE":
 		status = 503
 	case "IDEMPOTENCY_CONFLICT":
 		status = 409
@@ -65,6 +65,11 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request, a authResult
 	store := s.dataStore()
 	path := r.URL.Path
 	scope := a.scope()
+	w.Header().Set("Cache-Control", "no-store")
+	if dataRecordPath(path) {
+		s.handleDataRecords(w, r, a)
+		return
+	}
 	if dataImportPath(path) {
 		s.handleDataImport(w, r, a)
 		return
@@ -81,15 +86,14 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request, a authResult
 		}
 		limit := store.Config.MaxInlineBytes
 		maxBody := base64.StdEncoding.EncodedLen(int(limit)) + 128*1024
-		b, e := io.ReadAll(io.LimitReader(r.Body, int64(maxBody)+1))
-		if e != nil || len(b) > maxBody {
-			writeDataError(w, data.Error("TOO_LARGE", "inline request too large"))
+		if !decodeDataBody(w, r, &body, int64(maxBody)) {
 			return
 		}
-		if json.Unmarshal(b, &body) != nil || body.ContentBase64 == nil {
+		if body.ContentBase64 == nil {
 			writeDataError(w, data.Error("INVALID_PARAMS", "contentBase64 is required"))
 			return
 		}
+
 		if len(*body.ContentBase64) > base64.StdEncoding.EncodedLen(int(limit)) {
 			writeDataError(w, data.Error("TOO_LARGE", "inline content too large"))
 			return
@@ -111,7 +115,11 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request, a authResult
 			writeDataError(w, e)
 			return
 		}
-		writeJSON(w, 201, result)
+		if a.authKind == "relay-api-key" {
+			writeJSON(w, 201, map[string]any{"ok": true, "data": publicDataObject(result.Data), "deduped": result.Deduped})
+		} else {
+			writeJSON(w, 201, result)
+		}
 		return
 	}
 	if path == "/data" {
