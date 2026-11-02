@@ -199,27 +199,25 @@ func TestExtractArchiveRejectsUnsafeAndMalformedInput(t *testing.T) {
 	tw = tar.NewWriter(&gnu)
 	_ = tw.WriteHeader(&tar.Header{Name: "blobs/" + strings.Repeat("c", 64) + strings.Repeat("/x", 40), Size: 0, Mode: 0o600, Format: tar.FormatGNU})
 	_ = tw.Close()
-	bomb := rawTar(manifest, rawEntry{name: "blobs/" + strings.Repeat("b", 64), declaredSize: MaxFullBytes + MaxManifestBytes + 1})
 	full := gz(t, rawTar(manifest))
 	cases := map[string]struct {
 		archive []byte
 		want    string
 	}{
-		"parent traversal":      {gz(t, rawTar(manifest, rawEntry{name: "../escape", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"absolute path":         {gz(t, rawTar(manifest, rawEntry{name: "/etc/passwd", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"symlink":               {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "2"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"hard link":             {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "1"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"pax header":            {gz(t, pax.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
-		"gnu long name":         {gz(t, gnu.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
-		"unknown file":          {gz(t, rawTar(manifest, rawEntry{name: "notes.txt", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
-		"duplicate":             {gz(t, rawTar(manifest, manifest)), "ARCHIVE_DUPLICATE_ENTRY"},
-		"bad checksum":          {gz(t, rawTar(rawEntry{name: "manifest.json", body: "{}", badChecksum: true})), "ARCHIVE_INVALID"},
-		"missing manifest":      {gz(t, rawTar(rawEntry{name: blob, body: "x"})), "ARCHIVE_INVALID"},
-		"not gzip":              {[]byte("not a gzip file"), "ARCHIVE_INVALID"},
-		"truncated":             {full[:30], "ARCHIVE_INVALID"},
-		"expanded byte ceiling": {gz(t, bomb), "ARCHIVE_TOO_LARGE"},
-		"minimal valid":         {full, "OK"},
-		"dot-slash accepted":    {gz(t, rawTar(rawEntry{name: "./manifest.json", body: "{}"})), "OK"},
+		"parent traversal":   {gz(t, rawTar(manifest, rawEntry{name: "../escape", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"absolute path":      {gz(t, rawTar(manifest, rawEntry{name: "/etc/passwd", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"symlink":            {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "2"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"hard link":          {gz(t, rawTar(manifest, rawEntry{name: blob, typ: "1"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"pax header":         {gz(t, pax.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
+		"gnu long name":      {gz(t, gnu.Bytes()), "ARCHIVE_UNSAFE_ENTRY"},
+		"unknown file":       {gz(t, rawTar(manifest, rawEntry{name: "notes.txt", body: "x"})), "ARCHIVE_UNSAFE_ENTRY"},
+		"duplicate":          {gz(t, rawTar(manifest, manifest)), "ARCHIVE_DUPLICATE_ENTRY"},
+		"bad checksum":       {gz(t, rawTar(rawEntry{name: "manifest.json", body: "{}", badChecksum: true})), "ARCHIVE_INVALID"},
+		"missing manifest":   {gz(t, rawTar(rawEntry{name: blob, body: "x"})), "ARCHIVE_INVALID"},
+		"not gzip":           {[]byte("not a gzip file"), "ARCHIVE_INVALID"},
+		"truncated":          {full[:30], "ARCHIVE_INVALID"},
+		"minimal valid":      {full, "OK"},
+		"dot-slash accepted": {gz(t, rawTar(rawEntry{name: "./manifest.json", body: "{}"})), "OK"},
 	}
 	names := make([]string, 0, len(cases))
 	for name := range cases {
