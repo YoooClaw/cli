@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,12 +127,35 @@ func skillPath(f FullFile) (name, prefix string) {
 	}
 	return parts[0], prefix + parts[0] + "/"
 }
+
+// Shorten only components exceeding the common filesystem NAME_MAX byte limit.
+// Hash the original name (not content), so repeats and sibling directories stay stable.
+func portableDestination(p string) string {
+	parts := strings.Split(p, "/")
+	for i, name := range parts {
+		if len(name) <= 255 {
+			continue
+		}
+		ext := path.Ext(name)
+		if len(ext) > 32 {
+			ext = ""
+		}
+		stem := []rune(strings.TrimSuffix(name, ext))
+		if len(stem) > 10 {
+			stem = stem[:10]
+		}
+		sum := sha256.Sum256([]byte(name))
+		parts[i] = fmt.Sprintf("%s-%x%s", string(stem), sum[:8], ext)
+	}
+	return strings.Join(parts, "/")
+}
+
 func conflictDestination(m *Manifest, f FullFile) string {
 	rel := f.Path
 	if f.Category == "cron" && rel == "jobs.json" || f.Category == "agent-backup" && strings.HasSuffix(rel, "/cron/jobs.json") {
 		rel = strings.TrimSuffix(rel, "jobs.json") + "from_openclaw_cron.json"
 	}
-	return workspaceBase() + "/migration/conflicts/" + m.PackageID + "/" + f.Category + "/" + f.Scope + "/" + rel
+	return portableDestination(workspaceBase() + "/migration/conflicts/" + m.PackageID + "/" + f.Category + "/" + f.Scope + "/" + rel)
 }
 
 func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
@@ -221,6 +245,7 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 				continue
 			}
 		}
+		dest = portableDestination(dest)
 		state, e := targetState(home, dest)
 		if e != nil {
 			return nil, e
@@ -410,7 +435,7 @@ func (s *Service) installSkill(root *os.Root, home, local string, item Workspace
 		if e != nil {
 			return e
 		}
-		if e = installFile(s.ctx, root, home, temp+"/"+strings.TrimPrefix(f.Path, item.SkillPrefix), blob, f.Hash); e != nil {
+		if e = installFile(s.ctx, root, home, temp+"/"+portableDestination(strings.TrimPrefix(f.Path, item.SkillPrefix)), blob, f.Hash); e != nil {
 			return e
 		}
 	}
@@ -447,6 +472,7 @@ func (s *Service) writeMigrationIndex(m *Manifest, results []WorkspaceResult) (s
 	memory := map[string]string{}
 	cron := ""
 	locations := []WorkspaceResult{}
+	pathMappings := map[string]string{}
 	for _, r := range results {
 		locations = append(locations, r)
 		if r.Outcome == OutcomeFailed {
@@ -456,6 +482,14 @@ func (s *Service) writeMigrationIndex(m *Manifest, results []WorkspaceResult) (s
 			continue
 		}
 		for _, f := range r.Source {
+			target := r.Path
+			if f.Category == "skills" {
+				_, prefix := skillPath(f)
+				if prefix != "" {
+					target = filepath.Join(r.Path, filepath.FromSlash(portableDestination(strings.TrimPrefix(f.Path, prefix))))
+				}
+			}
+			pathMappings[logicalKey(f)] = target
 			if (f.Category == "agent-settings" || f.Category == "memory") && memoryNames[f.Path] {
 				memory[f.Path] = r.Path
 			}
@@ -464,7 +498,7 @@ func (s *Service) writeMigrationIndex(m *Manifest, results []WorkspaceResult) (s
 			cron = r.Path
 		}
 	}
-	doc := map[string]any{"schemaVersion": 1, "owner": "yoooclaw-transfer", "packageId": m.PackageID, "workspace": filepath.Join(home, workspaceBase()), "memoryFiles": memory, "cronFile": cron, "dailyLogDirectory": filepath.Join(home, projectMemory(home)), "files": locations, "warnings": m.Warnings}
+	doc := map[string]any{"schemaVersion": 1, "owner": "yoooclaw-transfer", "packageId": m.PackageID, "workspace": filepath.Join(home, workspaceBase()), "memoryFiles": memory, "cronFile": cron, "dailyLogDirectory": filepath.Join(home, projectMemory(home)), "files": locations, "warnings": m.Warnings, "pathMappings": pathMappings}
 	content, _ := json.MarshalIndent(doc, "", "  ")
 	// Only our own index can be replaced on resume; a user file is never overwritten.
 	if old, er := root.ReadFile(rel); er == nil {
