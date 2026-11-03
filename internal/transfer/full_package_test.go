@@ -618,3 +618,35 @@ func TestImportShortensLongFilenames(t *testing.T) {
 		t.Fatal("normal name changed")
 	}
 }
+
+func TestAutomaticImportKeepsCompletedResultUntilExecutorCleanup(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	pkg := fullFixture(t)
+	id := newUUID()
+	preview, err := dst.svc.Handle(Request{Action: "preview", File: pkg, StageID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := preview.(map[string]any)
+	if p["localTransferId"] != id {
+		t.Fatal("unstable staging id")
+	}
+	req := Request{Action: "import", LocalTransferID: id, PlanID: p["planId"].(string), Resume: true, PreserveStaging: true}
+	result, err := dst.svc.Handle(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]any)["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	if _, err = os.Stat(filepath.Join(dst.svc.Dir, id, "manifest.json")); err != nil {
+		t.Fatal("staging removed before completion checkpoint", err)
+	}
+	// Recreate the service object, as on daemon restart. A saved success only needs reporting.
+	next := &Service{Home: dst.svc.Home, Dir: dst.svc.Dir, Roots: dst.svc.Roots, Notifications: dst.svc.Notifications, Recordings: dst.svc.Recordings}
+	result, err = next.Handle(req)
+	if err != nil || result.(map[string]any)["state"] != "SUCCEEDED" {
+		t.Fatal(result, err)
+	}
+}

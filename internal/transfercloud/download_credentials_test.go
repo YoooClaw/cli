@@ -144,7 +144,7 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 	dest := filepath.Join(dir, "package")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := ossdownload.Download(ctx, p, signedURL, testID, dest, dir, MaxDownloadBytes, false); err != nil {
+	if err := ossdownload.Download(ctx, p, signedURL, testID, dest, dir, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(dest)

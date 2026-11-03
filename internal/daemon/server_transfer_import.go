@@ -18,6 +18,7 @@ import (
 
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/relay"
 	"github.com/YoooClaw/cli/internal/transfer"
 	"github.com/YoooClaw/cli/internal/transfercloud"
@@ -25,6 +26,8 @@ import (
 )
 
 type importDependencies struct {
+	dir      string
+	cleanup  func(string) error
 	download func(context.Context, string, string, transfercloud.ProgressOptions) (error, error)
 	handle   func(context.Context, transfer.Request) (any, error)
 	log      func(string)
@@ -43,51 +46,124 @@ func executeTransferImport(ctx context.Context, req transferjob.Request, progres
 			log(fmt.Sprintf("%s.failed code=%s elapsedMs=%d totalElapsedMs=%d", stage, transferLogErrorCode(runErr), time.Since(stageStarted).Milliseconds(), time.Since(started).Milliseconds()))
 		}
 	}()
-	log("download.started")
-	dir, err := os.MkdirTemp("", "yoooclaw-async-import-*")
-	if err != nil {
+	dir := deps.dir
+	if dir == "" {
+		var err error
+		dir, err = os.MkdirTemp("", "yoooclaw-async-import-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	defer os.RemoveAll(dir)
+	statePath := filepath.Join(dir, "state.json")
+	var state struct {
+		Local            string `json:"local"`
+		Plan             string `json:"plan"`
+		Downloaded       bool   `json:"downloaded"`
+		DownloadReported bool   `json:"downloadReported"`
+		Done             bool   `json:"done"`
+	}
+	if raw, err := os.ReadFile(statePath); err == nil {
+		if err = json.Unmarshal(raw, &state); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	save := func() error {
+		raw, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+		return fsutil.WriteAtomic(statePath, raw, 0600)
+	}
+	cleanup := func() {
+		if deps.cleanup != nil && state.Local != "" {
+			if err := deps.cleanup(state.Local); err != nil {
+				log("cleanup.pending")
+			}
+		}
+	}
+	if state.Done {
+		cleanup()
+		log("import.resume_completed")
+		return nil
+	}
+	if state.Local == "" {
+		sum := sha256.Sum256([]byte(req.TransferID + "\x00" + req.FileTaskID))
+		state.Local = fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+		if err := save(); err != nil {
+			return err
+		}
+	}
 	path := filepath.Join(dir, "migration.tar.gz")
-	if err, _ = deps.download(ctx, req.FileTaskID, path, progress); err != nil {
-		return err
+	progress.CheckpointFile = filepath.Join(dir, "progress.json")
+	if !state.Downloaded {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			state.Downloaded = true
+		}
 	}
-	if info, e := os.Stat(path); e == nil {
-		log(fmt.Sprintf("download.completed bytes=%d elapsedMs=%d", info.Size(), time.Since(stageStarted).Milliseconds()))
+	if state.Plan == "" {
+		if !state.Downloaded {
+			log("download.started")
+			if err, _ := deps.download(ctx, req.FileTaskID, path, progress); err != nil {
+				return err
+			}
+			state.Downloaded = true
+			if err := save(); err != nil {
+				return err
+			}
+			if info, err := os.Stat(path); err == nil {
+				log(fmt.Sprintf("download.completed bytes=%d elapsedMs=%d", info.Size(), time.Since(stageStarted).Milliseconds()))
+			}
+		}
+		stage, stageStarted = "validation", time.Now()
+		log("validation.started")
+		preview, err := deps.handle(ctx, transfer.Request{Action: "preview", File: path, CloudTaskID: req.FileTaskID, StageID: state.Local})
+		if err != nil {
+			return err
+		}
+		p, ok := preview.(map[string]any)
+		if !ok {
+			return errors.New("TRANSFER_PLAN_INVALID")
+		}
+		local, _ := p["localTransferId"].(string)
+		plan, _ := p["planId"].(string)
+		if local == "" || plan == "" {
+			return errors.New("TRANSFER_PLAN_INVALID")
+		}
+		state.Local, state.Plan = local, plan
+		if err := save(); err != nil {
+			return err
+		}
+		log(fmt.Sprintf("validation.completed elapsedMs=%d", time.Since(stageStarted).Milliseconds()))
 	} else {
-		log(fmt.Sprintf("download.completed elapsedMs=%d", time.Since(stageStarted).Milliseconds()))
+		log("import.resume_plan")
 	}
-	stage, stageStarted = "validation", time.Now()
-	log("validation.started")
-	preview, err := deps.handle(ctx, transfer.Request{Action: "preview", File: path, CloudTaskID: req.FileTaskID})
-	if err != nil {
+	stage = "download_cleanup"
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	p, ok := preview.(map[string]any)
-	if !ok {
-		return errors.New("TRANSFER_PLAN_INVALID")
-	}
-	local, _ := p["localTransferId"].(string)
-	plan, _ := p["planId"].(string)
-	if local == "" || plan == "" {
-		return errors.New("TRANSFER_PLAN_INVALID")
-	}
-	log(fmt.Sprintf("validation.completed elapsedMs=%d", time.Since(stageStarted).Milliseconds()))
-	// Preview owns a verified staging copy; release the download before target writes.
-	stage, stageStarted = "download_cleanup", time.Now()
-	if err := os.RemoveAll(dir); err != nil {
+	if err := os.RemoveAll(path + ".download"); err != nil {
 		return err
 	}
 	log("download.archive_removed")
-	stage, stageStarted = "download_completion_report", time.Now()
-	// Preview performs the existing archive/manifest/blob checks before reporting download completion.
-	if err = emit("DOWNLOAD_COMPLETED"); err != nil {
-		return err
+	if !state.DownloadReported {
+		stage = "download_completion_report"
+		if err := emit("DOWNLOAD_COMPLETED"); err != nil {
+			return err
+		}
+		state.DownloadReported = true
+		if err := save(); err != nil {
+			return err
+		}
 	}
 	stage, stageStarted = "import", time.Now()
 	log("import.writing")
-	result, err := deps.handle(ctx, transfer.Request{Action: "import", LocalTransferID: local, PlanID: plan})
+	result, err := deps.handle(ctx, transfer.Request{Action: "import", LocalTransferID: state.Local, PlanID: state.Plan, Resume: true, PreserveStaging: true})
 	if err != nil {
 		return err
 	}
@@ -95,9 +171,12 @@ func executeTransferImport(ctx context.Context, req transferjob.Request, progres
 	if !ok || out["state"] != "SUCCEEDED" {
 		return errors.New("TRANSFER_IMPORT_PARTIAL")
 	}
-	if err := ctx.Err(); err != nil {
+	state.Done = true
+	if err := save(); err != nil {
 		return err
 	}
+	cleanup()
+
 	records, _ := out["results"].([]transfer.Result)
 	files, _ := out["workspaceResults"].([]transfer.WorkspaceResult)
 	log(fmt.Sprintf("import.written records=%d workspaceItems=%d elapsedMs=%d", len(records), len(files), time.Since(stageStarted).Milliseconds()))
@@ -165,7 +244,9 @@ func (s *server) startTransferImports() error {
 			err := executeTransferImport(ctx, req, transfercloud.ProgressOptions{TransferID: req.TransferID, BaseURL: base, DownloadLog: func(written, total int64, elapsed, idle time.Duration) {
 				s.logger.Info(fmt.Sprintf("[transfer] transferId=%s download.activity bytes=%d totalBytes=%d elapsedMs=%d idleMs=%d", req.TransferID, written, total, elapsed.Milliseconds(), idle.Milliseconds()))
 			}}, importDependencies{
-				log: s.logger.Info,
+				dir:     filepath.Join(s.ctx.Paths.Dir, "transfer-import-jobs", req.TransferID),
+				cleanup: func(id string) error { return s.transfer.CleanupStaging(id) },
+				log:     s.logger.Info,
 				download: func(ctx context.Context, id, path string, options transfercloud.ProgressOptions) (error, error) {
 					downloadErr, reportErr := cloud.DownloadWithProgress(s.transferReportContext(ctx, req.TransferID), id, path, options)
 					if reportErr != nil {

@@ -29,6 +29,7 @@ func NewAdapter(client HTTPClient, rawURL string, maxBytes int64, allowFallback 
 
 // Download reuses the caller's private checkpoint directory across attempts.
 // Key and destination remain stable even when a signed URL changes.
+// A non-positive maxBytes disables the size cap; range and ETag checks still apply.
 func Download(ctx context.Context, client HTTPClient, rawURL, key, dest, checkpoint string, maxBytes int64, allowFallback bool, progress ...func(int64, int64, int64)) error {
 	downloader := oss.NewDownloader(NewAdapter(client, rawURL, maxBytes, allowFallback), func(o *oss.DownloaderOptions) {
 		o.PartSize = 8 << 20
@@ -106,7 +107,7 @@ func parseContentRange(s string, maxBytes int64) (start, end, total int64, err e
 	start, e1 := strconv.ParseInt(span[0], 10, 64)
 	end, e2 := strconv.ParseInt(span[1], 10, 64)
 	total, e3 := strconv.ParseInt(parts[1], 10, 64)
-	if e1 != nil || e2 != nil || e3 != nil || start < 0 || end < start || total <= end || total > maxBytes {
+	if e1 != nil || e2 != nil || e3 != nil || start < 0 || end < start || total <= end || (maxBytes > 0 && total > maxBytes) {
 		return 0, 0, 0, fmt.Errorf("invalid range")
 	}
 	return start, end, total, nil

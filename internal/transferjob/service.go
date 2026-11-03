@@ -54,6 +54,7 @@ type record struct {
 	Request         Request   `json:"request"`
 	Label           string    `json:"label"`
 	Identity        string    `json:"identity"`
+	Started         bool      `json:"started,omitempty"`
 	Deadline        time.Time `json:"deadline"`
 	State           string    `json:"state"`
 	Result          *Event    `json:"result,omitempty"`
@@ -96,15 +97,14 @@ func New(dir string, deps Dependencies) (*Service, error) {
 		if json.Unmarshal(raw, &job) != nil || !job.Request.Valid() || entry.Name() != job.Request.TransferID+".json" {
 			return nil, errors.New("TRANSFER_JOB_CORRUPT")
 		}
-		// An interrupted import can have committed files. Never replay it silently.
 		if job.State == "running" {
-			job.State = "done"
-			s.info(job.Request.TransferID, "import.interrupted")
-			job.Result = &Event{job.Request.TransferID, "IMPORT_FAILED", "迁入进程中断，请联系客服核查"}
+			job.State = "queued"
+			s.info(job.Request.TransferID, "import.resume_pending")
 			if e = s.save(&job); e != nil {
 				return nil, e
 			}
 		}
+
 		s.info(job.Request.TransferID, fmt.Sprintf("import.recovered state=%s reported=%t", job.State, job.Reported))
 		s.jobs[job.Request.TransferID] = &job
 	}
@@ -249,7 +249,20 @@ func (s *Service) process() {
 			started := time.Now()
 			s.info(j.Request.TransferID, "import.started")
 			ctx, cancel := context.WithDeadline(s.ctx, j.Deadline)
-			err := s.emit(ctx, j, Event{TransferID: j.Request.TransferID, EventType: "IMPORT_STARTED"})
+			var err error
+			if !s.valid(j) {
+				err = errors.New("TRANSFER_IDENTITY_CHANGED")
+			}
+			if err == nil {
+				err = ctx.Err()
+			}
+			if err == nil && !j.Started {
+				err = s.emit(ctx, j, Event{TransferID: j.Request.TransferID, EventType: "IMPORT_STARTED"})
+				if err == nil {
+					j.Started = true
+					err = s.save(j)
+				}
+			}
 			if err == nil {
 				err = s.deps.Run(ctx, j.Request, j.Label, func(kind string) error {
 					return s.emit(ctx, j, Event{TransferID: j.Request.TransferID, EventType: kind})
@@ -259,6 +272,10 @@ func (s *Service) process() {
 				err = ctx.Err()
 			}
 			cancel()
+			if s.ctx.Err() != nil && err != nil {
+				s.info(j.Request.TransferID, "import.suspended")
+				return // Keep running state and the original deadline for next startup.
+			}
 			result := &Event{TransferID: j.Request.TransferID, EventType: "IMPORT_SUCCEEDED"}
 			if err != nil {
 				result.EventType = "IMPORT_FAILED"

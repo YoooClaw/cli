@@ -3,7 +3,6 @@ package transfercloud
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,11 +109,11 @@ func (c *Client) download(ctx context.Context, id, path string, progress func(in
 	if !ValidTaskID(id) {
 		return failure("INVALID_TASK", "迁移 taskId 无效")
 	}
-	checkpoint, err := os.MkdirTemp("", "yoooclaw-download-*")
-	if err != nil {
+	checkpoint := path + ".download"
+	if err := os.MkdirAll(checkpoint, 0700); err != nil {
 		return err
 	}
-	defer os.RemoveAll(checkpoint)
+	var err error
 	// Work entirely inside a private directory, including the SDK's temporary file.
 	downloaded := filepath.Join(checkpoint, "package.tar.gz")
 	err = retry(ctx, func() error {
@@ -123,7 +122,7 @@ func (c *Client) download(ctx context.Context, id, path string, progress func(in
 			return e
 		}
 		client := &renewingDownloadClient{cloud: c, taskID: id, link: link, now: time.Now}
-		e = ossdownload.Download(ctx, client, link.SignedURL, id, downloaded, checkpoint, MaxDownloadBytes, false, progress)
+		e = ossdownload.Download(ctx, client, link.SignedURL, id, downloaded, checkpoint, 0, false, progress)
 		if e != nil {
 			return failure("CLOUD_DOWNLOAD_FAILED", "迁移包下载失败，任务 "+id)
 		}
@@ -132,21 +131,9 @@ func (c *Client) download(ctx context.Context, id, path string, progress func(in
 	if err != nil {
 		return err
 	}
-	// Destinations can be on a different filesystem from the checkpoint directory.
-	source, err := os.Open(downloaded)
-	if err != nil {
+	// Checkpoint and destination share a filesystem. Commit without a second copy.
+	if err := os.Link(downloaded, path); err != nil {
 		return err
 	}
-	defer source.Close()
-	dest, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(dest, source)
-	closeErr := dest.Close()
-	if copyErr != nil || closeErr != nil {
-		os.Remove(path)
-		return failure("CLOUD_DOWNLOAD_FAILED", "保存迁移压缩包失败")
-	}
-	return nil
+	return os.RemoveAll(checkpoint)
 }

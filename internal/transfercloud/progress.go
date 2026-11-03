@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/YoooClaw/cli/internal/fsutil"
 	"io"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,9 +23,10 @@ var transferIDRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // BaseURL is the agreed fulfillment transfer prefix, on the configured API host.
 // TransferID is the fulfillment job ID, NOT the file service task ID.
 type ProgressOptions struct {
-	TransferID string
-	BaseURL    string
-	Interval   time.Duration
+	TransferID     string
+	BaseURL        string
+	Interval       time.Duration
+	CheckpointFile string // Private local progress receipt for restart recovery.
 	// Called only for throttled report attempts, without exposing credentials or URLs.
 	ReportLog func(progress int, success bool)
 	// Local diagnostic heartbeat; never sends an extra server request.
@@ -124,9 +127,26 @@ func (c *Client) DownloadWithProgress(ctx context.Context, id, path string, o Pr
 	}
 	interval += time.Duration(rand.Int64N(int64(time.Second)))
 	attempt := 0
+	highWater := 0
+	if o.CheckpointFile != "" {
+		if raw, e := os.ReadFile(o.CheckpointFile); e == nil {
+			_ = json.Unmarshal(raw, &highWater)
+		}
+		highWater = max(0, min(99, highWater))
+	}
 	reporter := newProgressReporter(ctx, interval, func(ctx context.Context, n int) error {
 		attempt++
+		n = max(n, highWater)
 		err := c.sendProgress(context.WithValue(ctx, reportAttemptKey{}, attempt), o, n)
+		if err == nil {
+			highWater = n
+			if o.CheckpointFile != "" {
+				raw, _ := json.Marshal(n)
+				if e := fsutil.WriteAtomic(o.CheckpointFile, raw, 0600); e != nil {
+					err = e
+				}
+			}
+		}
 		if o.ReportLog != nil {
 			o.ReportLog(n, err == nil)
 		}

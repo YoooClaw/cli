@@ -272,3 +272,66 @@ func TestTransferErrorLogDoesNotTreatBareUserTextAsCode(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestImportExecutorRestartReusesStages(t *testing.T) {
+	for _, interrupt := range []string{"download", "preview", "import", "done"} {
+		t.Run(interrupt, func(t *testing.T) {
+			dir := t.TempDir()
+			downloads, previews, imports, reports, cleanups := 0, 0, 0, 0, 0
+			first := true
+			d := importDependencies{dir: dir,
+				cleanup: func(string) error { cleanups++; return nil },
+				download: func(ctx context.Context, id, p string, o transfercloud.ProgressOptions) (error, error) {
+					downloads++
+					if first && interrupt == "download" {
+						os.WriteFile(p+".partial", []byte("partial"), 0600)
+						return context.Canceled, nil
+					}
+					return os.WriteFile(p, []byte("archive"), 0600), nil
+				},
+				handle: func(ctx context.Context, r transfer.Request) (any, error) {
+					if r.Action == "preview" {
+						previews++
+						if first && interrupt == "preview" {
+							return nil, context.Canceled
+						}
+						return map[string]any{"localTransferId": r.StageID, "planId": "plan"}, nil
+					}
+					imports++
+					if !r.Resume || !r.PreserveStaging {
+						t.Fatal("resume flags missing")
+					}
+					if first && interrupt == "import" {
+						return nil, context.Canceled
+					}
+					return map[string]any{"state": "SUCCEEDED"}, nil
+				},
+			}
+			emit := func(string) error { reports++; return nil }
+			req := transferjob.Request{TransferID: "resume", FileTaskID: strings.Repeat("a", 32)}
+			err := executeTransferImport(context.Background(), req, transfercloud.ProgressOptions{}, d, emit)
+			if (err == nil) != (interrupt == "done") {
+				t.Fatal(err)
+			}
+			first = false
+			if err = executeTransferImport(context.Background(), req, transfercloud.ProgressOptions{}, d, emit); err != nil {
+				t.Fatal(err)
+			}
+			expectedDownloads := 1
+			if interrupt == "download" {
+				expectedDownloads = 2
+			}
+			expectedPreviews := 1
+			if interrupt == "preview" {
+				expectedPreviews = 2
+			}
+			expectedImports := 1
+			if interrupt == "import" {
+				expectedImports = 2
+			}
+			if downloads != expectedDownloads || previews != expectedPreviews || imports != expectedImports || reports != 1 || cleanups == 0 {
+				t.Fatalf("download=%d preview=%d import=%d reports=%d cleanup=%d", downloads, previews, imports, reports, cleanups)
+			}
+		})
+	}
+}
