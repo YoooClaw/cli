@@ -36,6 +36,7 @@ type Service struct {
 	Recordings    *recording.Storage
 	ctx           context.Context
 	mu            sync.Mutex
+	receipts      map[string]fileReceipt
 }
 
 // Request 是 daemon /transfer 的请求体（字段与插件本地端点一致）。
@@ -44,7 +45,9 @@ type Request struct {
 	CloudTaskID     string `json:"cloudTaskId,omitempty"`
 	File            string `json:"file,omitempty"`
 	LocalTransferID string `json:"localTransferId,omitempty"`
+	StageID         string `json:"-"`
 	PlanID          string `json:"planId,omitempty"`
+	PreserveStaging bool   `json:"-"`
 	Resume          bool   `json:"resume,omitempty"`
 }
 
@@ -60,6 +63,7 @@ type Result struct {
 	Type     string `json:"type"`
 	RecordID string `json:"recordId"`
 	Outcome  string `json:"outcome"`
+	Reason   string `json:"reason,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
 
@@ -97,9 +101,9 @@ func (s *Service) HandleContext(parent context.Context, req Request) (any, error
 				return nil, fail("INVALID_TASK")
 			}
 		}
-		return s.stage(req.File, req.CloudTaskID)
+		return s.stage(req.File, req.CloudTaskID, req.StageID)
 	case "import":
-		return s.importPlan(req.LocalTransferID, req.PlanID, req.Resume)
+		return s.importPlan(req.LocalTransferID, req.PlanID, req.Resume, req.PreserveStaging)
 	}
 	return nil, fail("UNKNOWN_ACTION")
 }
@@ -269,7 +273,7 @@ func stagePackage(ctx context.Context, source, local string) (*Manifest, error) 
 
 // stage 校验包、只复制清单列出的资源到私有 staging 目录，再生成预览计划。
 // --file 永远只到预览为止，合并必须走 --local + --plan。
-func (s *Service) stage(file, taskID string) (any, error) {
+func (s *Service) stage(file, taskID, stageID string) (any, error) {
 	if err := fsutil.EnsureDir(s.Dir, fsutil.DirMode); err != nil {
 		return nil, err
 	}
@@ -279,6 +283,15 @@ func (s *Service) stage(file, taskID string) (any, error) {
 		return nil, err
 	}
 	localID := newUUID()
+	if stageID != "" {
+		if !uuidRE.MatchString(stageID) {
+			return nil, fail("INVALID_LOCAL_ID")
+		}
+		localID = stageID
+		if err := os.RemoveAll(filepath.Join(s.Dir, localID)); err != nil {
+			return nil, err
+		}
+	}
 	local := filepath.Join(s.Dir, localID)
 	cleanup := func(err error) (any, error) {
 		_ = os.RemoveAll(local)
@@ -312,7 +325,7 @@ func (s *Service) stage(file, taskID string) (any, error) {
 	}, nil
 }
 
-func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
+func (s *Service) importPlan(localID, planID string, resume, preserve bool) (any, error) {
 	if !uuidRE.MatchString(localID) {
 		return nil, fail("INVALID_LOCAL_ID")
 	}
@@ -338,6 +351,17 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 	}
 	reportPath := filepath.Join(local, "report.json")
 	hasPrevious := pathExists(reportPath)
+	if resume && hasPrevious {
+		var completed map[string]any
+		if raw, e := os.ReadFile(reportPath); e == nil && json.Unmarshal(raw, &completed) == nil && completed["state"] == "SUCCEEDED" && completed["planId"] == planID {
+			return completed, nil
+		}
+	}
+	if err := s.cleanupPendingTarget(local); err != nil {
+		return nil, err
+	}
+	s.receipts = loadFileReceipts(filepath.Join(local, "files.jsonl"))
+	defer func() { s.receipts = nil }()
 	fresh, err := s.preview(m)
 	if err != nil {
 		return nil, err
@@ -345,7 +369,7 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 	if !resume && fresh.TargetVersion != stored.Plan.TargetVersion {
 		return nil, fail("PLAN_STALE")
 	}
-	if resume && !hasPrevious {
+	if resume && !hasPrevious && !preserve {
 		return nil, fail("NOTHING_TO_RESUME")
 	}
 	results := []Result{}
@@ -397,7 +421,12 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 			if err != nil {
 				results = append(results, Result{Type: r.Type, RecordID: r.RecordID, Outcome: OutcomeFailed, Error: err.Error()})
 			} else {
-				results = append(results, Result{Type: r.Type, RecordID: r.RecordID, Outcome: outcomes[i]})
+				result := Result{Type: r.Type, RecordID: r.RecordID, Outcome: outcomes[i]}
+				if result.Outcome == OutcomeConflict {
+					result.Outcome = OutcomeSkipped
+					result.Reason = "existing-record-conflict"
+				}
+				results = append(results, result)
 			}
 		}
 		if err := progress(); err != nil {
@@ -461,7 +490,7 @@ func (s *Service) importPlan(localID, planID string, resume bool) (any, error) {
 		return nil, err
 	}
 	// 成功即清理 staging 副本；PARTIAL/失败保留可重试包与 report，等用户处理。
-	if state == "SUCCEEDED" {
+	if state == "SUCCEEDED" && !preserve {
 		_ = os.RemoveAll(local)
 		delete(result, "reportPath")
 		result["staging"] = "cleaned"
@@ -559,4 +588,12 @@ func writePrivateJSON(path string, v any) error {
 		return err
 	}
 	return fsutil.WriteAtomic(path, raw, fsutil.SecretFileMode)
+}
+
+// CleanupStaging is called after the asynchronous executor saves completion.
+func (s *Service) CleanupStaging(localID string) error {
+	if !uuidRE.MatchString(localID) {
+		return fail("INVALID_LOCAL_ID")
+	}
+	return os.RemoveAll(filepath.Join(s.Dir, localID))
 }
