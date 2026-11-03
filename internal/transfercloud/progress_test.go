@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -274,5 +275,33 @@ func TestDefaultFulfillmentByEnvironment(t *testing.T) {
 				t.Fatal("accepted unsafe override")
 			}
 		}
+	}
+}
+
+func TestRestartProgressDoesNotResetToZero(t *testing.T) {
+	var reports []int
+	var mu sync.Mutex
+	c := mockOSSClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "download-progress") {
+			var body struct {
+				Progress int `json:"progress"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			reports = append(reports, body.Progress)
+			mu.Unlock()
+			w.Write([]byte(`{"success":true,"code":"000000","data":null}`))
+			return
+		}
+		w.WriteHeader(403)
+	})
+	dir := t.TempDir()
+	checkpoint := filepath.Join(dir, "progress.json")
+	os.WriteFile(checkpoint, []byte("73"), 0600)
+	_, _ = c.DownloadWithProgress(context.Background(), testID, filepath.Join(dir, "package.tar.gz"), ProgressOptions{TransferID: "tr_test", BaseURL: "https://api.example/fulfillment/transfer", CheckpointFile: checkpoint})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reports) == 0 || reports[0] != 73 {
+		t.Fatalf("progress reset: %v", reports)
 	}
 }
