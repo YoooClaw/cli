@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,5 +61,62 @@ func TestPendingTemporaryTargetCleanup(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "user.txt")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCommitFileCollisionReusesTemporaryFile(t *testing.T) {
+	for _, identical := range []bool{false, true} {
+		t.Run(fmt.Sprint(identical), func(t *testing.T) {
+			home := t.TempDir()
+			tmp := filepath.Join(home, ".transfer-test")
+			if err := os.WriteFile(tmp, []byte("incoming"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			hash, err := hashFile(tmp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(tmp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Another writer claims the destination after the copy has completed.
+			existing := "existing"
+			if identical {
+				existing = "incoming"
+			}
+			if err := os.WriteFile(filepath.Join(home, "note.md"), []byte(existing), 0600); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			actual := "note.md"
+			if err := commitImportedFile(context.Background(), root, home, ".transfer-test", "note.md", hash, &actual); err != nil {
+				t.Fatal(err)
+			}
+			want := "note-1.md"
+			if identical {
+				want = "note.md"
+			}
+			if actual != want {
+				t.Fatalf("actual=%s", actual)
+			}
+			raw, err := os.ReadFile(filepath.Join(home, "note.md"))
+			if err != nil || string(raw) != existing {
+				t.Fatal("overwrote destination", err)
+			}
+			if !identical {
+				after, err := os.Stat(filepath.Join(home, actual))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !os.SameFile(before, after) {
+					t.Fatal("temporary file was copied again")
+				}
+			}
+		})
 	}
 }

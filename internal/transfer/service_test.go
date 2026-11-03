@@ -213,14 +213,20 @@ func TestPreviewReportsConflictAndPlanStale(t *testing.T) {
 	}
 
 	fresh := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
-	if fresh["state"] != "PARTIAL" || fresh["reportPath"] == nil {
-		t.Fatalf("conflict import should be PARTIAL with a kept report: %v", fresh)
+	if fresh["state"] != "SUCCEEDED" {
+		t.Fatalf("conflicting record should be skipped: %v", fresh)
+	}
+	found := false
+	for _, r := range fresh["results"].([]Result) {
+		if r.Type == TypeRecordings && r.RecordID == "r1" {
+			found = r.Outcome == OutcomeSkipped && r.Reason == "existing-record-conflict"
+		}
+	}
+	if !found {
+		t.Fatal("missing conflict skip reason")
 	}
 	if entry, _ := dst.svc.Recordings.FindByID("r1"); entry.Metadata.Name != "又改了" {
 		t.Fatalf("target record overwritten: %q", entry.Metadata.Name)
-	}
-	if _, err := dst.svc.Handle(Request{Action: "import", LocalTransferID: fresh["localTransferId"].(string), PlanID: fresh["planId"].(string)}); err != nil {
-		t.Fatalf("partial import stays re-runnable: %v", err)
 	}
 }
 
@@ -288,12 +294,12 @@ func TestExportValidatesScopeAndOutput(t *testing.T) {
 
 func TestCloudImportRetainsProvenanceAndLocalStagingPolicy(t *testing.T) {
 	const taskID = "0123456789abcdef0123456789abcdef"
-	for _, scenario := range []string{"success", "partial", "local"} {
+	for _, scenario := range []string{"success", "conflict", "local"} {
 		t.Run(scenario, func(t *testing.T) {
 			src, dst := newEnv(t), newEnv(t)
 			seedSource(t, src.roots)
 			pkg := exportAll(t, src.roots)
-			if scenario == "partial" {
+			if scenario == "conflict" {
 				runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
 				if _, _, err := dst.svc.Recordings.Rename("r1", "preserve target title"); err != nil {
 					t.Fatal(err)
@@ -311,15 +317,6 @@ func TestCloudImportRetainsProvenanceAndLocalStagingPolicy(t *testing.T) {
 			// Simulate a later command / daemon restart: cloud provenance must survive.
 			svc := &Service{Dir: dst.svc.Dir, Roots: dst.roots, Notifications: dst.svc.Notifications, Recordings: dst.svc.Recordings}
 			result := runPlan(t, svc, preview)
-			if scenario == "partial" {
-				if result["state"] != "PARTIAL" {
-					t.Fatalf("partial cleanup: %v", result)
-				}
-				if _, err := os.Stat(result["reportPath"].(string)); err != nil {
-					t.Fatal("partial staging lost")
-				}
-				return
-			}
 			if result["state"] != "SUCCEEDED" {
 				t.Fatalf("state: %v", result)
 			}
@@ -330,5 +327,58 @@ func TestCloudImportRetainsProvenanceAndLocalStagingPolicy(t *testing.T) {
 				t.Fatal("successful import did not clean local staging")
 			}
 		})
+	}
+}
+
+func TestBusinessRecordConflictsSkipWithoutOverwriting(t *testing.T) {
+	src, dst := newEnv(t), newEnv(t)
+	seedSource(t, src.roots)
+	seedSource(t, dst.roots)
+	changes := []struct{ typ, file, old, replacement string }{
+		{TypeNotifications, "2026-09-20.jsonl", "微信", "目标微信"},
+		{TypeImages, "index.json", `"width":10`, `"width":20`},
+		{TypeWebPages, "index.json", `"title":"A"`, `"title":"目标网页"`},
+	}
+	before := map[string]string{}
+	for _, c := range changes {
+		p := filepath.Join(dst.roots[c.typ], c.file)
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), c.old) {
+			t.Fatalf("fixture missing %s", c.old)
+		}
+		testutil.WriteFile(t, p, []byte(strings.ReplaceAll(string(raw), c.old, c.replacement)))
+		records, err := entries(dst.roots[c.typ], c.typ, func(string) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[c.typ] = canonical(records)
+	}
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, exportAll(t, src.roots)))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatalf("state=%v", result)
+	}
+	conflicts := map[string]int{}
+	for _, r := range result["results"].([]Result) {
+		if r.Reason == "existing-record-conflict" {
+			if r.Outcome != OutcomeSkipped || r.Error != "" {
+				t.Fatalf("result=%+v", r)
+			}
+			conflicts[r.Type]++
+		}
+	}
+	for _, c := range changes {
+		if conflicts[c.typ] != 1 {
+			t.Fatalf("conflict counts=%v", conflicts)
+		}
+		records, err := entries(dst.roots[c.typ], c.typ, func(string) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if canonical(records) != before[c.typ] {
+			t.Fatalf("%s existing data changed", c.typ)
+		}
 	}
 }
