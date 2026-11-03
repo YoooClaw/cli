@@ -650,3 +650,45 @@ func TestAutomaticImportKeepsCompletedResultUntilExecutorCleanup(t *testing.T) {
 		t.Fatal(result, err)
 	}
 }
+
+func TestOccupiedConflictDestinationGetsUniquePathAndIndex(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	home := dst.svc.Home
+	pkg := fullFixture(t)
+	m, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(home, workspaceBase(), "projects/readme.md")
+	conflict := filepath.Join(home, workspaceBase(), "migration/conflicts", m.PackageID, "workspace/main/projects/readme.md")
+	testutil.WriteFile(t, original, []byte("existing"))
+	testutil.WriteFile(t, conflict, []byte("existing conflict"))
+	expected := strings.TrimSuffix(conflict, ".md") + "-1.md"
+	for i := 0; i < 2; i++ {
+		result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+		if result["state"] != "SUCCEEDED" {
+			t.Fatalf("result=%v", result)
+		}
+		raw, err := os.ReadFile(result["migrationIndex"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), expected) {
+			t.Fatal("index missing actual destination")
+		}
+		raw, err = os.ReadFile(expected)
+		if err != nil || string(raw) != "imported project" {
+			t.Fatal("missing imported content", err)
+		}
+	}
+	for p, want := range map[string]string{original: "existing", conflict: "existing conflict"} {
+		raw, err := os.ReadFile(p)
+		if err != nil || string(raw) != want {
+			t.Fatal("overwrote existing file", p, err)
+		}
+	}
+	if _, err := os.Stat(strings.TrimSuffix(conflict, ".md") + "-2.md"); !os.IsNotExist(err) {
+		t.Fatal("duplicate copy on reimport")
+	}
+}

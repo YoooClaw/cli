@@ -264,12 +264,10 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 			action = "skipped"
 		} else if state != "absent" && !skipExisting {
 			dest = conflictDestination(m, f)
-			isolated, e := s.targetState(home, dest)
+			var isolated string
+			dest, isolated, e = availableDestination(s.ctx, home, dest, f.Hash)
 			if e != nil {
 				return nil, e
-			}
-			if isolated != "absent" && isolated != "file:"+f.Hash {
-				return nil, fail("DESTINATION_CHANGED")
 			}
 			action = "isolated"
 			reason = "target-conflict"
@@ -323,11 +321,43 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 	return items, nil
 }
 
+// Choose a deterministic free sibling; reuse identical content on repeated imports.
+func availableDestination(ctx context.Context, home, dest, hash string) (string, string, error) {
+	base := dest
+	for n := 0; ; n++ {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
+		if n > 0 {
+			ext := path.Ext(base)
+			dest = portableDestination(strings.TrimSuffix(base, ext) + fmt.Sprintf("-%d", n) + ext)
+		}
+		state, err := targetState(home, dest)
+		if err != nil {
+			return "", "", err
+		}
+		if state == "absent" || state == "file:"+hash {
+			return dest, state, nil
+		}
+		if state == "blocked-parent" {
+			return "", "", fail("DESTINATION_CHANGED")
+		}
+	}
+}
+
 // Copy with an exclusive final link: never overwrite a file that appeared after preview.
 func installFile(ctx context.Context, root *os.Root, home, dest, blob, hash string) error {
-	return installFileTracked(ctx, root, home, dest, blob, hash, "")
+	return installFileTracked(ctx, root, home, dest, blob, hash, "", nil)
 }
-func installFileTracked(ctx context.Context, root *os.Root, home, dest, blob, hash, local string) error {
+func installFileTracked(ctx context.Context, root *os.Root, home, dest, blob, hash, local string, actual *string) error {
+	if actual != nil {
+		resolved, _, err := availableDestination(ctx, home, dest, hash)
+		if err != nil {
+			return err
+		}
+		dest = resolved
+		*actual = dest
+	}
 	state, e := targetState(home, dest)
 	if e != nil {
 		return e
@@ -374,30 +404,57 @@ func installFileTracked(ctx context.Context, root *os.Root, home, dest, blob, ha
 	if fmt.Sprintf("%x", h.Sum(nil)) != hash {
 		return fail("CHECKSUM_MISMATCH")
 	}
-	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		parent, pe := root.Open(path.Dir(dest))
-		if pe != nil {
-			return pe
-		}
-		e = renameDirectoryExclusive(parent, path.Base(tmp), path.Base(dest))
-		if e == nil {
-			e = parent.Sync()
-		}
-		parent.Close()
-	} else {
-		e = root.Link(filepath.FromSlash(tmp), filepath.FromSlash(dest))
-	}
-	if e != nil {
-		if os.IsExist(e) {
-			state, se := targetState(home, dest)
-			if se == nil && state == "file:"+hash {
-				return nil
-			}
-		}
-		return e
-	}
-	return nil
+	return commitImportedFile(ctx, root, home, tmp, dest, hash, actual)
 }
+
+func commitImportedFile(ctx context.Context, root *os.Root, home, tmp, dest, hash string, actual *string) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var e error
+		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+			parent, pe := root.Open(path.Dir(dest))
+			if pe != nil {
+				return pe
+			}
+			e = renameDirectoryExclusive(parent, path.Base(tmp), path.Base(dest))
+			if e == nil {
+				e = parent.Sync()
+			}
+			parent.Close()
+		} else {
+			e = root.Link(filepath.FromSlash(tmp), filepath.FromSlash(dest))
+		}
+		if e == nil {
+			if actual != nil {
+				*actual = dest
+			}
+			return nil
+		}
+		if !os.IsExist(e) {
+			return e
+		}
+		state, se := targetState(home, dest)
+		if se != nil {
+			return se
+		}
+		if state == "file:"+hash {
+			if actual != nil {
+				*actual = dest
+			}
+			return nil
+		}
+		if actual == nil {
+			return e
+		}
+		dest, _, e = availableDestination(ctx, home, dest, hash)
+		if e != nil {
+			return e
+		}
+	}
+}
+
 func (s *Service) applyWorkspace(m *Manifest, local string, items []WorkspaceItem) ([]WorkspaceResult, error) {
 	home, e := s.importHome()
 	if e != nil {
@@ -434,9 +491,19 @@ func (s *Service) applyWorkspace(m *Manifest, local string, items []WorkspaceIte
 				blob, be := safeFile(local, "blobs/"+f.Hash)
 				err = be
 				if err == nil {
-					err = installFileTracked(s.ctx, root, home, item.Destination, blob, f.Hash, local)
+					actual := item.Destination
+					resolved := &actual
+					if item.Reason == "daily-log" {
+						resolved = nil
+					}
+					err = installFileTracked(s.ctx, root, home, item.Destination, blob, f.Hash, local, resolved)
+					result.Path = filepath.Join(home, filepath.FromSlash(actual))
+					if actual != item.Destination {
+						result.Outcome = "isolated"
+						result.Reason = "target-conflict"
+					}
 					if err == nil {
-						err = s.saveFileReceipt(local, home, item.Destination, f.Hash)
+						err = s.saveFileReceipt(local, home, actual, f.Hash)
 					}
 				}
 			}

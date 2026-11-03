@@ -63,6 +63,7 @@ type Result struct {
 	Type     string `json:"type"`
 	RecordID string `json:"recordId"`
 	Outcome  string `json:"outcome"`
+	Reason   string `json:"reason,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
 
@@ -420,7 +421,12 @@ func (s *Service) importPlan(localID, planID string, resume, preserve bool) (any
 			if err != nil {
 				results = append(results, Result{Type: r.Type, RecordID: r.RecordID, Outcome: OutcomeFailed, Error: err.Error()})
 			} else {
-				results = append(results, Result{Type: r.Type, RecordID: r.RecordID, Outcome: outcomes[i]})
+				result := Result{Type: r.Type, RecordID: r.RecordID, Outcome: outcomes[i]}
+				if result.Outcome == OutcomeConflict {
+					result.Outcome = OutcomeSkipped
+					result.Reason = "existing-record-conflict"
+				}
+				results = append(results, result)
 			}
 		}
 		if err := progress(); err != nil {
