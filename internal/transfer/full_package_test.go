@@ -618,3 +618,77 @@ func TestImportShortensLongFilenames(t *testing.T) {
 		t.Fatal("normal name changed")
 	}
 }
+
+func TestAutomaticImportKeepsCompletedResultUntilExecutorCleanup(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	pkg := fullFixture(t)
+	id := newUUID()
+	preview, err := dst.svc.Handle(Request{Action: "preview", File: pkg, StageID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := preview.(map[string]any)
+	if p["localTransferId"] != id {
+		t.Fatal("unstable staging id")
+	}
+	req := Request{Action: "import", LocalTransferID: id, PlanID: p["planId"].(string), Resume: true, PreserveStaging: true}
+	result, err := dst.svc.Handle(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]any)["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	if _, err = os.Stat(filepath.Join(dst.svc.Dir, id, "manifest.json")); err != nil {
+		t.Fatal("staging removed before completion checkpoint", err)
+	}
+	// Recreate the service object, as on daemon restart. A saved success only needs reporting.
+	next := &Service{Home: dst.svc.Home, Dir: dst.svc.Dir, Roots: dst.svc.Roots, Notifications: dst.svc.Notifications, Recordings: dst.svc.Recordings}
+	result, err = next.Handle(req)
+	if err != nil || result.(map[string]any)["state"] != "SUCCEEDED" {
+		t.Fatal(result, err)
+	}
+}
+
+func TestOccupiedConflictDestinationGetsUniquePathAndIndex(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	home := dst.svc.Home
+	pkg := fullFixture(t)
+	m, err := ReadPackage(pkg, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(home, workspaceBase(), "projects/readme.md")
+	conflict := filepath.Join(home, workspaceBase(), "migration/conflicts", m.PackageID, "workspace/main/projects/readme.md")
+	testutil.WriteFile(t, original, []byte("existing"))
+	testutil.WriteFile(t, conflict, []byte("existing conflict"))
+	expected := strings.TrimSuffix(conflict, ".md") + "-1.md"
+	for i := 0; i < 2; i++ {
+		result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+		if result["state"] != "SUCCEEDED" {
+			t.Fatalf("result=%v", result)
+		}
+		raw, err := os.ReadFile(result["migrationIndex"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), expected) {
+			t.Fatal("index missing actual destination")
+		}
+		raw, err = os.ReadFile(expected)
+		if err != nil || string(raw) != "imported project" {
+			t.Fatal("missing imported content", err)
+		}
+	}
+	for p, want := range map[string]string{original: "existing", conflict: "existing conflict"} {
+		raw, err := os.ReadFile(p)
+		if err != nil || string(raw) != want {
+			t.Fatal("overwrote existing file", p, err)
+		}
+	}
+	if _, err := os.Stat(strings.TrimSuffix(conflict, ".md") + "-2.md"); !os.IsNotExist(err) {
+		t.Fatal("duplicate copy on reimport")
+	}
+}
