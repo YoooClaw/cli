@@ -11,6 +11,7 @@ import (
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/daemon"
+	"github.com/YoooClaw/cli/internal/data"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/keychain"
 	"github.com/YoooClaw/cli/internal/paths"
@@ -73,6 +74,13 @@ func doctor(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 		}
 	} else {
 		checks = append(checks, check{"profile-config", "warn", "profile `" + ctx.Profile + "` 未初始化（yoooclaw config init）"})
+	}
+
+	checks = append(checks, checkDir("data-dir", ctx.Paths.Data, fix))
+	if e := data.New(ctx.Paths.Data, config.DataSection{}).Check(); e != nil {
+		checks = append(checks, check{"data-index", "fail", e.Error()})
+	} else {
+		checks = append(checks, check{"data-index", "ok", "索引有效"})
 	}
 
 	apiKey := creds.ResolveAPIKey()

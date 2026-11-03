@@ -38,6 +38,7 @@ Do not infer reply language from previous messages, source content, command outp
 - Voice input, dictation/口述 history, or “我刚才说了什么”: read `references/voice-input.md`.
 - Phone/meeting recordings, recording transcripts, or “录音里说了什么”: read `references/recordings.md`.
 - Saved, viewed, read, opened, bookmarked, or captured pages/articles, including earlier versions of a saved page and what changed between them: read `references/web-pages.md`.
+- User-saved arbitrary files (PDF/CSV/JSON/logs/archives), tags, or `data` objects: read `references/data.md`.
 - Synchronized images, screenshots, metadata, or local image files: read `references/images.md`.
 - Several sources or “local data/context” without one source: read every relevant reference and use the cross-source flow below.
 

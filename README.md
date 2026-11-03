@@ -640,3 +640,45 @@ Manual checks report `scheduled` and `notBefore`. Scheduling requires a running 
 `POST /reminders` accepts complete iOS system-reminder snapshots, including completed and undated items. The CLI maintains per-source current mirrors in JSONL with a compact `index.json`; `state.json` tracks accepted collection times.
 
 `GET /assets/reminders` provides filtered, revision-bound pagination (50 default, 100 maximum, 256 KiB response cap); `GET /assets/reminders/{recordId}` returns full details. Both support the existing read-only messageBridge envelope. Agents use `yoooclaw reminders list/get` against the same daemon API. See [the V1 protocol](docs/design/reminders-v1.md) for fields, storage, consistency and query semantics.
+
+### Arbitrary user files (`yc data`)
+
+Save immutable raw bytes without parsing, execution, rendering, or automatic cloud upload:
+
+```sh
+yc data put ./report.pdf --title 'Quarterly report' --tag finance
+cat notes.md | yc data put - --name notes.md --mime text/markdown --tag meeting
+yc data put --text 'Release decision' --source agent --meta '{"project":"demo"}'
+yc data list --tag finance --type pdf --format json
+yc data show OBJECT_ID
+yc data get OBJECT_ID --out ./copy.pdf
+yc data path OBJECT_ID
+yc data cat OBJECT_ID > ./original-bytes
+yc data usage
+yc data gc --dry-run
+yc data rm OBJECT_ID --yes
+yc data gc
+```
+
+`put`, `rm`, and `gc` require an already-running daemon (`yc daemon start`); reads work offline. `get` requires a new output path; `cat` refuses binary terminal output unless `--force`. Each write creates a new UUID object; SHA-256 blobs deduplicate. `--idempotency-key` retries return the same object for the same bytes and conflict for different bytes, scoped to client identity. `--meta` accepts a JSON object or `@file`; `--max-bytes` adds a client-side limit.
+
+List filters: `--type`, repeatable `--tag` (AND), `--source`, `--client`, `--from`, `--to`, `--query`, `--limit` (1–500), `--cursor`. Time bounds are inclusive RFC3339 (date-only means midnight UTC). Query searches metadata and at most 2 KiB UTF-8 preview. Follow `nextCursor` with unchanged filters.
+
+Configuration defaults: `data.maxObjectBytes=33554432` (32 MiB; hard ceiling 64 MiB), `data.maxInlineBytes=524288` (512 KiB), `data.quotaBytes=1073741824` (1 GiB), `data.retentionDays=null`. Positive retention days expire by creation time at startup and writes. Quota/usage count physical deduplicated blobs, including unreferenced blobs until GC. Direct HTTP accepts raw `POST /data` with metadata query parameters and optional `Idempotency-Key`; list/show/download/delete use `GET /data`, `GET /data/{id}`, `GET|HEAD /data/{id}/content`, `DELETE /data/{id}`. Owner-only `POST /data/gc?dryRun=true` handles cleanup. Relay `data.write` (`POST /gateway/data.write`) accepts metadata plus `contentBase64`; raw `/data` routes remain unavailable over Relay; the bounded record API provides history and content reads. Downloads always use attachment/octet-stream, nosniff, sandbox CSP and no-store.
+
+Gateway/local writes use `clientLabel=local`; API keys/Relay see only their own label plus shared legacy objects. Content is stored under `<profile>/data/` with directory/file permissions 0700/0600, **without encryption: do not store highly sensitive secrets**. Data is excluded from sync, memory, and transfer. `daemon status` reports usage and capability `data`; `doctor` checks directory access and index validity. See [data skill](skills/yoooclaw-data/SKILL.md).
+
+For larger files already uploaded through the existing OSS upload flow, use asynchronous **OSS import**:
+
+```sh
+yc data import --oss-task-id EXISTING_OSS_TASK --size 104857600 --sha256 SHA256 \
+  --name recording.m4a --tag meeting --idempotency-key upload-123 --format json
+yc data import-status IMPORT_TASK_ID --format json
+yc data import-retry IMPORT_TASK_ID --format json
+```
+
+Alternatively supply `--url 'https://BUCKET.oss-REGION.aliyuncs.com/object?...'`; an optional `--oss-task-id` enables URL refresh. Size and SHA-256 are required. Acceptance returns a task ID; only `state=succeeded` confirms a saved object (`objectId`). Import requests/status/retries also work through Relay `data.import`, `data.import.status`, `data.import.retry`; the separate `data.content` method provides bounded content reads. Downloads reuse the existing OSS range/checkpoint downloader, recover interrupted jobs after daemon restart, and enforce client isolation and final size/hash checks. `data.maxImportBytes` defaults to **1 GiB** (configurable up to 5 GiB), independent of the direct-upload limit; profile quota still applies. Existing OSS upload policies/TTL remain in effect; daemon does not delete source objects. See the [request contract and recovery details](docs/design/data-oss-import.md).
+
+### Browser records and file transfer
+
+The daemon exposes bounded, client-scoped Relay history, metadata, content ranges and receipt lookup. Arbitrary files can use resumable chunked uploads without a new platform uploader; small records retain `data.write` and existing OSS uploads retain `data.import`. See the [record and file-transfer API](docs/design/data-records-relay.md) for discovery, request examples, limits and recovery semantics.

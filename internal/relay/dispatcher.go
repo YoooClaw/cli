@@ -109,6 +109,25 @@ func (d *Dispatcher) handleReq(frame Frame) {
 		d.client.Send(RPCResponseFrame{Type: "res", ID: id, OK: false, Error: map[string]any{"code": "INTERNAL_ERROR", "message": err.Error()}})
 		return
 	}
+	// data.write preserves the complete put result and structured DATA_* errors.
+	if strings.HasPrefix(method, "data.") {
+		var body struct {
+			OK    bool `json:"ok"`
+			Error any  `json:"error"`
+		}
+		if json.Unmarshal(raw, &body) == nil {
+			if status >= 200 && status < 300 && body.OK {
+				var payload any
+				_ = json.Unmarshal(raw, &payload)
+				d.client.Send(RPCResponseFrame{Type: "res", ID: id, OK: true, Payload: payload})
+				return
+			}
+			if body.Error != nil {
+				d.client.Send(RPCResponseFrame{Type: "res", ID: id, OK: false, Error: body.Error})
+				return
+			}
+		}
+	}
 	if status < 200 || status >= 300 {
 		d.client.Send(RPCResponseFrame{Type: "res", ID: id, OK: false, Error: map[string]any{"code": "HTTP_ERROR", "message": fmt.Sprintf("daemon gateway returned %d: %s", status, preview(string(raw), 200))}})
 		return
