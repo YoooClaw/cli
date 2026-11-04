@@ -26,19 +26,19 @@ func TestUploadLatestProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestLatestRequiresExplicitTestPublication(t *testing.T) {
+func TestUploadsNeverPromoteLatest(t *testing.T) {
 	for _, tc := range []struct {
-		name                              string
-		args                              []string
-		production, missing, fail, latest bool
+		name                      string
+		args                      []string
+		production, missing, fail bool
 	}{
-		{name: "production default"},
+		{name: "production default", production: true},
 		{name: "test upload only", args: []string{"--test-build", "--version", "1.2.3"}},
-		{name: "test promotion", args: []string{"--test-build", "--version", "1.2.3", "--update-latest"}, latest: true},
-		{name: "old branch fix", args: []string{"--test-build", "--version", "0.9.1-alpha.2", "--update-latest"}, latest: true},
+		{name: "removed test promotion rejected", args: []string{"--test-build", "--version", "1.2.3", "--update-latest"}, fail: true},
+		{name: "old branch fix", args: []string{"--test-build", "--version", "0.9.1-alpha.2"}},
 		{name: "production explicit rejected", args: []string{"--update-latest"}, fail: true},
-		{name: "production target rejected", args: []string{"--test-build", "--version", "1.2.3", "--update-latest"}, production: true, fail: true},
-		{name: "missing artifact never promotes", args: []string{"--test-build", "--version", "1.2.3", "--update-latest"}, missing: true, fail: true},
+		{name: "production target rejected", args: []string{"--test-build", "--version", "1.2.3"}, production: true, fail: true},
+		{name: "missing artifact never promotes", args: []string{"--test-build", "--version", "1.2.3"}, missing: true, fail: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -72,8 +72,8 @@ func TestLatestRequiresExplicitTestPublication(t *testing.T) {
 				t.Fatalf("error=%v output=%s", err, out)
 			}
 			wrote := strings.Contains(string(out), "would upload latest -> cli/latest")
-			if wrote != tc.latest {
-				t.Fatalf("latest=%v want=%v output=%s", wrote, tc.latest, out)
+			if wrote {
+				t.Fatalf("upload unexpectedly wrote latest: %s", out)
 			}
 		})
 	}

@@ -3,7 +3,7 @@
 // 用法（在仓库任意目录下）：
 //
 //	go -C tools/oss-upload run . [--version 0.6.0] [--only install|artifacts] [--dry-run]
-//	go -C tools/oss-upload run . --test-build --update-latest --version 0.12.3-alpha.42
+//	go -C tools/oss-upload run . --test-build --version 0.12.3-alpha.42
 //
 // 环境变量（可放 .env，进程环境优先）：
 //
@@ -35,7 +35,7 @@
 //
 // --test-build 用于 release/** 分支推送后的测试环境发布：版本号由 CI 生成
 // （<目标版本>-alpha.<run>，不要求等于 package.json），并且无论是否预发布都刷新
-// live 安装脚本；只有显式 --update-latest 才更新测试 latest。
+// live 安装脚本。两区 latest 均由灰度平台维护，上传器不写指针。
 // 该模式必须显式给出 OSS_BUCKET / OSS_PUBLIC_URL，且不能是正式环境默认值。
 package main
 
@@ -347,7 +347,7 @@ func installerUploadKeys(prefix, version, filename string, live bool) []string {
 }
 
 // validateTestTarget 确保测试构建只会写进显式配置的测试桶，绝不覆盖正式环境的
-// live 安装脚本与 latest 标记。
+// live 安装脚本。latest 由平台独立维护。
 func validateTestTarget(bucket, publicURL string) error {
 	bucket = strings.TrimSpace(bucket)
 	publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
@@ -365,12 +365,7 @@ func main() {
 	only := flag.String("only", "", "只上传某类内容: install | artifacts")
 	dryRun := flag.Bool("dry-run", false, "只打印将要上传的内容，不实际上传")
 	testBuild := flag.Bool("test-build", false, "测试环境构建：版本号可不同于 package.json，刷新 live 安装脚本")
-	updateLatest := flag.Bool("update-latest", false, "仅测试环境：制品上传成功后更新 latest；必须配合 --test-build")
 	flag.Parse()
-
-	if *updateLatest && (!*testBuild || *only == "install") {
-		fatalf("--update-latest 仅允许 --test-build 且上传制品；生产 latest 由灰度平台维护")
-	}
 
 	if *only != "" && *only != "install" && *only != "artifacts" {
 		fatalf("--only 只能是 install 或 artifacts")
@@ -399,7 +394,7 @@ func main() {
 	installBaseURL := publicURL + "/" + strings.Trim(prefix, "/")
 	distDir := envOr("DIST_DIR", filepath.Join(root, "dist-native"))
 	prerelease := isPrerelease(version)
-	// live 只决定公共安装脚本；latest 由单独权限控制。
+	// live 只决定公共安装脚本；两区 latest 均由平台维护。
 	live := !prerelease || *testBuild
 	channel := "latest"
 	switch {
@@ -504,9 +499,6 @@ func main() {
 			contentTypeFor("oss-manifest.json"),
 			"oss-manifest.json",
 		)
-		if *updateLatest {
-			u.put(joinKey(prefix, "latest"), []byte(version+"\n"), "text/plain; charset=utf-8", "latest")
-		}
 	}
 
 	fmt.Println()
@@ -519,9 +511,7 @@ func main() {
 		okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
 	}
 	okf("artifacts: %s/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
-	if *updateLatest {
-		okf("latest marker: %s", urlForKey(publicURL, joinKey(prefix, "latest")))
-	}
+	okf("latest 未改动；版本推进由灰度平台负责")
 	okf("OSS upload complete")
 	fmt.Println()
 }

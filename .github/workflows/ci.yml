@@ -260,7 +260,7 @@ jobs:
       !startsWith(github.event.head_commit.message, 'cli-')
     runs-on: ubuntu-latest
     environment: test
-    # 测试桶只有一个 latest 标记：跨分支串行，避免旧构建后写覆盖新构建。
+    # 测试制品上传跨分支串行；latest 由灰度平台维护。
     concurrency:
       group: cli-test-deploy
       cancel-in-progress: false
@@ -328,7 +328,7 @@ jobs:
             echo "::error::缺少 test environment secrets: ${missing[*]}"
             exit 1
           fi
-          go -C tools/oss-upload run . --test-build --update-latest --version "$VERSION"
+          go -C tools/oss-upload run . --test-build --version "$VERSION"
 
       - name: Register test OTA draft
         timeout-minutes: 4
@@ -379,7 +379,7 @@ jobs:
           🌿 分支：${GITHUB_REF_NAME}
           🔖 Commit：${GITHUB_SHA:0:12}
 
-          📥 macOS / Linux（最新测试构建）：
+          📥 macOS / Linux（平台当前指定版本）：
           curl -fsSL ${BASE_URL}/install.sh | sh -s -- --force
 
           📥 macOS / Linux（固定本次版本）：
