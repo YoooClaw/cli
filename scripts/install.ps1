@@ -111,16 +111,8 @@ function Resolve-Version {
         return (Get-WebText "$markerBaseUrl/$channel").Trim()
     }
 
-    Write-Info "Resolving the latest GitHub release..."
-    $headers = @{ "Accept" = "application/vnd.github+json"; "User-Agent" = "yoooclaw-installer" }
-    $releases = @(Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repository/releases?per_page=100")
-    $tags = @($releases | ForEach-Object { [string] $_.tag_name } | Where-Object { $_ -match '^cli-v' })
-    # Stable tags only: a prerelease is installable by explicit -Version alone.
-    $tag = $tags | Where-Object { $_ -notmatch '-(beta|alpha|rc)([.-]|$)' } | Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace($tag)) {
-        throw "Unable to resolve the $channel release. Specify -Version explicitly."
-    }
-    return $tag.Substring("cli-v".Length)
+    Write-Info "Resolving production OSS latest..."
+    return (Get-WebText "https://artifact.yoooclaw.com/cli/latest").Trim()
 }
 
 function Get-ArtifactBaseUrl([string] $ResolvedVersion) {

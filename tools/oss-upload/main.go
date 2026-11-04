@@ -3,7 +3,7 @@
 // 用法（在仓库任意目录下）：
 //
 //	go -C tools/oss-upload run . [--version 0.6.0] [--only install|artifacts] [--dry-run]
-//	go -C tools/oss-upload run . --test-build --version 0.12.3-alpha.42
+//	go -C tools/oss-upload run . --test-build --update-latest --version 0.12.3-alpha.42
 //
 // 环境变量（可放 .env，进程环境优先）：
 //
@@ -31,11 +31,11 @@
 //	<prefix>/latest                         正式版版本标记（纯版本号文本）
 //
 // 预发布版本只写 <prefix>/v<ver>/** 归档，不碰任何 live key、也不写渠道标记：
-// 默认安装路径永远解析到最新正式版，装 beta 必须显式指定版本号。
+// 生产默认安装解析平台指定的 latest，装 beta 必须显式指定版本号。
 //
 // --test-build 用于 release/** 分支推送后的测试环境发布：版本号由 CI 生成
 // （<目标版本>-alpha.<run>，不要求等于 package.json），并且无论是否预发布都刷新
-// live 安装脚本与 latest 标记，让测试桶里的一键安装始终指向最新测试构建。
+// live 安装脚本；只有显式 --update-latest 才更新测试 latest。
 // 该模式必须显式给出 OSS_BUCKET / OSS_PUBLIC_URL，且不能是正式环境默认值。
 package main
 
@@ -330,7 +330,7 @@ func renderWuyingInstaller(root, installBaseURL, version string) []byte {
 }
 
 // isPrerelease 判断版本号是否带 SemVer 预发布后缀（0.10.0-beta.1）。预发布版本
-// 不允许出现在任何默认安装路径上。
+// 测试环境可以把预发布版本设为默认版本。
 func isPrerelease(version string) bool {
 	return strings.Contains(version, "-")
 }
@@ -364,8 +364,13 @@ func main() {
 	versionFlag := flag.String("version", "", "发布版本（默认读 package.json）")
 	only := flag.String("only", "", "只上传某类内容: install | artifacts")
 	dryRun := flag.Bool("dry-run", false, "只打印将要上传的内容，不实际上传")
-	testBuild := flag.Bool("test-build", false, "测试环境构建：版本号可不同于 package.json，始终刷新 live 安装脚本与 latest 标记")
+	testBuild := flag.Bool("test-build", false, "测试环境构建：版本号可不同于 package.json，刷新 live 安装脚本")
+	updateLatest := flag.Bool("update-latest", false, "仅测试环境：制品上传成功后更新 latest；必须配合 --test-build")
 	flag.Parse()
+
+	if *updateLatest && (!*testBuild || *only == "install") {
+		fatalf("--update-latest 仅允许 --test-build 且上传制品；生产 latest 由灰度平台维护")
+	}
 
 	if *only != "" && *only != "install" && *only != "artifacts" {
 		fatalf("--only 只能是 install 或 artifacts")
@@ -394,7 +399,7 @@ func main() {
 	installBaseURL := publicURL + "/" + strings.Trim(prefix, "/")
 	distDir := envOr("DIST_DIR", filepath.Join(root, "dist-native"))
 	prerelease := isPrerelease(version)
-	// live 决定是否刷新 live 安装脚本与 latest 标记（安装脚本只认 latest）。
+	// live 只决定公共安装脚本；latest 由单独权限控制。
 	live := !prerelease || *testBuild
 	channel := "latest"
 	switch {
@@ -446,7 +451,12 @@ func main() {
 				rendered = renderInstaller(root, filename, installBaseURL)
 			}
 			for _, key := range installerUploadKeys(prefix, version, filename, live) {
-				u.put(key, rendered, contentTypeFor(filename), strings.TrimPrefix(key, prefix+"/"))
+				content := rendered
+				if filename == "install-wuying.sh" && key == joinKey(prefix, filename) {
+					// The public installer follows latest; version archives stay pinned.
+					content = renderWuyingInstaller(root, installBaseURL, "")
+				}
+				u.put(key, content, contentTypeFor(filename), strings.TrimPrefix(key, prefix+"/"))
 			}
 		}
 	}
@@ -494,7 +504,7 @@ func main() {
 			contentTypeFor("oss-manifest.json"),
 			"oss-manifest.json",
 		)
-		if live {
+		if *updateLatest {
 			u.put(joinKey(prefix, "latest"), []byte(version+"\n"), "text/plain; charset=utf-8", "latest")
 		}
 	}
@@ -509,7 +519,7 @@ func main() {
 		okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
 	}
 	okf("artifacts: %s/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
-	if live {
+	if *updateLatest {
 		okf("latest marker: %s", urlForKey(publicURL, joinKey(prefix, "latest")))
 	}
 	okf("OSS upload complete")
