@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [master, 'release/**']
   push:
-    branches: [master, 'release/**']
+    branches: [master, 'release/**', 'fix/0.16.0-oss-latest']
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -50,7 +50,7 @@ jobs:
 
       # release/** 推送由 deploy-test 发「测试环境已发布」通知，这里只覆盖 master 归档。
       - name: Notify Feishu (build complete)
-        if: success() && github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/release/')
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
         env:
           HOOK: ${{ secrets.FEISHU_WEBHOOK_2 }}
         run: |
@@ -256,7 +256,7 @@ jobs:
     # 发布，这里跳过，避免同一份代码再发一遍测试环境。
     if: >-
       github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/heads/release/') &&
+      (startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/fix/0.16.0-oss-latest') &&
       !startsWith(github.event.head_commit.message, 'cli-')
     runs-on: ubuntu-latest
     environment: test
@@ -288,7 +288,9 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('node:fs');
-          const match = /^release\/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?:-[0-9A-Za-z.-]+)?$/.exec(process.env.GITHUB_REF_NAME);
+          // The dedicated validation branch uses the same alpha version scheme.
+          const versionRef = process.env.GITHUB_REF_NAME === 'fix/0.16.0-oss-latest' ? 'release/0.16.0' : process.env.GITHUB_REF_NAME;
+          const match = /^release\/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?:-[0-9A-Za-z.-]+)?$/.exec(versionRef);
           const run = process.env.GITHUB_RUN_NUMBER;
           if (!match || !/^[1-9]\d*$/.test(run || '')) throw new Error('Invalid release branch or run number');
           const version = `${match[1]}-alpha.${run}`;
@@ -339,7 +341,7 @@ jobs:
         run: node scripts/register-ota-draft.mjs
 
       - name: Notify Feishu (测试环境已发布)
-        if: success()
+        if: success() && startsWith(github.ref, 'refs/heads/release/')
         env:
           HOOK: ${{ secrets.FEISHU_WEBHOOK_2 }}
           OSS_PUBLIC_URL: ${{ secrets.OSS_PUBLIC_URL }}
