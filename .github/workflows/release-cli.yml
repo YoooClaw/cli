@@ -336,7 +336,7 @@ jobs:
             echo "::error::缺少 test environment secrets: ${missing[*]}"
             exit 1
           fi
-          go -C tools/oss-upload run . --test-build --update-latest --version "$VERSION"
+          go -C tools/oss-upload run . --test-build --version "$VERSION"
       - name: Register test OTA draft
         timeout-minutes: 4
         env:
