@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 3,
+  "provider": "healthkit",
+  "collectedAt": "2026-11-05T18:00:00.000+08:00",
+  "timeZone": "Asia/Shanghai",
+  "days": [{
+    "date": "2026-11-05",
+    "items": [
+      {"metric": "dietary_water", "name": "Water Intake", "value": 1200, "unit": "mL"},
+      {"metric": "stand_hours", "name": "Stand Hours", "value": 8, "unit": "h"}
+    ],
+    "sleepSessions": [],
+    "medications": [{
+      "id": "synthetic-medication", "name": "Example Medication", "form": "tablet", "isArchived": false, "hasSchedule": true,
+      "doseEvents": [{"id": "synthetic-dose", "startAt": "2026-11-05T08:00:00.000+08:00", "endAt": "2026-11-05T08:00:00.000+08:00", "status": "taken", "scheduleType": "scheduled", "scheduledAt": "2026-11-05T07:30:00.000+08:00", "scheduledQuantity": 1, "quantity": 1, "unit": "count"}]
+    }],
+    "workouts": [{"id": "synthetic-workout", "activity": "running", "name": "Running", "startAt": "2026-11-05T09:00:00.000+08:00", "endAt": "2026-11-05T09:45:00.000+08:00", "durationMinutes": 40, "items": [{"metric": "heart_rate_average", "name": "Average Heart Rate", "value": 130, "unit": "bpm"}]}],
+    "intakeRecords": [{"id": "synthetic-intake", "startAt": "2026-11-05T10:00:00.000+08:00", "endAt": "2026-11-05T10:00:00.000+08:00", "metric": "dietary_water", "name": "Water Intake", "value": 300, "unit": "mL"}],
+    "moods": [{"id": "synthetic-mood", "startAt": "2026-11-05T12:00:00.000+08:00", "endAt": "2026-11-05T12:00:00.000+08:00", "kind": "momentary_emotion", "valence": 0.5, "labels": ["calm"], "associations": ["fitness"]}]
+  }]
+}

@@ -155,6 +155,8 @@ func healthData(raw []byte, date string) (map[string]any, bool, *Error) {
 	for _, session := range day.SleepSessions {
 		summaries = append(summaries, session.Summary())
 	}
-	return map[string]any{"schemaVersion": 3, "date": date, "timeZone": meta.TimeZone, "provider": meta.Provider,
-		"updatedAt": meta.UpdatedAt, "items": day.Items, "sleepSessions": summaries}, false, nil
+	data := map[string]any{"schemaVersion": 3, "date": date, "timeZone": meta.TimeZone, "provider": meta.Provider,
+		"updatedAt": meta.UpdatedAt, "items": day.Items, "sleepSessions": summaries}
+	day.AddSummaryDetails(data)
+	return data, false, nil
 }

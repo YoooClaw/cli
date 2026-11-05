@@ -60,15 +60,17 @@ type Payload struct {
 
 type Record struct {
 	Item
-	SourceID string `json:"sourceId"`
-	RecordID string `json:"recordId"`
+	SourceID  string   `json:"sourceId"`
+	RecordID  string   `json:"recordId"`
+	SourceIDs []string `json:"sourceIds,omitempty"`
 }
 
 type Entry struct {
 	Summary
-	SourceID string `json:"sourceId"`
-	RecordID string `json:"recordId"`
-	File     string `json:"file"`
+	SourceID  string   `json:"sourceId"`
+	RecordID  string   `json:"recordId"`
+	File      string   `json:"file"`
+	SourceIDs []string `json:"sourceIds,omitempty"`
 }
 
 type Index struct {
@@ -100,6 +102,12 @@ func hash(value any) string {
 }
 
 func RecordID(source, id string) string { return hash([]string{source, id}) }
+
+func itemRecordID(id string) string { return hash(id) }
+
+func validRecordID(recordID, source, id string) bool {
+	return recordID == itemRecordID(id) || recordID == RecordID(source, id)
+}
 
 func ValidDate(value string) bool {
 	t, err := time.Parse("2006-01-02", value)

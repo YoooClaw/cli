@@ -22,6 +22,10 @@ type DailySnapshot struct {
 	Date          string            `json:"date"`
 	Items         []json.RawMessage `json:"items"`
 	SleepSessions []SleepSession    `json:"sleepSessions"`
+	Medications   []Medication      `json:"medications,omitempty"`
+	Workouts      []Workout         `json:"workouts,omitempty"`
+	IntakeRecords []IntakeRecord    `json:"intakeRecords,omitempty"`
+	Moods         []Mood            `json:"moods,omitempty"`
 }
 type dailyHeader struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -71,7 +75,12 @@ func prepareDaily(raw json.RawMessage) (*DailyBatch, time.Time, int, error) {
 		if d.Items == nil || d.SleepSessions == nil || len(d.Items) > 256 || len(d.SleepSessions) > MaxSleepSessions {
 			return nil, time.Time{}, 0, fmt.Errorf("days[%d].items/sleepSessions arrays are required and must respect their limits", n)
 		}
-		if len(d.Items) == 0 && len(d.SleepSessions) == 0 {
+		detailCount, err := validateDetails(d, zone, collected)
+		if err != nil {
+			return nil, time.Time{}, 0, err
+		}
+		count += detailCount
+		if len(d.Items) == 0 && len(d.SleepSessions) == 0 && detailCount == 0 {
 			return nil, time.Time{}, 0, fmt.Errorf("empty snapshots are not deletions")
 		}
 		encoded, _ := json.Marshal(d)

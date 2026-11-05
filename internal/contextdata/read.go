@@ -176,7 +176,10 @@ func Read(p paths.Paths, source string) (Dataset, error) {
 			}
 			sort.Slice(metrics, func(i, j int) bool { return Str(metrics[i], "metric") < Str(metrics[j], "metric") })
 			data := map[string]any{"header": header, "items": metrics, "sleepSessions": day.SleepSessions}
-			version := Hash(map[string]any{"date": date, "provider": header["provider"], "timeZone": header["timeZone"], "items": metrics, "sleepSessions": day.SleepSessions})
+			content := map[string]any{"date": date, "provider": header["provider"], "timeZone": header["timeZone"], "items": metrics, "sleepSessions": day.SleepSessions}
+			day.AddDetails(data)
+			day.AddDetails(content)
+			version := Hash(content)
 			out.Items = append(out.Items, Item{ID: date, Date: date, Version: version, Data: data, Ref: path})
 			out.Dates = append(out.Dates, date)
 			continue
@@ -329,6 +332,24 @@ func healthSummary(data map[string]any) map[string]any {
 	for _, session := range data["sleepSessions"].([]healthdata.SleepSession) {
 		summaries = append(summaries, session.Summary())
 	}
+	day := healthdata.DailySnapshot{}
+	if value, ok := data["medications"].([]healthdata.Medication); ok {
+		day.Medications = value
+		delete(out, "medications")
+	}
+	if value, ok := data["workouts"].([]healthdata.Workout); ok {
+		day.Workouts = value
+		delete(out, "workouts")
+	}
+	if value, ok := data["intakeRecords"].([]healthdata.IntakeRecord); ok {
+		day.IntakeRecords = value
+		delete(out, "intakeRecords")
+	}
+	if value, ok := data["moods"].([]healthdata.Mood); ok {
+		day.Moods = value
+		delete(out, "moods")
+	}
+	day.AddSummaryDetails(out)
 	out["sleepSessions"] = summaries
 	out["sleepDetailsHint"] = "health-data get --date YYYY-MM-DD returns complete segments; use the returned date"
 	return out
