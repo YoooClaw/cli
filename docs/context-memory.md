@@ -50,3 +50,15 @@ Query fixtures cover the current `isAllDay`, `timestamp`, `accuracyMeters`, `poi
 ## Empty-scope handling
 
 Memory runs retain the user-selected date arguments across every source and follow-up query. Empty results, unavailable sources and out-of-scope pending counts do not authorize a broader query. A completed source advances directly to the next selected source; an entirely empty run reports coverage without creating memory or index files. Final replies describe only the five supported memory sources.
+
+## Snapshot commit guidance
+
+Successful `sync commit` receipts include `remainingInScope` from the committed
+batch and `remainingBasis: "batch-fetch-time"`. They do not scan for new arrivals.
+`nextAction: "stop"` ends this source for the current run without another next/scan.
+`continue_if_within_limit` allows the same scope to continue below the per-source
+three-batch limit. The caller tracks that limit; the CLI does not infer user turns.
+A human-readable `message` explains the action. Other selected sources may continue.
+The remainder is persisted with the last commit so retrying its token returns the
+same guidance, even if another batch is pending. Older checkpoints without this
+information omit the count and return `follow_previous_batch`; no zero is invented.

@@ -25,6 +25,9 @@ scheduleType 为 scheduled 或 as_needed。scheduled 的事件同时保留计划
 quantity 为系统记录的服用数量，可缺失，不能自行补成 0 或计划数量。
 药物 id 为不透明概念标识的安全归档摘要，不用可修改的药物名作为身份；整日快照替换，不跨版本累加。
 
+明细的 value、durationMinutes、valence 和药物 isArchived/hasSchedule 必须提供。
+缺失或 null 返回具体字段名；真实的 0 和 false 保留。可选剂量仍允许缺失。
+
 ## 新增日指标
 
 | metric 基名 | 统计 | 单位 |

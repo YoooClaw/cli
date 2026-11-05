@@ -58,6 +58,14 @@ func mergeSnapshot(previous []Record, p Payload, state State) ([]Record, error) 
 		byID[row.ID] = row
 	}
 
+	// Freeze content timestamps separately from source visibility watermarks.
+	// A later empty snapshot must not make retained content appear newer.
+	for id, row := range byID {
+		if state.ContentCollectedAt[id] == "" {
+			state.ContentCollectedAt[id] = state.Sources[row.SourceID].LastCollectedAt
+		}
+	}
+	incoming, _ := time.Parse(time.RFC3339Nano, p.CollectedAt)
 	rows := make([]Record, 0, len(byID))
 	for _, item := range p.Items {
 		row := Record{Item: item, SourceID: p.SourceID, RecordID: itemRecordID(item.ID)}
@@ -67,11 +75,19 @@ func mergeSnapshot(previous []Record, p Payload, state State) ([]Record, error) 
 			if !found {
 				sources = slices.Insert(sources, at, p.SourceID)
 			}
+			last, _ := time.Parse(time.RFC3339Nano, state.ContentCollectedAt[item.ID])
+			if incoming.Before(last) {
+				row = old
+			} else {
+				state.ContentCollectedAt[item.ID] = p.CollectedAt
+			}
 			row = withSources(row, sources)
 			if validRecordID(old.RecordID, row.SourceID, row.ID) {
 				row.RecordID = old.RecordID
 			}
 			delete(byID, item.ID)
+		} else {
+			state.ContentCollectedAt[item.ID] = p.CollectedAt
 		}
 		rows = append(rows, row)
 	}
@@ -82,6 +98,8 @@ func mergeSnapshot(previous []Record, p Payload, state State) ([]Record, error) 
 		}
 		if len(sources) > 0 {
 			rows = append(rows, withSources(row, sources))
+		} else {
+			delete(state.ContentCollectedAt, row.ID)
 		}
 	}
 	return rows, nil

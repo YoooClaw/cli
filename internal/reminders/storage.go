@@ -95,6 +95,9 @@ func (s *Storage) Replace(p Payload) (Result, error) {
 		}
 		previous = append(previous, rows...)
 	}
+	if state.ContentCollectedAt == nil {
+		state.ContentCollectedAt = map[string]string{}
+	}
 	rows, err := mergeSnapshot(previous, p, state)
 	if err != nil {
 		return result, err

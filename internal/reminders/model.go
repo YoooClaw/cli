@@ -84,8 +84,9 @@ type SourceState struct {
 }
 
 type State struct {
-	SchemaVersion int                    `json:"schemaVersion"`
-	Sources       map[string]SourceState `json:"sources"`
+	SchemaVersion      int                    `json:"schemaVersion"`
+	Sources            map[string]SourceState `json:"sources"`
+	ContentCollectedAt map[string]string      `json:"contentCollectedAt,omitempty"`
 }
 
 type Result struct {

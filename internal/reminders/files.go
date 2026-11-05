@@ -257,8 +257,8 @@ func (s *Storage) recover() error {
 const readme = `# System reminders (V1)
 
 This directory is a current mirror, not an event log. Each successful full
-snapshot replaces what its source can see. The latest accepted upload replaces
-the content for the same system id across sources. A missing id is removed only
+snapshot replaces what its source can see. Uploads replace content for the same system id across sources only when their
+collection time is not older than the saved content timestamp. A missing id is removed only
 from that source and stays in the mirror while another source still sees it.
 Recurring reminders are kept as returned by EventKit without expanding them.
 

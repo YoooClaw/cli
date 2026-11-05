@@ -307,3 +307,24 @@ func TestMalformedMetadataFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossSourceDelayedSnapshotPreservesNewerContent(t *testing.T) {
+	s := NewStorage(t.TempDir())
+	a := sample("shared")
+	a.IsCompleted = true
+	replace(t, s, payload("phone", "12:00:00", a))
+	a.IsCompleted = false
+	replace(t, s, payload("tablet", "10:00:00", a))
+	idx, _ := view(t, s)
+	if len(idx.Items) != 1 || !idx.Items[0].IsCompleted || len(idx.Items[0].SourceIDs) != 2 {
+		t.Fatal(idx)
+	}
+	// Removing the content's source updates visibility, not content freshness.
+	replace(t, s, payload("phone", "14:00:00"))
+	s = NewStorage(s.dir)
+	replace(t, s, payload("tablet", "13:00:00", a))
+	idx, _ = view(t, s)
+	if len(idx.Items) != 1 || idx.Items[0].IsCompleted {
+		t.Fatal("newer content rejected after source disappearance", idx)
+	}
+}

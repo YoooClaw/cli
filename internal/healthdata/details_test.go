@@ -137,3 +137,50 @@ func TestDetailReplacementDoesNotRetainOldEvents(t *testing.T) {
 		t.Fatal("stale upload restored obsolete details")
 	}
 }
+
+func TestDetailScalarsRequirePresenceAndAcceptZero(t *testing.T) {
+	cases := []struct {
+		section, field string
+		nested         bool
+		zero           any
+	}{
+		{"intakeRecords", "value", false, 0},
+		{"moods", "valence", false, 0},
+		{"workouts", "durationMinutes", false, 0},
+		{"workouts", "value", true, 0},
+		{"medications", "isArchived", false, false},
+		{"medications", "hasSchedule", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.section+"/"+tc.field, func(t *testing.T) {
+			for _, mode := range []string{"missing", "null", "zero"} {
+				var b map[string]any
+				if err := json.Unmarshal(detailsFixture(t), &b); err != nil {
+					t.Fatal(err)
+				}
+				day := b["days"].([]any)[0].(map[string]any)
+				record := day[tc.section].([]any)[0].(map[string]any)
+				if tc.nested {
+					record = record["items"].([]any)[0].(map[string]any)
+				}
+				switch mode {
+				case "missing":
+					delete(record, tc.field)
+				case "null":
+					record[tc.field] = nil
+				default:
+					record[tc.field] = tc.zero
+				}
+				raw, _ := json.Marshal(b)
+				_, err := Prepare(raw)
+				if mode == "zero" {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), tc.field) {
+					t.Fatalf("%s: expected named missing field error, got %v", mode, err)
+				}
+			}
+		})
+	}
+}

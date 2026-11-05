@@ -8,7 +8,7 @@ yoooclaw health-data get --date YYYY-MM-DD --format json
 yoooclaw health-data series --metric steps --from-date YYYY-MM-DD --to-date YYYY-MM-DD --format json
 ```
 
-`list` and `get` read only v3 daily snapshots: `data.header` gives date/timeZone/provider/updatedAt; `data.items` contains ordinary metric/name/value/unit. `data.sleepSessions` contains sleep summaries with segmentCount in `list`; `get --date` includes complete segments (one daily file, at most 4 MiB on disk). Read details only when needed for stage order or wake times. `series` returns one selected metric per synchronized date, preserving its unit and provider; absent metrics return `measurement=null, missing=true`, not zero. Unsynchronized dates are described by gaps in coverage, not fabricated rows. `partialDay` marks the current source-local day as of the query time. Report freshness using updatedAt. coverage.completeDeviceHistory=false is the CLI's lack of a full-history guarantee, not evidence that the device actually lost or omitted data.
+`list` and `get` read only v3 daily snapshots: `data.header` gives date/timeZone/provider/updatedAt; `data.items` contains ordinary metric/name/value/unit. `data.sleepSessions` contains sleep summaries with segmentCount in `list`; `get --date` includes complete segments (one daily file, at most 4 MiB on disk). Read full sleep details when needed for stage order or wake times. For other daily details, use the rules below. `series` returns one selected metric per synchronized date, preserving its unit and provider; absent metrics return `measurement=null, missing=true`, not zero. Unsynchronized dates are described by gaps in coverage, not fabricated rows. `partialDay` marks the current source-local day as of the query time. Report freshness using updatedAt. coverage.completeDeviceHistory=false is the CLI's lack of a full-history guarantee, not evidence that the device actually lost or omitted data.
 
 Dates refer to source-local business days. Read current snapshots afresh; combine days only with matching metric definitions and units. Daily updates replace earlier values. Old snapshot formats are unsupported and return an error; do not rewrite their version headers. Use the metric semantics below for sleep, exercise, percentages, and cross-platform comparisons.
 
@@ -30,3 +30,34 @@ Dates refer to source-local business days. Read current snapshots afresh; combin
 - workout_*_minutes belongs to the workout start date and excludes native pauses; do not add it to exercise-ring minutes.
 
 Client source merging has already occurred. Use current v3 daily snapshots without accumulating different revisions.
+
+## Daily health details
+
+Optional daily fields are `medications`, `workouts`, `intakeRecords` and `moods`.
+`get --date` returns their complete records. Default `list` returns full workouts,
+medication metadata with `doseEventCount` and `latestDoseEvent`, and
+`intakeRecordCount`/`latestIntakeRecord`, `moodCount`/`latestMood`.
+Latest records are not complete event histories. Use `get` for all doses, intake
+entries or moods needed by the question. `series` selects daily `items` metrics,
+not detail events. Missing optional fields do not establish zero events.
+
+- Medication names, `isArchived` and `hasSchedule` describe the state at collection,
+  not a historical prescription. `hasSchedule` does not establish adherence.
+  Preserve dose `status`: not_logged, not_interacted, notification_not_sent and
+  unknown values do not prove a missed dose. `scheduledAt`/`scheduledQuantity`
+  are plans; `startAt` and `quantity` describe the recorded event. Missing quantity
+  is unknown, not zero or the planned dose. Do not infer treatment changes.
+- Workouts, dose events, intake and moods use their local start date. Workout
+  `durationMinutes` preserves pauses; do not replace it with end minus start or
+  add workout statistics to daily totals or exercise-ring minutes.
+- Intake records are evidence for water/caffeine entries. Do not add their values
+  to the system-merged daily `items` totals. A latest entry is not the daily total.
+- Moods retain `kind`, `valence` (-1..1), labels and associations per record.
+  Distinguish momentary_emotion from daily_mood; do not turn them into a diagnosis
+  or invent a daily average.
+- `basal_energy` differs from `active_energy`; `stand_hours` counts qualifying
+  hours, while `stand_minutes` measures duration. Goals and actual values differ;
+  absent goals are unknown. `activity_rings_paused` is a 0/1 flag, not activity.
+- `heart_rate_recovery_one_minute_latest` uses beats, not bpm;
+  `vo2_max_latest` uses mL/kg/min. `walking_steadiness_latest` uses percent 0..100.
+  Preserve latest versus average and units for all additional daily metrics.

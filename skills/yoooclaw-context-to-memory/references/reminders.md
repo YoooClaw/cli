@@ -19,7 +19,12 @@ complete history. State the fallback when interpreting unknown system timestamps
 Do not widen an explicit empty date scope. `--all` explicitly selects every pending
 current record. Ordinary `reminders list/get` does not advance consumption.
 
-- Identity is `id` (the source-scoped recordId); `version` hashes the full record.
+- The CLI provides deduplicated records and maintains consumption identity across
+  source changes. Use the returned batch `id`, `version` and token unchanged;
+  no Agent-side deduplication or identity migration is required. `data.id` is
+  the original system ID. `sourceId` identifies the saved content's source;
+  optional `sourceIds` lists the current visibility set. Source-only changes do
+  not create another memory batch; actual reminder content changes do.
   `previousData` / `previousVersion` are the last acknowledged version, if any.
   Unchanged records are skipped even when the source is synchronized again.
 - Read all records in the frozen batch. Keep a new unfinished reminder as a task

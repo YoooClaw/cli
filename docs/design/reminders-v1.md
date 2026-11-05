@@ -57,8 +57,9 @@ titles are identical. This is a read-only integration; it does not change system
   is bounded to 128 MiB. iOS rejects oversize snapshots without truncating them.
 
 Each accepted snapshot replaces its source's visibility set. Within a profile,
-one record is stored per system `id`. An included item overwrites that record's
-full content even if a different source provided it previously. An absent item
+one record is stored per system `id`. An included item replaces that record's content only when its collectedAt is
+not older than the saved content timestamp; equal timestamps use the incoming
+content. Older uploads still update their source's visibility association. An absent item
 loses only the uploading source's association and stays in the mirror until
 none of its sources include it. This is not proof of a user deletion.
 A snapshot whose collection time is older than or equal to its source's
@@ -185,7 +186,8 @@ API and uses an independent per-profile memory checkpoint. No date flags means
 all unconsumed current records. Explicit dates select modifiedAt, then createdAt,
 then source lastCollectedAt, never the due date. `next` freezes up to 20 full
 records within the existing soft 64 KB batch budget, unfinished first. Identity
-is recordId and version is a hash of full record content; a newer collection
+starts from recordId and stays stable across consolidation. The version hashes
+reminder content excluding source/storage identity fields; a newer collection
 watermark alone does not cause reconsumption.
 
 `sync commit --source reminders --token <token>` acknowledges only the frozen
@@ -194,3 +196,21 @@ of the last token is idempotent. A concurrent upstream revision remains pending.
 Missing records produce no deletion inference or event. Ordinary list/get queries
 do not affect this checkpoint. The memory skill allows each source independently
 up to three nonempty batches per user run; the CLI does not infer user-run boundaries.
+
+## Memory consumption identity
+
+The CLI matches acknowledged memory records by system `id` within the profile.
+It retains the acknowledged batch identity when storage record IDs change.
+Detail references still point to the current storage record.
+Consumption versions exclude `sourceId`, `sourceIds` and `recordId`.
+Source-only changes do not require another memory write; content changes retain
+previousData and enter a new batch. Pending batches remain frozen until commit.
+A commit removes older checkpoint aliases for the same system ID.
+Conflicting legacy checkpoints have no acknowledgment order: they produce one
+reconciliation batch instead of treating any historical match as consumed.
+This does not rewrite existing Agent memory or erase historical duplicate text.
+
+Content freshness is stored separately in `state.json.contentCollectedAt`, keyed
+by system ID. A source omission does not advance this timestamp. Legacy records
+without it use the content source's last recorded collection time once; the
+original per-record collection time cannot be recovered from older stores.
