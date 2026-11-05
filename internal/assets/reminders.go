@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,7 +106,12 @@ func (s *Service) reminderRequest(values url.Values) (request, *Error) {
 }
 
 func reminderMatches(e reminders.Entry, q map[string]string) bool {
-	if q["sourceId"] != "" && e.SourceID != q["sourceId"] || q["listId"] != "" && e.ListID != q["listId"] {
+	if source := q["sourceId"]; source != "" {
+		if len(e.SourceIDs) == 0 && e.SourceID != source || len(e.SourceIDs) > 0 && !slices.Contains(e.SourceIDs, source) {
+			return false
+		}
+	}
+	if q["listId"] != "" && e.ListID != q["listId"] {
 		return false
 	}
 	if q["status"] == "completed" && !e.IsCompleted || q["status"] == "incomplete" && e.IsCompleted {
