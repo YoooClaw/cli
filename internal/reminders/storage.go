@@ -87,20 +87,17 @@ func (s *Storage) Replace(p Payload) (Result, error) {
 	for _, entry := range idx.Items {
 		files[entry.File] = true
 	}
-	rows := []Record{}
+	previous := []Record{}
 	for file := range files {
-		previous, e := s.records(file)
+		rows, e := s.records(file)
 		if e != nil {
 			return result, e
 		}
-		for _, row := range previous {
-			if row.SourceID != p.SourceID {
-				rows = append(rows, row)
-			}
-		}
+		previous = append(previous, rows...)
 	}
-	for _, item := range p.Items {
-		rows = append(rows, Record{Item: item, SourceID: p.SourceID, RecordID: RecordID(p.SourceID, item.ID)})
+	rows, err := mergeSnapshot(previous, p, state)
+	if err != nil {
+		return result, err
 	}
 	next, content, err := makeSnapshot(rows)
 	if err != nil {
@@ -140,7 +137,7 @@ func makeSnapshot(rows []Record) (Index, map[string]string, error) {
 	parts := map[string]*bytes.Buffer{"active.jsonl": {}}
 	bytesWritten := 0
 	for i, r := range rows {
-		if r.RecordID != RecordID(r.SourceID, r.ID) || i > 0 && rows[i-1].RecordID == r.RecordID {
+		if !validRecordID(r.RecordID, r.SourceID, r.ID) || i > 0 && rows[i-1].RecordID == r.RecordID {
 			return idx, nil, errors.New("invalid stored reminder identity")
 		}
 		file := partition(r)
@@ -160,7 +157,7 @@ func makeSnapshot(rows []Record) (Index, map[string]string, error) {
 		}
 		parts[file].Write(raw)
 		parts[file].WriteByte('\n')
-		idx.Items = append(idx.Items, Entry{Summary: r.Summary, SourceID: r.SourceID, RecordID: r.RecordID, File: file})
+		idx.Items = append(idx.Items, Entry{Summary: r.Summary, SourceID: r.SourceID, RecordID: r.RecordID, File: file, SourceIDs: r.SourceIDs})
 	}
 	raw, _ := json.Marshal(idx)
 	if len(raw) > 32<<20 {
@@ -201,8 +198,7 @@ func (s *Storage) load() (Index, State, error) {
 		}
 		seen := map[string]bool{}
 		for _, entry := range loaded.Items {
-			_, sourceExists := state.Sources[entry.SourceID]
-			if !sourceExists || seen[entry.RecordID] || entry.RecordID != RecordID(entry.SourceID, entry.ID) ||
+			if !validSources(entry.SourceID, entry.SourceIDs, state) || seen[entry.RecordID] || !validRecordID(entry.RecordID, entry.SourceID, entry.ID) ||
 				!validPartition(entry.File) || entry.File != partition(Record{Item: Item{Summary: entry.Summary}}) {
 				return idx, state, errors.New("invalid reminders index entry")
 			}
@@ -228,8 +224,8 @@ func (s *Storage) load() (Index, State, error) {
 			return idx, state, e
 		}
 		for _, row := range r {
-			if _, exists := state.Sources[row.SourceID]; !exists {
-				return idx, state, errors.New("missing reminder source watermark during index rebuild")
+			if !validSources(row.SourceID, row.SourceIDs, state) {
+				return idx, state, errors.New("invalid reminder sources during index rebuild")
 			}
 		}
 		rows = append(rows, r...)
@@ -261,7 +257,7 @@ func (s *Storage) records(file string) ([]Record, error) {
 	rows := []Record{}
 	for scanner.Scan() {
 		var row Record
-		if json.Unmarshal(scanner.Bytes(), &row) != nil || row.RecordID != RecordID(row.SourceID, row.ID) || partition(row) != file {
+		if json.Unmarshal(scanner.Bytes(), &row) != nil || !validRecordID(row.RecordID, row.SourceID, row.ID) || partition(row) != file {
 			return nil, errors.New("invalid reminder JSONL")
 		}
 		rows = append(rows, row)
