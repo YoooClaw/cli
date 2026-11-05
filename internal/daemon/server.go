@@ -48,7 +48,7 @@ import (
 const ProtocolVersion = 1
 
 // Capabilities 是本 build 支持的 daemon/Relay 能力。
-var Capabilities = []string{"data", "data-oss-import", "notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "images", "lightrules", "multi-apikey", "transfer"}
+var Capabilities = []string{"data", "data-oss-import", "notifications", "recordings", "locations", "calendars", "reminders", "health-data", "health-data-daily-v3", "health-data-details-v1", "images", "lightrules", "multi-apikey", "transfer"}
 
 // StartOpts 是 daemon 启动参数。
 type StartOpts struct {

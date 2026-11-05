@@ -163,3 +163,38 @@ func TestHealthRealStoreUpdatesReplaceInsteadOfAccumulate(t *testing.T) {
 		t.Fatal("daily values accumulated")
 	}
 }
+
+func TestHealthOptionalDetailsAreExposedWithoutChangingOldShape(t *testing.T) {
+	raw, err := os.ReadFile("../healthdata/testdata/health-details-v3.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := healthdata.Prepare(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err = healthdata.NewStorage(dir).Append(batch); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(dir + "/2026-11-05.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, legacy, failure := healthData(stored, "2026-11-05")
+	if failure != nil || legacy {
+		t.Fatal(failure, legacy)
+	}
+	for _, key := range []string{"medications", "workouts", "intakeRecordCount", "moodCount"} {
+		if data[key] == nil {
+			t.Fatal("missing", key)
+		}
+	}
+	old, _, failure := healthData(daily(t, "2026-11-05", "Steps", json.Number("5")), "2026-11-05")
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	if _, exists := old["medications"]; exists {
+		t.Fatal("changed old response shape")
+	}
+}

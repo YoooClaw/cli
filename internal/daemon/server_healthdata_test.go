@@ -229,3 +229,37 @@ func TestHealthDataRejectsFarFutureCollectedAt(t *testing.T) {
 		t.Fatalf("rejected batch wrote health data: %v", err)
 	}
 }
+
+func TestHealthDetailsHTTPReceiptAndStoredRecords(t *testing.T) {
+	raw, err := os.ReadFile("../healthdata/testdata/health-details-v3.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, local := newTestServer(t, "health-details-secret")
+	request, _ := http.NewRequest(http.MethodPost, local.URL+"/health-data", bytes.NewReader(raw))
+	request.Header.Set("Authorization", "Bearer health-details-secret")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var receipt struct {
+		OK       bool `json:"ok"`
+		Ingested int  `json:"ingested"`
+	}
+	if err = json.NewDecoder(response.Body).Decode(&receipt); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 200 || !receipt.OK || receipt.Ingested != 6 {
+		t.Fatal(response.StatusCode, receipt)
+	}
+	stored, err := os.ReadFile(filepath.Join(srv.ctx.Paths.HealthData, "2026-11-05.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"synthetic-medication", "synthetic-workout", "synthetic-intake", "synthetic-mood"} {
+		if !bytes.Contains(stored, []byte(key)) {
+			t.Fatal("missing record", key)
+		}
+	}
+}

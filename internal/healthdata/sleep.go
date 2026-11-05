@@ -139,6 +139,7 @@ func ReadSnapshot(raw []byte, date string) (DailySnapshot, dailyHeader, error) {
 		return DailySnapshot{}, header, fmt.Errorf("unsupported or invalid health snapshot")
 	}
 	day := DailySnapshot{Date: date, Items: []json.RawMessage{}, SleepSessions: []SleepSession{}}
+	seenDetails := map[string]bool{}
 	for _, line := range lines[1:] {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -146,6 +147,7 @@ func ReadSnapshot(raw []byte, date string) (DailySnapshot, dailyHeader, error) {
 		var tag struct {
 			Type    string          `json:"type"`
 			Session json.RawMessage `json:"session"`
+			Records json.RawMessage `json:"records"`
 		}
 		if json.Unmarshal([]byte(line), &tag) != nil {
 			return day, header, fmt.Errorf("invalid snapshot line")
@@ -156,6 +158,25 @@ func ReadSnapshot(raw []byte, date string) (DailySnapshot, dailyHeader, error) {
 				return day, header, err
 			}
 			day.SleepSessions = append(day.SleepSessions, session)
+		} else if tag.Type == "medications" || tag.Type == "workouts" || tag.Type == "intakeRecords" || tag.Type == "moods" {
+			if seenDetails[tag.Type] {
+				return day, header, fmt.Errorf("duplicate health details section")
+			}
+			seenDetails[tag.Type] = true
+			var target any
+			switch tag.Type {
+			case "medications":
+				target = &day.Medications
+			case "workouts":
+				target = &day.Workouts
+			case "intakeRecords":
+				target = &day.IntakeRecords
+			case "moods":
+				target = &day.Moods
+			}
+			if err := json.Unmarshal(tag.Records, target); err != nil {
+				return day, header, err
+			}
 		} else if tag.Type != "" {
 			return day, header, fmt.Errorf("unknown snapshot record")
 		} else {
