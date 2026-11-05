@@ -76,6 +76,27 @@ func (s *Storage) replaceDaily(b *DailyBatch) error {
 				return err
 			}
 		}
+		details := []struct {
+			Type  string
+			Value any
+		}{
+			{"medications", day.Medications}, {"workouts", day.Workouts}, {"intakeRecords", day.IntakeRecords}, {"moods", day.Moods},
+		}
+		for _, detail := range details {
+			encoded, err := json.Marshal(detail.Value)
+			if err != nil {
+				return err
+			}
+			if string(encoded) == "null" || string(encoded) == "[]" {
+				continue
+			}
+			if err := encoder.Encode(struct {
+				Type    string          `json:"type"`
+				Records json.RawMessage `json:"records"`
+			}{detail.Type, encoded}); err != nil {
+				return err
+			}
+		}
 		if out.Len() > MaxDayBytes {
 			return fmt.Errorf("health day exceeds 4 MiB")
 		}

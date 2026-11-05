@@ -43,24 +43,36 @@ func view(t *testing.T, s *Storage) (Index, State) {
 
 func TestCurrentMirrorTransitionsAndSourceIsolation(t *testing.T) {
 	s := NewStorage(t.TempDir())
-	a, b := sample("a"), sample("b")
+	a, b, c := sample("a"), sample("b"), sample("c")
 	a.IsRecurring = true
 	replace(t, s, payload("phone", "09:00:00", a, b))
-	replace(t, s, payload("tablet", "09:00:00", a))
+	replace(t, s, payload("tablet", "09:00:00", a, c))
+	before, _ := view(t, s)
+	if len(before.Items) != 3 {
+		t.Fatalf("want three distinct IDs, got %+v", before.Items)
+	}
+	var aRecordID string
+	for _, entry := range before.Items {
+		if entry.ID == "a" {
+			aRecordID = entry.RecordID
+		}
+	}
 	a.IsCompleted, a.CompletedAt = true, ptr("2026-09-30T23:59:59-07:00")
+	a.Notes = ptr("updated")
 	replace(t, s, payload("phone", "10:00:00", a)) // b disappears only from phone.
 	idx, _ := view(t, s)
 	if len(idx.Items) != 2 {
 		t.Fatal("other source or duplicate title lost")
 	}
-	for _, e := range idx.Items {
-		want := "active.jsonl"
-		if e.SourceID == "phone" {
-			want = "completed/2026-09-30.jsonl"
+	if err := s.View(func(_ Index, _ State, detail func(string) (Record, error)) error {
+		r, err := detail(aRecordID)
+		if err != nil || r.ID != "a" || r.SourceID != "phone" || partition(r) != "completed/2026-09-30.jsonl" ||
+			r.Notes == nil || *r.Notes != "updated" || strings.Join(r.SourceIDs, ",") != "phone,tablet" {
+			t.Fatal(r, err)
 		}
-		if e.File != want {
-			t.Fatal(e.File, want)
-		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	a.CompletedAt = nil
 	replace(t, s, payload("phone", "11:00:00", a))
@@ -74,8 +86,18 @@ func TestCurrentMirrorTransitionsAndSourceIsolation(t *testing.T) {
 	replace(t, s, payload("phone", "12:00:00", a))
 	replace(t, s, payload("phone", "13:00:00"))
 	idx, state := view(t, s)
-	if len(idx.Items) != 1 || idx.Items[0].SourceID != "tablet" || len(state.Sources) != 2 {
+	if len(idx.Items) != 2 || len(state.Sources) != 2 {
 		t.Fatal("source mirror isolation")
+	}
+	for _, e := range idx.Items {
+		if e.ID == "a" && (e.RecordID != aRecordID || strings.Join(e.SourceIDs, ",") != "tablet") {
+			t.Fatal("omitting source removed or changed shared item", e)
+		}
+	}
+	replace(t, s, payload("tablet", "10:00:00", c))
+	idx, _ = view(t, s)
+	if len(idx.Items) != 1 || idx.Items[0].ID != "c" {
+		t.Fatal("omission from all sources did not remove shared item")
 	}
 }
 
@@ -98,13 +120,67 @@ func TestStaleIdempotencyAndNotesOnlyRevision(t *testing.T) {
 		t.Fatal("notes did not invalidate detail/list revision")
 	}
 	if err := s.View(func(_ Index, _ State, detail func(string) (Record, error)) error {
-		r, err := detail(RecordID("phone", "a"))
+		r, err := detail(itemRecordID("a"))
 		if err != nil || r.Notes == nil || *r.Notes != "changed" {
 			t.Fatal(r, err)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFirstAcceptedSnapshotConsolidatesLegacyDuplicates(t *testing.T) {
+	s := NewStorage(t.TempDir())
+	a, b := sample("a"), sample("b")
+	newB := b
+	newB.Title = "tablet version"
+	rows := []Record{
+		{Item: a, SourceID: "phone", RecordID: RecordID("phone", a.ID)},
+		{Item: a, SourceID: "tablet", RecordID: RecordID("tablet", a.ID)},
+		{Item: b, SourceID: "phone", RecordID: RecordID("phone", b.ID)},
+		{Item: newB, SourceID: "tablet", RecordID: RecordID("tablet", b.ID)},
+	}
+	idx, files, err := makeSnapshot(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{SchemaVersion: SchemaVersion, Sources: map[string]SourceState{
+		"phone":  {LastCollectedAt: "2026-10-01T17:00:00+08:00"},
+		"tablet": {LastCollectedAt: "2026-10-01T10:00:00Z"},
+	}}
+	indexRaw, _ := json.Marshal(idx)
+	stateRaw, _ := json.Marshal(state)
+	files["index.json"], files["state.json"] = string(indexRaw), string(stateRaw)
+	if err := s.commit(transaction{Files: files}); err != nil {
+		t.Fatal(err)
+	}
+	a.Title = "reinstalled version"
+	replace(t, s, payload("reinstall", "19:00:00", a))
+	raw, err := s.read("active.jsonl", StoreLimit/2)
+	if err != nil || strings.Count(string(raw), "\n") != 2 {
+		t.Fatal("legacy duplicate rows still on disk", err)
+	}
+	if err := os.Remove(filepath.Join(s.dir, "index.json")); err != nil {
+		t.Fatal(err)
+	}
+	idx, _ = view(t, NewStorage(s.dir))
+	if len(idx.Items) != 2 {
+		t.Fatal("index rebuild lost consolidated rows", idx.Items)
+	}
+	for _, e := range idx.Items {
+		switch e.ID {
+		case "a":
+			if e.Title != a.Title || e.SourceID != "reinstall" || strings.Join(e.SourceIDs, ",") != "phone,reinstall,tablet" {
+				t.Fatal("incoming data did not overwrite legacy copies", e)
+			}
+		case "b":
+			if e.Title != newB.Title || e.SourceID != "tablet" || strings.Join(e.SourceIDs, ",") != "phone,tablet" {
+				t.Fatal("legacy rows did not use the newer source watermark", e)
+			}
+		default:
+			t.Fatal("unexpected reminder", e)
+		}
 	}
 }
 
@@ -229,5 +305,26 @@ func TestMalformedMetadataFailsClosed(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCrossSourceDelayedSnapshotPreservesNewerContent(t *testing.T) {
+	s := NewStorage(t.TempDir())
+	a := sample("shared")
+	a.IsCompleted = true
+	replace(t, s, payload("phone", "12:00:00", a))
+	a.IsCompleted = false
+	replace(t, s, payload("tablet", "10:00:00", a))
+	idx, _ := view(t, s)
+	if len(idx.Items) != 1 || !idx.Items[0].IsCompleted || len(idx.Items[0].SourceIDs) != 2 {
+		t.Fatal(idx)
+	}
+	// Removing the content's source updates visibility, not content freshness.
+	replace(t, s, payload("phone", "14:00:00"))
+	s = NewStorage(s.dir)
+	replace(t, s, payload("tablet", "13:00:00", a))
+	idx, _ = view(t, s)
+	if len(idx.Items) != 1 || idx.Items[0].IsCompleted {
+		t.Fatal("newer content rejected after source disappearance", idx)
 	}
 }

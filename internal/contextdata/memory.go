@@ -26,9 +26,10 @@ type Batch struct {
 	Outside   int      `json:"outsideScopePending"`
 }
 type memoryState struct {
-	Seen       map[string]Item `json:"seen"`
-	Pending    *Batch          `json:"pending,omitempty"`
-	LastCommit string          `json:"lastCommit,omitempty"`
+	Seen                map[string]Item `json:"seen"`
+	Pending             *Batch          `json:"pending,omitempty"`
+	LastCommit          string          `json:"lastCommit,omitempty"`
+	LastCommitRemaining *int            `json:"lastCommitRemaining,omitempty"`
 }
 
 func memoryItems(p paths.Paths, source string) (Dataset, error) {
@@ -126,10 +127,17 @@ func NextWithReader(p paths.Paths, source string, o Options, scan bool, read fun
 	if !d.Connected {
 		return nil, fmt.Errorf("source %s is not connected", source)
 	}
+	var reminderSeen map[string][]Item
+	if source == "reminders" {
+		reminderSeen = reminderHistory(s.Seen)
+	}
 	pending := []Change{}
 	outside := 0
 	for _, item := range d.Items {
 		old := s.Seen[item.ID]
+		if source == "reminders" {
+			item, old = reminderConsumption(item, reminderSeen)
+		}
 		if old.Version == item.Version {
 			continue
 		}
@@ -200,13 +208,38 @@ func Commit(p paths.Paths, source, token string) (map[string]any, error) {
 			if source != "calendars" && source != "health-data" && source != "reminders" {
 				item.Data = nil
 			}
+			if source == "reminders" {
+				for id, old := range s.Seen {
+					if Str(item.Data, "id") != "" && Str(old.Data, "id") == Str(item.Data, "id") {
+						delete(s.Seen, id)
+					}
+				}
+			}
 			s.Seen[item.ID] = item
 		}
+		remaining := s.Pending.Remaining
+		s.LastCommitRemaining = &remaining
 		s.Pending = nil
 		s.LastCommit = token
 		if e = fsutil.WriteJSON(path, s, fsutil.SecretFileMode); e != nil {
 			return nil, e
 		}
 	}
-	return map[string]any{"ok": true, "source": source, "token": token, "commitMode": "exact-snapshot"}, nil
+	result := map[string]any{"ok": true, "source": source, "token": token, "commitMode": "exact-snapshot"}
+	if s.LastCommitRemaining == nil {
+		// Older checkpoints did not persist the fetch-time remainder. Do not invent zero.
+		result["nextAction"] = "follow_previous_batch"
+		result["message"] = "已确认该批次。旧提交记录未保存剩余数，请沿用原批次的 remainingInScope 和本轮批次上限；不要仅为验证提交成功而再次调用 next 或 scan。"
+	} else {
+		result["remainingInScope"] = *s.LastCommitRemaining
+		result["remainingBasis"] = "batch-fetch-time"
+		if *s.LastCommitRemaining == 0 {
+			result["nextAction"] = "stop"
+			result["message"] = "该批次读取时，所选范围内没有剩余待处理记录。本来源本轮处理结束，无需再次调用 next 或 scan 验证；其他已选来源可继续。本提示不代表提交时没有新数据到达。"
+		} else {
+			result["nextAction"] = "continue_if_within_limit"
+			result["message"] = "该批次读取时，所选范围内仍有待处理记录。仅在本来源本轮未达到 3 个非空批次上限时，沿用原范围继续 next；达到上限则结束本来源并报告剩余。本提示不是提交时的实时扫描。"
+		}
+	}
+	return result, nil
 }

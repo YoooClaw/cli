@@ -257,14 +257,16 @@ func (s *Storage) recover() error {
 const readme = `# System reminders (V1)
 
 This directory is a current mirror, not an event log. Each successful full
-snapshot replaces only its sourceId. Absence means no longer visible to that
-source; it is not proof of a user deletion. Completed and recurring reminders
-are kept exactly as returned by EventKit, without expanding future occurrences.
+snapshot replaces what its source can see. Uploads replace content for the same system id across sources only when their
+collection time is not older than the saved content timestamp. A missing id is removed only
+from that source and stays in the mirror while another source still sees it.
+Recurring reminders are kept as returned by EventKit without expanding them.
 
 active.jsonl contains incomplete reminders. completed/YYYY-MM-DD.jsonl uses the
 completion timestamp's date/offset; completed/undated.jsonl has no completion time.
-Each line contains the full reminder, sourceId and recordId. index.json contains
-query summaries and relative file locations; it can be rebuilt from JSONL.
+Each line contains one reminder, the content's sourceId and recordId, plus
+sourceIds when its current sources differ from that one source. index.json
+contains query summaries and relative file locations; it can be rebuilt from JSONL.
 state.json stores each source's last accepted query-start collectedAt timestamp.
 No byte offsets, event history or persistent sorted arrays are stored.
 
