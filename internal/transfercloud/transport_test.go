@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -359,5 +360,65 @@ func TestSDKMultipartUploadResumesCheckpoint(t *testing.T) {
 	}
 	if creates != 1 || inits != 1 || lists != 1 || calls[1] != 1 || calls[2] != 1 || calls[3] != 2 {
 		t.Fatalf("create=%d init=%d list=%d parts=%v", creates, inits, lists, calls)
+	}
+}
+
+func TestDownloadResumesAcrossClientRestart(t *testing.T) {
+	payload := bytes.Repeat([]byte("r"), int(3*partSize))
+	var resumed atomic.Bool
+	var firstParts atomic.Int32
+	c := mockOSSClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == apiPath+"/download-url" {
+			reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL, "expiresAt": time.Now().Add(time.Hour).UnixMilli()})
+			return
+		}
+		var start, end int64
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			t.Error(err)
+			return
+		}
+		if end > 0 && start > 0 && !resumed.Load() {
+			<-r.Context().Done()
+			return
+		}
+		if start == 0 && end > 0 {
+			firstParts.Add(1)
+		}
+		w.Header().Set("ETag", `"stable"`)
+		w.Header().Set("Last-Modified", time.Unix(1700000000, 0).UTC().Format(http.TimeFormat))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(206)
+		w.Write(payload[start : end+1])
+	})
+	path := filepath.Join(t.TempDir(), "package.tar.gz")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var once sync.Once
+	err := c.download(ctx, testID, path, func(_, written, _ int64) {
+		if written >= partSize {
+			once.Do(func() { time.AfterFunc(200*time.Millisecond, cancel) })
+		}
+	})
+	if err == nil {
+		t.Fatal("expected interruption")
+	}
+	if _, err = os.Stat(path + ".download"); err != nil {
+		t.Fatal("checkpoint not retained", err)
+	}
+	resumed.Store(true)
+	next := *c
+	if err = next.Download(context.Background(), testID, path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("restored bytes differ", err)
+	}
+	if firstParts.Load() != 1 {
+		t.Fatalf("completed part fetched again: %d", firstParts.Load())
+	}
+	if _, err = os.Stat(path + ".download"); !os.IsNotExist(err) {
+		t.Fatal("checkpoint not cleaned")
 	}
 }

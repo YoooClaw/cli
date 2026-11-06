@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode"
@@ -69,6 +71,9 @@ func projectMemory(home string) string {
 
 // Inspect each parent: a symlink is never an admissible destination, even within home.
 func targetState(home, rel string) (string, error) {
+	return targetStateWithReceipts(home, rel, nil)
+}
+func targetStateWithReceipts(home, rel string, receipts map[string]fileReceipt) (string, error) {
 	if !validRelative(rel) {
 		return "", fail("UNSAFE_TARGET_PATH")
 	}
@@ -91,6 +96,9 @@ func targetState(home, rel string) (string, error) {
 			}
 			if !st.Mode().IsRegular() || linkCount(st) > 1 {
 				return "", fail("UNSAFE_TARGET_PATH")
+			}
+			if receipt, ok := receipts[rel]; ok && st.Size() == receipt.Size && st.ModTime().UnixNano() == receipt.Modified {
+				return "file:" + receipt.Hash, nil
 			}
 			h, e := hashFile(current)
 			return "file:" + h, e
@@ -121,17 +129,40 @@ func skillPath(f FullFile) (name, prefix string) {
 	}
 	rest := strings.TrimPrefix(p, prefix)
 	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) != 2 || !scopeRE.MatchString(parts[0]) {
+	if len(parts) != 2 || !validRelative(p) {
 		return "", ""
 	}
 	return parts[0], prefix + parts[0] + "/"
 }
+
+// Shorten only components exceeding the common filesystem NAME_MAX byte limit.
+// Hash the original name (not content), so repeats and sibling directories stay stable.
+func portableDestination(p string) string {
+	parts := strings.Split(p, "/")
+	for i, name := range parts {
+		if len(name) <= 255 {
+			continue
+		}
+		ext := path.Ext(name)
+		if len(ext) > 32 {
+			ext = ""
+		}
+		stem := []rune(strings.TrimSuffix(name, ext))
+		if len(stem) > 10 {
+			stem = stem[:10]
+		}
+		sum := sha256.Sum256([]byte(name))
+		parts[i] = fmt.Sprintf("%s-%x%s", string(stem), sum[:8], ext)
+	}
+	return strings.Join(parts, "/")
+}
+
 func conflictDestination(m *Manifest, f FullFile) string {
 	rel := f.Path
 	if f.Category == "cron" && rel == "jobs.json" || f.Category == "agent-backup" && strings.HasSuffix(rel, "/cron/jobs.json") {
 		rel = strings.TrimSuffix(rel, "jobs.json") + "from_openclaw_cron.json"
 	}
-	return workspaceBase() + "/migration/conflicts/" + m.PackageID + "/" + f.Category + "/" + f.Scope + "/" + rel
+	return portableDestination(workspaceBase() + "/migration/conflicts/" + m.PackageID + "/" + f.Category + "/" + f.Scope + "/" + rel)
 }
 
 func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
@@ -201,7 +232,9 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 		case "skills":
 			name, p := skillPath(f)
 			if name == "" {
-				return nil, fail("INVALID_SKILL_PATH")
+				// Loose files from older packages are reference material, not skill directories.
+				dest = workspaceBase() + "/migration/openclaw/" + f.Scope + "/skills/" + f.Path
+				break
 			}
 			prefix = p
 			dest = ".claude/skills/" + name
@@ -219,7 +252,8 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 				continue
 			}
 		}
-		state, e := targetState(home, dest)
+		dest = portableDestination(dest)
+		state, e := s.targetState(home, dest)
 		if e != nil {
 			return nil, e
 		}
@@ -230,19 +264,20 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 			action = "skipped"
 		} else if state != "absent" && !skipExisting {
 			dest = conflictDestination(m, f)
-			isolated, e := targetState(home, dest)
+			var isolated string
+			dest, isolated, e = availableDestination(s.ctx, home, dest, f.Hash)
 			if e != nil {
 				return nil, e
 			}
-			if isolated != "absent" && isolated != "file:"+f.Hash {
-				return nil, fail("DESTINATION_CHANGED")
-			}
 			action = "isolated"
 			reason = "target-conflict"
+			if isolated == "file:"+f.Hash {
+				action = "skipped"
+			}
 			state += "/" + isolated
 		}
 		if group != "" {
-			projectState, e := targetState(home, workspaceBase()+"/"+dest)
+			projectState, e := s.targetState(home, workspaceBase()+"/"+dest)
 			if e != nil {
 				return nil, e
 			}
@@ -262,15 +297,6 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 	for i := range items {
 		item := &items[i]
 		if item.SkillPrefix != "" {
-			hasDefinition := false
-			for _, f := range item.Files {
-				if f.Path == item.SkillPrefix+"SKILL.md" {
-					hasDefinition = true
-				}
-			}
-			if !hasDefinition {
-				return nil, fail("SKILL_DEFINITION_MISSING")
-			}
 			if claimed[item.Destination] {
 				item.Action = "skipped"
 				item.Reason = "duplicate-skill-name"
@@ -295,8 +321,43 @@ func (s *Service) workspacePlan(m *Manifest) ([]WorkspaceItem, error) {
 	return items, nil
 }
 
+// Choose a deterministic free sibling; reuse identical content on repeated imports.
+func availableDestination(ctx context.Context, home, dest, hash string) (string, string, error) {
+	base := dest
+	for n := 0; ; n++ {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
+		if n > 0 {
+			ext := path.Ext(base)
+			dest = portableDestination(strings.TrimSuffix(base, ext) + fmt.Sprintf("-%d", n) + ext)
+		}
+		state, err := targetState(home, dest)
+		if err != nil {
+			return "", "", err
+		}
+		if state == "absent" || state == "file:"+hash {
+			return dest, state, nil
+		}
+		if state == "blocked-parent" {
+			return "", "", fail("DESTINATION_CHANGED")
+		}
+	}
+}
+
 // Copy with an exclusive final link: never overwrite a file that appeared after preview.
 func installFile(ctx context.Context, root *os.Root, home, dest, blob, hash string) error {
+	return installFileTracked(ctx, root, home, dest, blob, hash, "", nil)
+}
+func installFileTracked(ctx context.Context, root *os.Root, home, dest, blob, hash, local string, actual *string) error {
+	if actual != nil {
+		resolved, _, err := availableDestination(ctx, home, dest, hash)
+		if err != nil {
+			return err
+		}
+		dest = resolved
+		*actual = dest
+	}
 	state, e := targetState(home, dest)
 	if e != nil {
 		return e
@@ -311,6 +372,12 @@ func installFile(ctx context.Context, root *os.Root, home, dest, blob, hash stri
 		return e
 	}
 	tmp := path.Join(path.Dir(dest), ".transfer-"+newUUID())
+	if local != "" {
+		if e = writePrivateJSON(filepath.Join(local, "pending-target.json"), tmp); e != nil {
+			return e
+		}
+		defer os.Remove(filepath.Join(local, "pending-target.json"))
+	}
 	out, e := root.OpenFile(filepath.FromSlash(tmp), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if e != nil {
 		return e
@@ -321,7 +388,8 @@ func installFile(ctx context.Context, root *os.Root, home, dest, blob, hash stri
 		out.Close()
 		return e
 	}
-	_, e = io.Copy(out, contextReader{ctx, in})
+	h := sha256.New()
+	_, e = io.Copy(io.MultiWriter(out, h), contextReader{ctx, in})
 	in.Close()
 	if e == nil {
 		e = out.Sync()
@@ -333,21 +401,60 @@ func installFile(ctx context.Context, root *os.Root, home, dest, blob, hash stri
 	if e != nil {
 		return e
 	}
-	h, e := hashFileContext(ctx, filepath.Join(home, filepath.FromSlash(tmp)))
-	if e != nil || h != hash {
+	if fmt.Sprintf("%x", h.Sum(nil)) != hash {
 		return fail("CHECKSUM_MISMATCH")
 	}
-	if e = root.Link(filepath.FromSlash(tmp), filepath.FromSlash(dest)); e != nil {
-		if os.IsExist(e) {
-			state, se := targetState(home, dest)
-			if se == nil && state == "file:"+hash {
-				return nil
-			}
-		}
-		return e
-	}
-	return nil
+	return commitImportedFile(ctx, root, home, tmp, dest, hash, actual)
 }
+
+func commitImportedFile(ctx context.Context, root *os.Root, home, tmp, dest, hash string, actual *string) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var e error
+		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+			parent, pe := root.Open(path.Dir(dest))
+			if pe != nil {
+				return pe
+			}
+			e = renameDirectoryExclusive(parent, path.Base(tmp), path.Base(dest))
+			if e == nil {
+				e = parent.Sync()
+			}
+			parent.Close()
+		} else {
+			e = root.Link(filepath.FromSlash(tmp), filepath.FromSlash(dest))
+		}
+		if e == nil {
+			if actual != nil {
+				*actual = dest
+			}
+			return nil
+		}
+		if !os.IsExist(e) {
+			return e
+		}
+		state, se := targetState(home, dest)
+		if se != nil {
+			return se
+		}
+		if state == "file:"+hash {
+			if actual != nil {
+				*actual = dest
+			}
+			return nil
+		}
+		if actual == nil {
+			return e
+		}
+		dest, _, e = availableDestination(ctx, home, dest, hash)
+		if e != nil {
+			return e
+		}
+	}
+}
+
 func (s *Service) applyWorkspace(m *Manifest, local string, items []WorkspaceItem) ([]WorkspaceResult, error) {
 	home, e := s.importHome()
 	if e != nil {
@@ -384,7 +491,20 @@ func (s *Service) applyWorkspace(m *Manifest, local string, items []WorkspaceIte
 				blob, be := safeFile(local, "blobs/"+f.Hash)
 				err = be
 				if err == nil {
-					err = installFile(s.ctx, root, home, item.Destination, blob, f.Hash)
+					actual := item.Destination
+					resolved := &actual
+					if item.Reason == "daily-log" {
+						resolved = nil
+					}
+					err = installFileTracked(s.ctx, root, home, item.Destination, blob, f.Hash, local, resolved)
+					result.Path = filepath.Join(home, filepath.FromSlash(actual))
+					if actual != item.Destination {
+						result.Outcome = "isolated"
+						result.Reason = "target-conflict"
+					}
+					if err == nil {
+						err = s.saveFileReceipt(local, home, actual, f.Hash)
+					}
 				}
 			}
 		}
@@ -408,6 +528,10 @@ func (s *Service) installSkill(root *os.Root, home, local string, item Workspace
 		return e
 	}
 	temp := path.Join(path.Dir(item.Destination), ".transfer-"+newUUID())
+	if e = writePrivateJSON(filepath.Join(local, "pending-target.json"), temp); e != nil {
+		return e
+	}
+	defer os.Remove(filepath.Join(local, "pending-target.json"))
 	if e = root.Mkdir(temp, 0700); e != nil {
 		return e
 	}
@@ -417,7 +541,7 @@ func (s *Service) installSkill(root *os.Root, home, local string, item Workspace
 		if e != nil {
 			return e
 		}
-		if e = installFile(s.ctx, root, home, temp+"/"+strings.TrimPrefix(f.Path, item.SkillPrefix), blob, f.Hash); e != nil {
+		if e = installFile(s.ctx, root, home, temp+"/"+portableDestination(strings.TrimPrefix(f.Path, item.SkillPrefix)), blob, f.Hash); e != nil {
 			return e
 		}
 	}
@@ -454,6 +578,7 @@ func (s *Service) writeMigrationIndex(m *Manifest, results []WorkspaceResult) (s
 	memory := map[string]string{}
 	cron := ""
 	locations := []WorkspaceResult{}
+	pathMappings := map[string]string{}
 	for _, r := range results {
 		locations = append(locations, r)
 		if r.Outcome == OutcomeFailed {
@@ -463,6 +588,14 @@ func (s *Service) writeMigrationIndex(m *Manifest, results []WorkspaceResult) (s
 			continue
 		}
 		for _, f := range r.Source {
+			target := r.Path
+			if f.Category == "skills" {
+				_, prefix := skillPath(f)
+				if prefix != "" {
+					target = filepath.Join(r.Path, filepath.FromSlash(portableDestination(strings.TrimPrefix(f.Path, prefix))))
+				}
+			}
+			pathMappings[logicalKey(f)] = target
 			if (f.Category == "agent-settings" || f.Category == "memory") && memoryNames[f.Path] {
 				memory[f.Path] = r.Path
 			}
@@ -471,7 +604,7 @@ func (s *Service) writeMigrationIndex(m *Manifest, results []WorkspaceResult) (s
 			cron = r.Path
 		}
 	}
-	doc := map[string]any{"schemaVersion": 1, "owner": "yoooclaw-transfer", "packageId": m.PackageID, "workspace": filepath.Join(home, workspaceBase()), "memoryFiles": memory, "cronFile": cron, "dailyLogDirectory": filepath.Join(home, projectMemory(home)), "files": locations}
+	doc := map[string]any{"schemaVersion": 1, "owner": "yoooclaw-transfer", "packageId": m.PackageID, "workspace": filepath.Join(home, workspaceBase()), "memoryFiles": memory, "cronFile": cron, "dailyLogDirectory": filepath.Join(home, projectMemory(home)), "files": locations, "warnings": m.Warnings, "pathMappings": pathMappings}
 	content, _ := json.MarshalIndent(doc, "", "  ")
 	// Only our own index can be replaced on resume; a user file is never overwritten.
 	if old, er := root.ReadFile(rel); er == nil {

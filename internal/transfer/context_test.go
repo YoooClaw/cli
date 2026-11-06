@@ -14,7 +14,7 @@ func TestCancellationAndConfiguredTimeout(t *testing.T) {
 		t.Fatal("timeout ignored")
 	}
 	t.Setenv("YOOOCLAW_TRANSFER_TIMEOUT", "")
-	if Timeout() != 6*time.Hour {
+	if Timeout() != 12*time.Hour {
 		t.Fatal("default timeout")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
