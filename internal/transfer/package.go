@@ -41,7 +41,7 @@ const (
 // Types 是全部支持的数据类型。
 var Types = []string{TypeNotifications, TypeRecordings, TypeWebPages, TypeImages}
 
-// 包协议上限。导出端与导入端共用，避免产出一个对端注定拒绝的包。
+// Export record and package byte limits. Import does not cap business record count.
 const (
 	MaxRecords       = 100_000
 	MaxManifestBytes = 64 * 1024 * 1024
@@ -903,13 +903,6 @@ func ReadPackage(root string, opts ReadOptions) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(mf)
-	if err != nil {
-		return nil, err
-	}
-	if info.Size() > MaxManifestBytes {
-		return nil, fail("MANIFEST_TOO_LARGE")
-	}
 	raw, err := os.ReadFile(mf)
 	if err != nil {
 		return nil, err
@@ -921,7 +914,7 @@ func ReadPackage(root string, opts ReadOptions) (*Manifest, error) {
 	if m.SchemaVersion == 2 {
 		return readFullPackage(root, raw, opts)
 	}
-	if m.SchemaVersion != 1 || m.Records == nil || len(m.Records) > MaxRecords || m.Warnings == nil || m.PackageID == "" {
+	if m.SchemaVersion != 1 || m.Records == nil || m.Warnings == nil || m.PackageID == "" {
 		return nil, fail("VERSION_UNSUPPORTED")
 	}
 	ids := map[string]bool{}

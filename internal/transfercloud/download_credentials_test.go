@@ -112,12 +112,15 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 		}
 		if end == 0 {
 			heads.Add(1)
-			// Advance once before the probe response is observable. Advancing
-			// 26 minutes in every concurrent part handler could expire a freshly
-			// issued 30-minute URL before currentURL validates the response.
+			// Cross the refresh window before returning metadata, so every
+			// concurrent part observes the same clock. Advancing on each part
+			// can expire a freshly renewed URL while its response is in flight.
 			now.Add(int64(26 * time.Minute / time.Millisecond))
 		} else {
 			ranges.Add(1)
+			if r.URL.Query().Get("renewed") != "1" {
+				t.Error("range request did not use renewed URL")
+			}
 		}
 		if heads.Load() > 1 {
 			t.Error("download restarted")
@@ -141,7 +144,7 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 	dest := filepath.Join(dir, "package")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := ossdownload.Download(ctx, p, signedURL, testID, dest, dir, MaxDownloadBytes, false); err != nil {
+	if err := ossdownload.Download(ctx, p, signedURL, testID, dest, dir, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(dest)

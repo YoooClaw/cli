@@ -2,6 +2,7 @@ package transferjob
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -108,7 +109,7 @@ func TestUnreportedResultDoesNotBlockNextImport(t *testing.T) {
 	}
 	wait(t, func() bool { return runs.Load() == 2 })
 }
-func TestInterruptedJobReportsFailureWithoutReimport(t *testing.T) {
+func TestInterruptedJobResumesWithoutRepeatedStart(t *testing.T) {
 	dir := t.TempDir()
 	d := deps()
 	s, e := New(dir, d)
@@ -116,7 +117,7 @@ func TestInterruptedJobReportsFailureWithoutReimport(t *testing.T) {
 		t.Fatal(e)
 	}
 	s.Stop()
-	j := &record{Request: request("interrupted"), Label: "main", Identity: "identity", State: "running", Deadline: time.Now().Add(time.Hour)}
+	j := &record{Request: request("interrupted"), Label: "main", Identity: "identity", State: "running", Started: true, Deadline: time.Now().Add(time.Hour)}
 	if e = s.save(j); e != nil {
 		t.Fatal(e)
 	}
@@ -131,14 +132,14 @@ func TestInterruptedJobReportsFailureWithoutReimport(t *testing.T) {
 	defer s.Stop()
 	select {
 	case event := <-events:
-		if event.EventType != "IMPORT_FAILED" {
+		if event.EventType != "IMPORT_SUCCEEDED" {
 			t.Fatal(event)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no recovered result")
 	}
-	if runs.Load() != 0 {
-		t.Fatal("interrupted import replayed")
+	if runs.Load() != 1 {
+		t.Fatal("interrupted import not resumed")
 	}
 }
 func TestOneDeadlineStopsWorkAndPersistsFailure(t *testing.T) {
@@ -263,5 +264,79 @@ func TestStartupLogsShowDurableJobRecoveryWithoutReexecution(t *testing.T) {
 	}
 	if runs.Load() != 1 {
 		t.Fatal("recovered successful task was run again")
+	}
+}
+
+func TestShutdownPreservesJobAndDeadline(t *testing.T) {
+	dir := t.TempDir()
+	d := deps()
+	entered := make(chan struct{})
+	d.Run = func(ctx context.Context, _ Request, _ string, _ func(string) error) error {
+		close(entered)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	var failures atomic.Int32
+	d.Report = func(_ context.Context, _ string, e Event) error {
+		if e.EventType == "IMPORT_FAILED" {
+			failures.Add(1)
+		}
+		return nil
+	}
+	s, err := New(dir, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Accept(request("shutdown"), "main"); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	s.Stop()
+	raw, _ := os.ReadFile(filepath.Join(dir, "shutdown.json"))
+	var before record
+	if err = json.Unmarshal(raw, &before); err != nil {
+		t.Fatal(err)
+	}
+	if before.State != "running" || !before.Started || failures.Load() != 0 {
+		t.Fatalf("bad suspended state: %+v", before)
+	}
+	var starts atomic.Int32
+	d.Run = func(context.Context, Request, string, func(string) error) error { return nil }
+	d.Report = func(_ context.Context, _ string, e Event) error {
+		if e.EventType == "IMPORT_STARTED" {
+			starts.Add(1)
+		}
+		return nil
+	}
+	s, err = New(dir, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.jobs["shutdown"].Reported })
+	s.Stop()
+	raw, _ = os.ReadFile(filepath.Join(dir, "shutdown.json"))
+	var after record
+	json.Unmarshal(raw, &after)
+	if !before.Deadline.Equal(after.Deadline) || starts.Load() != 0 || after.Result.EventType != "IMPORT_SUCCEEDED" {
+		t.Fatalf("bad recovery: %+v", after)
+	}
+}
+
+func TestExpiredInterruptedJobDoesNotResume(t *testing.T) {
+	dir := t.TempDir()
+	d := deps()
+	s, _ := New(dir, d)
+	s.Stop()
+	s.save(&record{Request: request("expired"), Label: "main", Identity: "identity", State: "running", Started: true, Deadline: time.Now().Add(-time.Hour)})
+	var runs atomic.Int32
+	d.Run = func(context.Context, Request, string, func(string) error) error { runs.Add(1); return nil }
+	s, err := New(dir, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.jobs["expired"].Reported })
+	s.Stop()
+	if runs.Load() != 0 {
+		t.Fatal("expired task resumed")
 	}
 }
