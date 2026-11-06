@@ -114,6 +114,40 @@ func TestRecordingMergesCaptureAndSmartHardwareSources(t *testing.T) {
 	}
 }
 
+func TestRecordingQueriesUploadedCaptureIndex(t *testing.T) {
+	home := sandbox(t)
+	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.Local)
+	writeCaptureCLIIndex(t, home, "same-id", "本机会议", base, false)
+	root := filepath.Join(home, "profiles", "default", "voice", "recordings")
+	audio := filepath.Join(root, "audio", "uploaded.m4a")
+	if err := os.MkdirAll(filepath.Dir(audio), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(audio, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index := `{"recordings":[
+		{"id":"uploaded","sourceType":"capture_app","clientLabel":"wuying","metadata":{"name":"云端会议","created_at":"2026-08-20T12:00:00+08:00"},"status":"synced","audioStatus":"downloaded","audioFile":"audio/uploaded.m4a"},
+		{"id":"same-id","sourceType":"capture_app","clientLabel":"wuying","metadata":{"name":"同步副本"},"status":"synced"}
+	]}`
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := execCLI(t, "recording", "list", "--source", "capture_app", "--format", "json")
+	if code != 0 || decode(t, out)["total"] != float64(2) {
+		t.Fatalf("expected a single entry per Capture ID: code=%d %s", code, out)
+	}
+	out, code = execCLI(t, "recording", "status", "uploaded", "--format", "json")
+	if code != 0 {
+		t.Fatalf("uploaded Capture status: code=%d %s", code, out)
+	}
+	detail := decode(t, out)["recording"].(map[string]any)
+	wantAudio, err := filepath.EvalSymlinks(audio)
+	if err != nil || detail["source_type"] != "capture_app" || detail["audio_path"] != wantAudio || detail["has_audio"] != true {
+		t.Fatalf("unexpected uploaded Capture details: %v, %v", detail, err)
+	}
+}
+
 func TestRecordingStatusRequiresSourceWhenIDIsAmbiguous(t *testing.T) {
 	home := sandbox(t)
 	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.Local)

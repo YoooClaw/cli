@@ -148,28 +148,31 @@ func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, clie
 		return nil, err
 	}
 	items := make([]recordingQueryItem, 0)
-	if source == recordingSourceAll || source == recordingSourceSmartHardware {
-		for _, r := range recording.ReadIndex(ctx.Paths.Recordings) {
-			if status != "" && r.Status != status {
+	appendIndexed := func(root, sourceType string, skip map[string]bool) {
+		for _, entry := range recording.ReadIndex(root) {
+			if skip[entry.ID] || status != "" && entry.Status != status ||
+				client != "" && client != "all" && labelOrLegacy2(entry.ClientLabel) != client {
 				continue
 			}
-			if client != "" && client != "all" && labelOrLegacy2(r.ClientLabel) != client {
+			occurredAt, hasTime := recording.EffectiveTime(entry)
+			if (from != nil || to != nil) && !hasTime ||
+				from != nil && occurredAt.Before(*from) || to != nil && !occurredAt.Before(*to) {
 				continue
 			}
-			occurredAt, hasTime := recording.EffectiveTime(r)
-			if (from != nil || to != nil) && !hasTime {
-				continue
-			}
-			if from != nil && occurredAt.Before(*from) || to != nil && !occurredAt.Before(*to) {
-				continue
+			list, detail := recToListItem(entry), recordingDetail(entry)
+			if sourceType == capturerecording.SourceType {
+				addCaptureUploadPaths(root, entry, list, detail)
 			}
 			items = append(items, recordingQueryItem{
-				id: r.ID, sourceType: recordingSourceSmartHardware,
-				occurredAt: occurredAt, hasTime: hasTime,
-				list: recToListItem(r), detail: recordingDetail(r),
+				id: entry.ID, sourceType: sourceType,
+				occurredAt: occurredAt, hasTime: hasTime, list: list, detail: detail,
 			})
 		}
 	}
+	if source == recordingSourceAll || source == recordingSourceSmartHardware {
+		appendIndexed(ctx.Paths.Recordings, recordingSourceSmartHardware, nil)
+	}
+	nativeCaptureIDs := map[string]bool{}
 	if (source == recordingSourceAll || source == capturerecording.SourceType) &&
 		(client == "" || client == "all") {
 		captureItems, err := capturerecording.List(queryCtx, ctx.Paths.Voice, capturerecording.Query{
@@ -179,12 +182,16 @@ func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, clie
 			return nil, err
 		}
 		for _, item := range captureItems {
+			nativeCaptureIDs[item.ID] = true
 			items = append(items, recordingQueryItem{
 				id: item.ID, sourceType: capturerecording.SourceType,
 				occurredAt: item.RecordedTime, hasTime: true,
 				list: captureToListItem(item), detail: captureDetail(item),
 			})
 		}
+	}
+	if source == recordingSourceAll || source == capturerecording.SourceType {
+		appendIndexed(capturerecording.RecordingsPath(ctx.Paths.Voice), capturerecording.SourceType, nativeCaptureIDs)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].hasTime != items[j].hasTime {
@@ -293,6 +300,7 @@ func recordingStoragePath(ctx *clictx.Context, _ *cobra.Command, _ []string) (an
 			capturerecording.SourceType: map[string]any{
 				"path":    capturerecording.RecordingsPath(ctx.Paths.Voice),
 				"history": capturerecording.HistoryPath(ctx.Paths.Voice),
+				"index":   filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "index.json"),
 			},
 		},
 	}, nil

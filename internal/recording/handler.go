@@ -83,6 +83,7 @@ func emitRecordingStatus(recordingID string, storage *Storage, logger Logger, no
 	}
 	event := StatusEvent{
 		RecordingID:        entry.ID,
+		SourceType:         entry.RecordingSource(),
 		OssTaskID:          entry.OssTaskID,
 		TransferStatus:     entry.Status,
 		AudioStatus:        entry.AudioStatus,
