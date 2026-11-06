@@ -87,3 +87,52 @@ func TestHealthV3QueriesAndExactMemory(t *testing.T) {
 		t.Fatal("bad snapshot accepted")
 	}
 }
+
+func TestHealthDetailsRemainAvailableAndCorrectionsChangeMemoryVersion(t *testing.T) {
+	p := paths.ForRoot(t.TempDir(), "default")
+	raw, err := os.ReadFile("../healthdata/testdata/health-details-v3.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := healthdata.NewStorage(p.HealthData)
+	batch, err := healthdata.Prepare(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Append(batch); err != nil {
+		t.Fatal(err)
+	}
+	now, _ := time.Parse(time.RFC3339, "2026-11-05T20:00:00+08:00")
+	result, err := Query(p, "health-data", "get", "", Options{Date: "2026-11-05", Limit: 100}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, _ := json.Marshal(result)
+	if !strings.Contains(string(full), `"doseEvents"`) || !strings.Contains(string(full), `"intakeRecords"`) {
+		t.Fatal("missing full details")
+	}
+	memory, err := Next(p, "health-data", Options{All: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := json.Marshal(memory)
+	if strings.Contains(string(summary), `"doseEvents"`) || strings.Contains(string(summary), `"intakeRecords"`) || !strings.Contains(string(summary), `"doseEventCount":1`) {
+		t.Fatal("unbounded or missing summaries", string(summary))
+	}
+	if _, err = Commit(p, "health-data", memory["token"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	corrected := strings.Replace(string(raw), `"quantity": 1`, `"quantity": 2`, 1)
+	corrected = strings.Replace(corrected, "18:00:00.000", "19:00:00.000", 1)
+	batch, err = healthdata.Prepare([]byte(corrected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Append(batch); err != nil {
+		t.Fatal(err)
+	}
+	memory, err = Next(p, "health-data", Options{All: true}, false)
+	if err != nil || memory["done"] != false {
+		t.Fatal("dose-only correction was lost", err)
+	}
+}

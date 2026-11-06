@@ -20,6 +20,11 @@ yoooclaw reminders get '<recordId>' --revision '<revision>' --format json
 - Follow `nextCursor` until null for a complete requested scope. A short page can
   still have more data because of the 256 KiB response cap. Reuse original filters
   or send only the cursor. On 410 restart the query; never merge different revisions.
+- Within a profile, the CLI merges matching system `data.id` across sources.
+  `sourceId` identifies the saved content’s source; `sourceIds`, when present,
+  lists sources that still include the record (otherwise use `[sourceId]`).
+  `--source-id` filters that visibility set. The returned records are already deduplicated by the CLI. Use the returned opaque `recordId` for detail commands;
+  never derive it from sourceId or assume its format.
 - Use `sources[sourceId].lastCollectedAt` when reporting freshness. The mirror
   reflects the last successful full read, not live access to the phone.
 - `due: null` is undated; `due.time: null` means date-only, never midnight.

@@ -1,7 +1,7 @@
 ---
 name: yoooclaw-context-query
 description: |
-  Query synchronized local context and YoooClaw App todos: things/plans/tasks (“今天有什么事情/安排/待办”) from system calendars, system reminders and YoooClaw App todo; location history (“我去过哪里”), health metrics/sleep/trends (“今天的健康数据”); notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
+  Query synchronized local context and YoooClaw App todos: things/plans/tasks (“今天有什么事情/安排/待办”) from system calendars, system reminders and YoooClaw App todo; location history (“我去过哪里”), health metrics/sleep/trends, medication, workouts, water/caffeine intake and mood records (“今天的健康数据/吃药记录/喝了多少水”); notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
 ---
 
 # YoooClaw context query
@@ -33,7 +33,7 @@ Do not infer reply language from previous messages, source content, command outp
   - For “今天有什么事情/安排”, use explicit calendar date overlap, reminders due today with incomplete status, and App todos starting today with unfinished status. Do not use the calendar upcoming-only default for a whole-day query. Include overdue or undated items only when the requested scope calls for them, labeled separately; do not silently widen a date query.
   - Present these as things with a source label and original record ID. Preserve each source's time and status semantics: calendar start/end, reminder due date, and App todo start time are different; a past calendar event does not prove completion. Similar titles alone do not establish duplicates. Related entries may be grouped while retaining each source's evidence and state.
 - Location history: read `references/locations.md`.
-- Health daily metrics/trends: read `references/health-data.md`.
+- Health metrics/trends, sleep, medication, workouts, intake and moods: read `references/health-data.md`.
 - Notifications/messages, senders, apps, recent/unread summaries: read `references/notifications.md`.
 - Voice input, dictation/口述 history, or “我刚才说了什么”: read `references/voice-input.md`.
 - Phone/meeting recordings, recording transcripts, or “录音里说了什么”: read `references/recordings.md`.

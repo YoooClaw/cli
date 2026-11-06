@@ -90,6 +90,21 @@ func TestRemindersHTTPUploadAndBridgeQueries(t *testing.T) {
 	if status, _ := request("POST", "/reminders", strings.Replace(reminderSnapshot, `"items":[`, `"items":null,"ignored":[`, 1), "phone-key", false); status != 400 {
 		t.Fatal("invalid full snapshot accepted")
 	}
+	tabletSnapshot := strings.Replace(reminderSnapshot, `"sourceId":"phone"`, `"sourceId":"tablet"`, 1)
+	tabletSnapshot = strings.Replace(tabletSnapshot, "private note", "updated note", 1)
+	if status, raw := request("POST", "/reminders", tabletSnapshot, "gateway", true); status != 200 || !strings.Contains(string(raw), `"applied":true`) {
+		t.Fatal(status, string(raw))
+	}
+	for _, query := range []string{"", "?sourceId=phone", "?sourceId=tablet"} {
+		status, raw = request("GET", "/assets/reminders"+query, "", "phone-key", false)
+		var page assets.ReminderResponse
+		if status != 200 || json.Unmarshal(raw, &page) != nil || len(page.Items) != 2 {
+			t.Fatal("cross-source upload duplicated or hid reminders", status, string(raw))
+		}
+	}
+	if status, raw := request("GET", "/assets/reminders/"+last.Items[0].RecordID, "", "phone-key", false); status != 200 || !strings.Contains(string(raw), "updated note") {
+		t.Fatal("new source did not replace existing detail", status, string(raw))
+	}
 	status, raw = request("GET", "/health", "", "", false)
 	if status != 200 || !strings.Contains(string(raw), `"reminders"`) || !strings.Contains(string(raw), `"assets.reminders.read.v1"`) {
 		t.Fatal("capabilities missing")

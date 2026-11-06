@@ -10,9 +10,16 @@ import (
 const dailyReadme = `# 健康数据（v3）
 
 根目录 YYYY-MM-DD.jsonl 是一份日期快照，重复同步覆盖更新，不可把不同版本累加。
-第一行是 schemaVersion=3/date/timeZone/updatedAt/provider；后续行分两类：
+第一行是 schemaVersion=3/date/timeZone/updatedAt/provider；后续行为：
 - 普通指标：metric/name/value/unit。步数、能量、心率等按当地自然日统计。
 - 睡眠：type=sleepSession，session 内保存一次完整睡眠的摘要与全部 segments。
+- 可选明细：type=medications/workouts/intakeRecords/moods，records 内保存对应完整数组。
+用药分组内为药物名称、剂型、当前归档/计划状态和 doseEvents；状态均为系统记录，未记录不能推断漏服。
+药物元数据为 updatedAt 时的当前状态；仅采集当天保存完整可共享清单，历史日期仅包含有服药事件的药物。
+用药事件/摄入/心情按 startAt 的当地日期归属；运动按开始日归属，durationMinutes 为有效时长。
+intakeRecords 为来源明细，不能与 items 中系统合并后的每日饮水/咖啡因总量再次累加。
+默认 list、资产列表及记忆批次仅给用药事件数量/最新事件、摄入与心情数量/最新记录，
+完整数组请用 health-data get --date YYYY-MM-DD。明细改动也会使记忆内容版本变化。
 
 睡眠会话归记录结束的当地日期，跨午夜不拆分；同日可以有夜间睡眠和午睡等多次记录。
 startAt/endAt 是记录到的首个/末个实际睡眠片段边界，不代表上床时间或确认实际起床。
