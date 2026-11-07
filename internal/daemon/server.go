@@ -177,7 +177,8 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		owner: opts.Owner, generation: opts.Generation, executable: executable,
 		ingressMode: mode, egress: NoopEgress{},
 		transfer: &transfer.Service{
-			Dir: filepath.Join(ctx.Paths.Dir, "transfers"),
+			Warn: logger.Warn,
+			Dir:  filepath.Join(ctx.Paths.Dir, "transfers"),
 			Roots: transfer.Roots{
 				transfer.TypeNotifications: ctx.Paths.Notifications,
 				transfer.TypeRecordings:    ctx.Paths.Recordings,
