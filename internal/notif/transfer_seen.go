@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
@@ -37,13 +38,14 @@ func (s *Storage) loadTransferSeen() error {
 		if entry.IsDir() || !dateDirRE.MatchString(day) || entry.Name() != day+".json" {
 			continue
 		}
-		raw, e := readTransferSeen(filepath.Join(dir, entry.Name()))
+		file := filepath.Join(dir, entry.Name())
+		raw, e := readTransferSeen(file)
 		if e != nil {
 			return e
 		}
 		var value transferSeen
-		if len(raw) > 64<<20 || json.Unmarshal(raw, &value) != nil {
-			return fmt.Errorf("invalid transfer dedup index")
+		if e := json.Unmarshal(raw, &value); e != nil {
+			return fmt.Errorf("parse transfer dedup index %q: %w", file, e)
 		}
 		ids := map[string]bool{}
 		for _, id := range value.IDs {
@@ -52,7 +54,7 @@ func (s *Storage) loadTransferSeen() error {
 		s.transferredIDs[day] = ids
 		for _, key := range value.Keys {
 			if !seenHashRE.MatchString(key) {
-				return fmt.Errorf("invalid transfer dedup hash")
+				return fmt.Errorf("validate transfer dedup hash in %q: invalid hash format (length=%d)", file, len(key))
 			}
 			s.transferredKeys[key] = true
 		}
@@ -79,22 +81,27 @@ func (s *Storage) ImportTransferSeen(day string, ids, keys []string) error {
 	file := filepath.Join(dir, day+".json")
 	value := transferSeen{}
 	if raw, e := readTransferSeen(file); e == nil {
-		if json.Unmarshal(raw, &value) != nil {
-			return fmt.Errorf("invalid transfer dedup index")
+		if e := json.Unmarshal(raw, &value); e != nil {
+			return fmt.Errorf("parse transfer dedup index %q: %w", file, e)
 		}
 	} else if !os.IsNotExist(e) {
 		return e
 	}
 	is, ks := map[string]bool{}, map[string]bool{}
-	for _, id := range append(value.IDs, ids...) {
-		if len(id) > 4096 || strings.ContainsAny(id, "\r\n") {
-			return fmt.Errorf("invalid transfer notification id")
+	for i, id := range append(value.IDs, ids...) {
+		// IDs are opaque strings. JSON safely escapes control characters.
+		// Skip unreadable IDs instead of silently replacing bytes during JSON encoding.
+		if !utf8.ValidString(id) {
+			if s.logger != nil {
+				s.logger.Warn(fmt.Sprintf("[transfer] notification-index.id_skipped path=%q entry=%d reason=invalid-utf8 bytes=%d", file, i+1, len(id)))
+			}
+			continue
 		}
 		is[id] = true
 	}
 	for _, key := range append(value.Keys, keys...) {
 		if !seenHashRE.MatchString(key) {
-			return fmt.Errorf("invalid transfer dedup hash")
+			return fmt.Errorf("validate transfer dedup hash in %q: invalid hash format (length=%d)", file, len(key))
 		}
 		ks[key] = true
 	}
@@ -112,7 +119,7 @@ func (s *Storage) ImportTransferSeen(day string, ids, keys []string) error {
 		return e
 	}
 	if len(raw) > 64<<20 {
-		return fmt.Errorf("transfer dedup index too large")
+		return fmt.Errorf("transfer dedup index %q too large: bytes=%d limit=%d", file, len(raw), 64<<20)
 	}
 	if e = fsutil.WriteAtomic(file, raw, 0600); e != nil {
 		return e
@@ -130,7 +137,7 @@ func readTransferSeen(p string) ([]byte, error) {
 		return nil, e
 	}
 	if !st.Mode().IsRegular() || st.Size() > 64<<20 {
-		return nil, fmt.Errorf("invalid transfer dedup index")
+		return nil, fmt.Errorf("invalid transfer dedup index %q: mode=%s bytes=%d limit=%d", p, st.Mode(), st.Size(), 64<<20)
 	}
 	return os.ReadFile(p)
 }

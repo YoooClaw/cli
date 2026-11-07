@@ -692,3 +692,85 @@ func TestOccupiedConflictDestinationGetsUniquePathAndIndex(t *testing.T) {
 		t.Fatal("duplicate copy on reimport")
 	}
 }
+
+func TestNotificationIndexFailureLogsOriginalError(t *testing.T) {
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	var logs []string
+	dst.svc.Warn = func(line string) { logs = append(logs, line) }
+	pkg := fullFixture(t)
+	var m Manifest
+	raw, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("notification-id\n")
+	hash := sha(string(data))
+	testutil.WriteFile(t, filepath.Join(pkg, "blobs", hash), data)
+	m.Files = append(m.Files, FullFile{"notifications", "main", ".ids/2026-07-10.ids", hash, int64(len(data))})
+	m.OriginalBytes += int64(len(data))
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	plan := stagePlan(t, dst.svc, pkg)
+	index := filepath.Join(dst.roots[TypeNotifications], ".transfer-seen", "2026-07-10.json")
+	testutil.WriteFile(t, index, []byte("{broken"))
+	result := runPlan(t, dst.svc, plan)
+	if result["state"] != "PARTIAL" {
+		t.Fatalf("state=%v", result["state"])
+	}
+	joined := strings.Join(logs, "\n")
+	for _, want := range []string{"import.detail_failed", "notification-index.merge", "2026-07-10", index, "invalid character", plan["localTransferId"].(string)} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in logs: %s", want, joined)
+		}
+	}
+}
+
+func TestFullPackageKeepsLongAndCarriageReturnNotificationIDs(t *testing.T) {
+	pkg := fullFixture(t)
+	raw, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"id\rwith-carriage", strings.Repeat("a", 5000)}
+	data := []byte(strings.Join(ids, "\n") + "\n")
+	hash := sha(string(data))
+	testutil.WriteFile(t, filepath.Join(pkg, "blobs", hash), data)
+	m.Files = append(m.Files, FullFile{"notifications", "main", ".ids/2026-07-10.ids", hash, int64(len(data))})
+	m.OriginalBytes += int64(len(data))
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), m)
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatalf("state=%v", result["state"])
+	}
+	raw, err = os.ReadFile(filepath.Join(dst.roots[TypeNotifications], ".transfer-seen", "2026-07-10.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen SeenIndex
+	if err := json.Unmarshal(raw, &seen); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen.IDs) != 2 {
+		t.Fatalf("got %d IDs", len(seen.IDs))
+	}
+	for _, id := range ids {
+		found := false
+		for _, got := range seen.IDs {
+			if got == id {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("ID not preserved (bytes=%d)", len(id))
+		}
+	}
+}

@@ -124,10 +124,6 @@ func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, erro
 				if line == "" {
 					continue
 				}
-				if len(line) > 4096 {
-					warn(f, fmt.Sprintf("line %d", lineNo+1), "INVALID_NOTIFICATION_INDEX")
-					continue
-				}
 				if kind == ".keys" {
 					if !hashRE.MatchString(line) {
 						warn(f, fmt.Sprintf("line %d", lineNo+1), "INVALID_NOTIFICATION_INDEX")

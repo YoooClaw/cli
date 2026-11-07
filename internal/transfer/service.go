@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -29,6 +30,8 @@ const notificationBatchSize = 500
 // 导入」是同一个约束。
 type Service struct {
 	// Dir 是 staging 目录（<profile>/transfers）。
+	Warn          func(string) // Detailed local diagnostics, wired to daemon.log.
+	activeLocalID string
 	Home          string // Trusted runtime override for tests; never accepted from requests.
 	Dir           string
 	Roots         Roots
@@ -325,7 +328,14 @@ func (s *Service) stage(file, taskID, stageID string) (any, error) {
 	}, nil
 }
 
-func (s *Service) importPlan(localID, planID string, resume, preserve bool) (any, error) {
+func (s *Service) importPlan(localID, planID string, resume, preserve bool) (resultValue any, importErr error) {
+	s.activeLocalID = localID
+	defer func() {
+		if importErr != nil {
+			s.logImportFailure("import", "", localID, "", importErr)
+		}
+		s.activeLocalID = ""
+	}()
 	if !uuidRE.MatchString(localID) {
 		return nil, fail("INVALID_LOCAL_ID")
 	}
@@ -419,6 +429,7 @@ func (s *Service) importPlan(localID, planID string, resume, preserve bool) (any
 		}
 		for i, r := range unit {
 			if err != nil {
+				s.logImportFailure("record.write", r.Type, r.RecordID, s.Roots[r.Type], err)
 				results = append(results, Result{Type: r.Type, RecordID: r.RecordID, Outcome: OutcomeFailed, Error: err.Error()})
 			} else {
 				result := Result{Type: r.Type, RecordID: r.RecordID, Outcome: outcomes[i]}
@@ -449,6 +460,7 @@ func (s *Service) importPlan(localID, planID string, resume, preserve bool) (any
 		}
 		migrationIndex, err = s.writeMigrationIndex(m, workspaceResults)
 		if err != nil {
+			s.logImportFailure("migration-index.write", "migration-index", m.PackageID, migrationIndex, err)
 			results = append(results, Result{Type: "migration-index", Outcome: OutcomeFailed, Error: "INDEX_WRITE_FAILED"})
 		}
 		good := true
@@ -463,6 +475,7 @@ func (s *Service) importPlan(localID, planID string, resume, preserve bool) (any
 			}
 			for day, v := range m.Seen {
 				if err := s.Notifications.ImportTransferSeen(day, v.IDs, v.Keys); err != nil {
+					s.logImportFailure("notification-index.merge", "notification-index", day, filepath.Join(s.Roots[TypeNotifications], ".transfer-seen", day+".json"), err)
 					results = append(results, Result{Type: "notification-index", RecordID: day, Outcome: OutcomeFailed, Error: "INDEX_WRITE_FAILED"})
 				}
 			}
@@ -596,4 +609,12 @@ func (s *Service) CleanupStaging(localID string) error {
 		return fail("INVALID_LOCAL_ID")
 	}
 	return os.RemoveAll(filepath.Join(s.Dir, localID))
+}
+
+// Quote fields so filenames and errors cannot forge additional log lines.
+// Do not log record bodies or index contents.
+func (s *Service) logImportFailure(stage, kind, id, path string, err error) {
+	if s.Warn != nil && err != nil {
+		s.Warn(fmt.Sprintf("[transfer] localTransferId=%q import.detail_failed stage=%q type=%q recordId=%q path=%q error=%q", s.activeLocalID, stage, kind, id, path, err.Error()))
+	}
 }
