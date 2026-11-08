@@ -4,6 +4,7 @@ import (
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/contextdata"
 	"github.com/YoooClaw/cli/internal/errs"
+	"github.com/YoooClaw/cli/internal/healthdata"
 	"github.com/spf13/cobra"
 	"time"
 )
@@ -15,6 +16,16 @@ func newContextDataCmd(name, source string) *cobra.Command {
 	modes := []string{"list", "get"}
 	if source == "health-data" {
 		modes = append(modes, "series")
+		schema := &cobra.Command{Use: "schema", Args: cobra.NoArgs, Short: "读取健康字段解释（无需已同步数据）", RunE: run(func(ctx *clictx.Context, c *cobra.Command, args []string) (any, error) {
+			types, _ := c.Flags().GetStringSlice("type")
+			value, err := healthdata.Semantics(types...)
+			if err != nil {
+				return nil, errs.New(errs.CodeInvalidArgument, err.Error())
+			}
+			return map[string]any{"ok": true, "sourceSemantics": value}, nil
+		})}
+		schema.Flags().StringSlice("type", nil, "仅返回指定类型及公共说明；可重复或逗号分隔，默认全部")
+		root.AddCommand(schema)
 	}
 	for _, mode := range modes {
 		use := mode

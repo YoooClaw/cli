@@ -109,7 +109,7 @@ func TestSnapshotCommitDoesNotConsumeConcurrentUpdate(t *testing.T) {
 		t.Fatal(b, e)
 	}
 	changes := b["items"].([]Change)
-	if changes[0].PreviousVersion == "" || changes[0].PreviousData == nil {
+	if changes[0].PreviousVersion == "" || changes[0].PreviousData != nil {
 		t.Fatal(changes)
 	}
 	if _, e = Commit(p, "health-data", b["token"].(string)); e != nil {
