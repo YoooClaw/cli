@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/healthdata"
 	"github.com/YoooClaw/cli/internal/paths"
 )
 
@@ -163,7 +164,15 @@ func Query(p paths.Paths, source, mode, id string, o Options, now time.Time) (ma
 		b, _ := json.Marshal(cursor{Offset: end, Digest: digest, AsOf: c.AsOf})
 		next = base64.RawURLEncoding.EncodeToString(b)
 	}
-	return map[string]any{"ok": true, "source": source, "scope": scope, "scopeDescription": desc, "asOf": c.AsOf.Format(time.RFC3339Nano), "timeBasis": d.TimeBasis, "coverage": map[string]any{"connected": d.Connected, "availableDates": d.Dates, "completeDeviceHistory": false}, "items": items[c.Offset:end], "total": len(items), "returned": end - c.Offset, "nextCursor": next}, nil
+	result := map[string]any{"ok": true, "source": source, "scope": scope, "scopeDescription": desc, "asOf": c.AsOf.Format(time.RFC3339Nano), "timeBasis": d.TimeBasis, "coverage": map[string]any{"connected": d.Connected, "availableDates": d.Dates, "completeDeviceHistory": false}, "items": items[c.Offset:end], "total": len(items), "returned": end - c.Offset, "nextCursor": next}
+	if source == "health-data" {
+		data := []map[string]any{}
+		for _, item := range items[c.Offset:end] {
+			data = append(data, item.Data)
+		}
+		result["sourceSemantics"] = healthdata.SemanticsFor(data...)
+	}
+	return result, nil
 }
 func ParseLimit(s string) (int, error) {
 	n, e := strconv.Atoi(s)

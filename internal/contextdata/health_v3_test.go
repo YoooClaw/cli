@@ -115,7 +115,7 @@ func TestHealthDetailsRemainAvailableAndCorrectionsChangeMemoryVersion(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	summary, _ := json.Marshal(memory)
+	summary, _ := json.Marshal(memory["items"])
 	if strings.Contains(string(summary), `"doseEvents"`) || strings.Contains(string(summary), `"intakeRecords"`) || !strings.Contains(string(summary), `"doseEventCount":1`) {
 		t.Fatal("unbounded or missing summaries", string(summary))
 	}

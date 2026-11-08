@@ -1,0 +1,99 @@
+{
+  "formatVersion": 1,
+  "source": "health-data",
+  "dataSchemaVersion": 3,
+  "sections": [
+    {
+      "type": "common",
+      "matchKeys": [],
+      "rules": [
+        "Daily snapshots replace earlier data for the same source-local date. Use the current revision; cumulative values and different revisions are not additive.",
+        "Keep date, timeZone, provider, unit and snapshot version with observations. Missing metrics or optional details mean unknown, not zero. Absent days are not deletion signals.",
+        "partialDay marks the current source-local day at query time. updatedAt describes snapshot freshness. coverage.completeDeviceHistory=false means the CLI does not guarantee complete device history; it does not prove data loss.",
+        "Counts and latest records are summaries, not complete event histories. Read full daily data for individual events. Keep observations separate from interpretations; one day does not establish a lasting habit or diagnosis."
+      ]
+    },
+    {
+      "type": "items",
+      "matchKeys": [
+        "items",
+        "metric",
+        "measurement",
+        "workouts"
+      ],
+      "rules": [
+        "steps is the system-merged daily total. active_energy excludes resting energy.",
+        "walking_running_distance and cycling_distance are separate categories; flights_climbed is floors.",
+        "apple_exercise_minutes is the exercise ring, not workout session duration.",
+        "*_average/minimum/maximum/latest retain their distinct meanings; HRV SDNN and RMSSD remain separate.",
+        "oxygen_saturation_average and body_fat_latest use percent: 98 means 98%.",
+        "workout_*_minutes belongs to the workout start date and excludes native pauses; do not add it to exercise-ring minutes.",
+        "basal_energy differs from active_energy; stand_hours counts qualifying hours, while stand_minutes measures duration. Goals differ from actual values; absent goals are unknown. activity_rings_paused is a 0/1 flag.",
+        "heart_rate_recovery_one_minute_latest uses beats; vo2_max_latest uses mL/kg/min; walking_steadiness_latest uses percent 0..100. Preserve the returned units and aggregation suffixes.",
+        "series selects daily items metrics. measurement=null with missing=true means that metric is absent on a synchronized date; unsynchronized dates remain coverage gaps."
+      ]
+    },
+    {
+      "type": "sleepSessions",
+      "matchKeys": [
+        "sleepSessions"
+      ],
+      "rules": [
+        "Sleep sessions belong to the local end date in timeZone, without splitting at midnight. startAt/endAt are observed sleep boundaries, not bedtime/rise time: do not call their span time in bed or use it to derive sleep efficiency.",
+        "isPartial marks touching the collection query boundary. false does not establish a complete night, complete device synchronization, or that the user woke up. It is a client-supplied stored value, unchanged by CLI --date/--from-date/--to-date filtering. The collection window bounds are not supplied: do not equate them to the requested day's midnight boundaries or invent which boundary was touched. It is distinct from partialDay (the current source-local day); do not infer isPartial from today's date.",
+        "unknownMinutes is unobserved time in the recorded timeline, neither awake nor asleep. For zero, say only “当前时间线未标出未知区间”; do not translate this into continuous device acquisition, no dropped data, or a complete night.",
+        "sleepMinutes already includes core/deep/rem/unspecified stageMinutes; never add stages again or sum by sources. Do not use old sleep_* metrics for session trends.",
+        "Segment endpoints are rounded separately to minutes (30 seconds rounds up), then differences are summed. Totals can differ from subtracting the whole window; awakeningCount may include intervals rounded to zero minutes.",
+        "Report segment counts from segmentCount or a computed length of segments, not by visually counting long JSON. Preserve supplied aggregate values; calculate any new value from the returned data before reporting it.",
+        "Describe the observed first/last stages without calling their order typical, normal or abnormal. Keep dated observations separate from interpretations; a single snapshot does not establish long-term habits. Before the final answer, check every reported date, count, unit and value against the returned data, and check field explanations against these source semantics.",
+        "Use the complete current sleepSessions list when updating dated memory. Preserve every session in that snapshot; lists from different revisions are replacements, not additions."
+      ]
+    },
+    {
+      "type": "medications",
+      "matchKeys": [
+        "medications"
+      ],
+      "rules": [
+        "Medication name, isArchived and hasSchedule describe collection-time state, not a historical prescription. hasSchedule describes a plan, not adherence.",
+        "Keep dose status as reported. not_logged, not_interacted, notification_not_sent and unknown statuses do not establish a missed dose.",
+        "scheduledAt and scheduledQuantity describe the plan. startAt and quantity describe the recorded event; missing quantity is unknown, not zero or the planned amount. Dose events belong to the source-local start date.",
+        "doseEventCount and latestDoseEvent summarize the dose history. Read full daily records for all events; the latest event is not the complete history."
+      ]
+    },
+    {
+      "type": "workouts",
+      "matchKeys": [
+        "workouts"
+      ],
+      "rules": [
+        "Workouts belong to the source-local start date. durationMinutes preserves native pause handling; retain it rather than replacing it with endAt minus startAt.",
+        "Workout statistics and daily items totals can describe the same activity. Keep them separate; adding them or exercise-ring minutes duplicates activity."
+      ]
+    },
+    {
+      "type": "intakeRecords",
+      "matchKeys": [
+        "intakeRecords",
+        "intakeRecordCount",
+        "latestIntakeRecord"
+      ],
+      "rules": [
+        "Water and caffeine entries belong to their source-local start date. Their values are event evidence, not additional amounts to add to system-merged daily items totals.",
+        "intakeRecordCount and latestIntakeRecord summarize records. Read full daily records for all entries; a latest entry is not the daily total."
+      ]
+    },
+    {
+      "type": "moods",
+      "matchKeys": [
+        "moods",
+        "moodCount",
+        "latestMood"
+      ],
+      "rules": [
+        "Mood records belong to their source-local start date. Preserve kind, valence (-1..1), labels and associations. momentary_emotion and daily_mood describe different observations; retain that distinction rather than inventing a daily average or diagnosis.",
+        "moodCount and latestMood summarize records. Read full daily records for all observations."
+      ]
+    }
+  ]
+}

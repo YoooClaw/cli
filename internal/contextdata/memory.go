@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/healthdata"
 	"github.com/YoooClaw/cli/internal/paths"
 )
 
@@ -84,7 +85,23 @@ func sameScope(a, b Options) bool {
 	return a.All == b.All && a.Date == b.Date && a.From == b.From && a.To == b.To
 }
 func batchResult(source string, b *Batch) map[string]any {
-	return map[string]any{"ok": true, "source": source, "done": false, "token": b.Token, "scope": b.Scope, "items": b.Items, "returned": len(b.Items), "remainingInScope": b.Remaining, "outsideScopePending": b.Outside, "commitArgs": []string{"sync", "commit", "--source", source, "--token", b.Token}}
+	// Response projection also covers an already-frozen batch without changing its token.
+	items := b.Items
+	if source == "health-data" {
+		items = append([]Change(nil), b.Items...)
+		for i := range items {
+			items[i].PreviousData = nil
+		}
+	}
+	result := map[string]any{"ok": true, "source": source, "done": false, "token": b.Token, "scope": b.Scope, "items": items, "returned": len(b.Items), "remainingInScope": b.Remaining, "outsideScopePending": b.Outside, "commitArgs": []string{"sync", "commit", "--source", source, "--token", b.Token}}
+	if source == "health-data" {
+		data := []map[string]any{}
+		for _, item := range items {
+			data = append(data, item.Data)
+		}
+		result["sourceSemantics"] = healthdata.SemanticsFor(data...)
+	}
+	return result
 }
 
 // Next persists the exact fetched material. Retries return the same batch until
@@ -146,13 +163,17 @@ func NextWithReader(p paths.Paths, source string, o Options, scan bool, read fun
 			continue
 		}
 		change := Change{Item: item, PreviousVersion: old.Version}
-		if source == "calendars" || source == "health-data" || source == "reminders" {
+		if source == "calendars" || source == "reminders" {
 			change.PreviousData = old.Data
 		}
 		pending = append(pending, change)
 	}
 	if len(pending) == 0 || scan {
-		return map[string]any{"ok": true, "source": source, "done": len(pending) == 0, "scope": o, "totalPending": len(pending), "outsideScopePending": outside}, nil
+		result := map[string]any{"ok": true, "source": source, "done": len(pending) == 0, "scope": o, "totalPending": len(pending), "outsideScopePending": outside}
+		if source == "health-data" {
+			result["sourceSemantics"] = healthdata.SemanticsFor()
+		}
+		return result, nil
 	}
 	n, bytes := 0, 0
 	limit := 100
@@ -205,7 +226,7 @@ func Commit(p paths.Paths, source, token string) (map[string]any, error) {
 		}
 		for _, change := range s.Pending.Items {
 			item := change.Item
-			if source != "calendars" && source != "health-data" && source != "reminders" {
+			if source != "calendars" && source != "reminders" {
 				item.Data = nil
 			}
 			if source == "reminders" {
