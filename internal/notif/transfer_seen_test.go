@@ -2,6 +2,7 @@ package notif
 
 import (
 	"github.com/YoooClaw/cli/internal/testutil"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,31 @@ func TestTransferSeenSurvivesRestart(t *testing.T) {
 		return nil
 	}); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestTransferSeenPreservesOpaqueIDsAndSkipsUnreadableID(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStorage(dir, PluginConfig{}, testutil.Logger{T: t})
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"with\rcarriage", "with\nnewline", strings.Repeat("x", 5000)}
+	input := append(append([]string{}, ids...), string([]byte{0xff}))
+	if err := s.ImportTransferSeen("2026-07-10", input, nil); err != nil {
+		t.Fatal(err)
+	}
+	s = NewStorage(dir, PluginConfig{}, testutil.Logger{T: t})
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	got := s.transferredIDs["2026-07-10"]
+	if len(got) != len(ids) {
+		t.Fatalf("got %d IDs, want %d", len(got), len(ids))
+	}
+	for _, id := range ids {
+		if !got[id] {
+			t.Fatalf("ID not preserved (bytes=%d)", len(id))
+		}
 	}
 }

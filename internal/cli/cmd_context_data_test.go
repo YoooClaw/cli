@@ -43,3 +43,20 @@ func TestContextCommandsCalendarDefaultsAndMemoryRoundTrip(t *testing.T) {
 		t.Fatal(a)
 	}
 }
+
+func TestHealthSchemaWithoutSyncedData(t *testing.T) {
+	sandbox(t)
+	out, code := execCLI(t, "health-data", "schema", "--type", "sleepSessions", "--format", "json")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	result := decode(t, out)
+	semantics := result["sourceSemantics"].(map[string]any)
+	if len(semantics["sections"].([]any)) != 2 {
+		t.Fatal(out)
+	}
+	out, code = execCLI(t, "health-data", "schema", "--type", "not-a-type", "--format", "json")
+	if code == 0 {
+		t.Fatal(out)
+	}
+}

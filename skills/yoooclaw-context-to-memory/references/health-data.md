@@ -1,9 +1,28 @@
 # Health memory
 
-Use `sync next --source health-data` and token confirmation from the parent skill. Each item is the latest snapshot for one business date. `data.header` supplies date/timeZone/provider/updatedAt; `data.items` supplies ordinary metric/name/value/unit; `data.sleepSessions` supplies v3 sleep summaries and segmentCount. Batches also include full workouts, medication metadata with doseEventCount/latestDoseEvent, and intake/mood counts with latest records. Query `health-data get --date YYYY-MM-DD` when full sleep stages, dose events, intake or mood records are needed. A latest record is not the full history. The batch version covers all complete details, even though the memory batch contains summaries. If a fresh query differs from the pending snapshot, do not claim its new content was acknowledged by the old token; process the next revision separately. Previous data is the last confirmed snapshot. Timestamp-only updates do not produce new consumption.
+Use `sync next --source health-data` and token confirmation from the parent skill.
+Each item contains the complete current snapshot for one date. `previousVersion`,
+when supplied, identifies the last confirmed revision; no previous data is returned.
 
-Only v3 is supported. Update the existing dated health record when metrics, sleep sessions or other daily details change; retain evidence of revision where useful. Missing metrics mean unread/unknown, not zero. Sessions may change IDs when start time or sources are corrected: replace the dated snapshot, never append duplicate sleep. Empty days are not deletion signals; absent days do not erase historical memory. A day matching the source-local current day is partial as of updatedAt. Keep metric, unit, provider, and date when comparing; only compare equivalent definitions. Daily values can become dated records; durable trends need enough comparable observations and do not establish a diagnosis.
+1. Read the batch's `sourceSemantics` before writing. It includes explanations
+   for the current snapshots automatically; no extra schema query is
+   needed for a normal batch. Apply those rules to the saved memory and
+   final reply; metadata itself is not evidence about the user.
+2. Use `health-data get --date YYYY-MM-DD` when the memory needs complete sleep
+   segments, dose events, intake entries or moods. Read its attached explanations.
+   If the fetched version differs from the batch, process that revision separately;
+   the pending token confirms only its frozen snapshot.
+3. Reconcile the existing dated health memory against the current snapshot,
+   preserving all sleep sessions in that snapshot instead of appending lists from
+   different revisions. Keep the source
+   date, timeZone, provider and snapshot version with the record.
+4. During the parent's read-back step, verify dates, values, units and field
+   interpretations against the data and `sourceSemantics`. Then confirm the token.
 
-Before writing health memory, read the metric semantics and daily health details in [health query semantics](../../yoooclaw-context-query/references/health-data.md#metric-semantics). Preserve medication status and actual versus planned doses; do not infer missed doses from missing records. Do not add intake/workout details to daily totals. Keep moods as dated observations. A detail-only correction updates the same dated memory rather than appending another daily total.
+The batch version covers complete details, even when its data is summarized.
+Timestamp-only updates do not create new consumption. Follow the parent's
+per-source batch limit and commit-result stopping guidance.
 
-Apply those definitions to both saved memory and the final reply: isPartial=false is not proof of a complete night or synchronized device data; unknownMinutes=0 is not proof of no missing data. Observation boundaries are not bedtime/rise time, time in bed, or a basis for sleep efficiency. Preserve source-local date/timeZone, provider and snapshot version with the dated record. Do not promote interpretations from a prior agent report into field definitions; correct conflicts against the source contract. During the parent's separate read-back step, verify dates, units, values and these meanings, then ensure the final reply agrees with the verified record.
+For a field-definition question outside a batch, use `health-data schema`.
+If metadata is unavailable, report the limitation and resolve the field meaning
+before writing an interpretation; prior model reports are not field definitions.

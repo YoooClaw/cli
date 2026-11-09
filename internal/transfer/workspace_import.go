@@ -509,6 +509,7 @@ func (s *Service) applyWorkspace(m *Manifest, local string, items []WorkspaceIte
 			}
 		}
 		if err != nil {
+			s.logImportFailure("workspace.write", item.Category, item.ID, result.Path, err)
 			result.Outcome = OutcomeFailed
 			result.Reason = "FILE_IMPORT_FAILED"
 		}
