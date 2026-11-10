@@ -189,6 +189,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			Recordings:    recordingStorage,
 		},
 	}
+	_ = srv.exportService()
 	if err := srv.startTransferImports(); err != nil {
 		srv.logger.Warn("[transfer] automatic import unavailable: invalid fulfillment configuration; check cloud host and report URL override")
 	}
@@ -287,6 +288,9 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			if sup := srv.supervisor(); sup != nil {
 				sup.StopAll(reason)
 			}
+			if srv.recordingExports != nil {
+				srv.recordingExports.Close()
+			}
 			if srv.dataImports != nil {
 				srv.dataImports.Cancel()
 			}
@@ -330,6 +334,9 @@ type server struct {
 	storage               *notif.Storage
 	recordingStorage      *recording.Storage
 	recordingEventLog     *recording.EventLog
+	recordingExports      *recording.ExportService
+	exportOnce            sync.Once
+	exportCloudFn         func(label string) (recording.ExportCloud, error)
 	transfer              *transfer.Service
 	transferImports       *transferjob.Service
 	ingressMode           string

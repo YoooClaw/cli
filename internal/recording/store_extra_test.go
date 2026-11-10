@@ -304,6 +304,25 @@ func TestLoadIndexMarksMissingAudioForRecovery(t *testing.T) {
 	}
 }
 
+func TestInitDegradesWhenRecordingDirsCannotBeCreated(t *testing.T) {
+	dir := t.TempDir()
+	// 用普通文件占住音频目录，使 EnsureDir 失败；daemon 不应因录音域
+	// 目录问题整体退出，而是让录音读写返回不可用。
+	if err := os.WriteFile(filepath.Join(dir, "audio"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStorage(dir, testLogger{t})
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init should degrade instead of failing: %v", err)
+	}
+	if s.LoadError() == nil {
+		t.Fatal("expected storage load error")
+	}
+	if _, err := s.Ingest("r1", Metadata{Name: "x"}, "phone-a"); err != ErrStorageUnavailable {
+		t.Fatalf("ingest err=%v", err)
+	}
+}
+
 func TestArtifactFilenameIsTimeFirst(t *testing.T) {
 	t.Parallel()
 	// 用 time.Date 独立算出期望值，不复用 artifactFilename 自己的解析逻辑，

@@ -23,14 +23,26 @@ const (
 	defaultDownloadTimeout = 30 * time.Minute
 	defaultDownloadRetries = 8
 	defaultRetryBackoff    = 2 * time.Second
+
+	// Refresh signed links before they expire so a long download does not have
+	// to fail a range first. HTTP 403 remains a fallback for clock/edge cases.
+	downloadLinkRefreshWindow  = 5 * time.Minute
+	downloadLinkRefreshTimeout = 30 * time.Second
 )
+
+// DownloadLink 是带有效期的 OSS 签名下载地址。
+type DownloadLink struct {
+	URL       string
+	ExpiresAt time.Time
+}
 
 // DownloadOptions 控制 OSS 下载重试与超时。
 type DownloadOptions struct {
 	OverallTimeout time.Duration
 	HeaderTimeout  time.Duration
 	IdleTimeout    time.Duration
-	RefreshURL     func(context.Context) (string, error)
+	InitialLink    *DownloadLink
+	RefreshLink    func(context.Context) (DownloadLink, error)
 
 	Timeout      time.Duration
 	MaxRetries   int
@@ -44,6 +56,122 @@ type DownloadResult struct {
 	SizeBytes int64         `json:"sizeBytes,omitempty"`
 	Elapsed   time.Duration `json:"-"`
 	Error     string        `json:"error,omitempty"`
+	// ErrorCode 是可分类失败（当前仅 STORAGE_FULL），供 recordings.status 返回。
+	ErrorCode string `json:"errorCode,omitempty"`
+}
+
+// downloadLinkState owns the current signed URL for one download. It is shared
+// by all range requests and outer retries so concurrent refreshes collapse into
+// one call. A refresh error is cached per attempt to avoid hammering the file
+// service; the outer retry resets it.
+type downloadLinkState struct {
+	mu         sync.Mutex
+	link       DownloadLink
+	refresh    func(context.Context) (DownloadLink, error)
+	now        func() time.Time
+	window     time.Duration
+	refreshed  bool
+	refreshErr error
+}
+
+func newDownloadLinkState(initial DownloadLink, refresh func(context.Context) (DownloadLink, error)) *downloadLinkState {
+	return &downloadLinkState{link: initial, refresh: refresh, now: time.Now, window: downloadLinkRefreshWindow}
+}
+
+func (s *downloadLinkState) current(ctx context.Context) (DownloadLink, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return DownloadLink{}, err
+	}
+	if s.refreshErr != nil {
+		return DownloadLink{}, s.refreshErr
+	}
+	if s.link.URL == "" {
+		if s.refresh != nil {
+			// 例如导出 ready 后进程重启：初始链接缓存已丢失，必须重新签名。
+			return s.refreshLocked(ctx)
+		}
+		return DownloadLink{}, errors.New("download link unavailable")
+	}
+	if s.link.ExpiresAt.IsZero() || s.link.ExpiresAt.After(s.now().Add(s.window)) {
+		return s.link, nil
+	}
+	return s.refreshLocked(ctx)
+}
+
+func (s *downloadLinkState) forceRefresh(ctx context.Context) (DownloadLink, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshErr = nil
+	return s.refreshLocked(ctx)
+}
+
+func (s *downloadLinkState) refreshLocked(ctx context.Context) (DownloadLink, error) {
+	if s.refresh == nil {
+		return s.link, nil
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, downloadLinkRefreshTimeout)
+	defer cancel()
+	next, err := s.refresh(refreshCtx)
+	if err != nil {
+		s.refreshErr = err
+		return DownloadLink{}, err
+	}
+	if strings.TrimSpace(next.URL) == "" {
+		err = errors.New("download link refresh returned empty URL")
+		s.refreshErr = err
+		return DownloadLink{}, err
+	}
+	if !next.ExpiresAt.IsZero() && !next.ExpiresAt.After(s.now().Add(s.window)) {
+		err = errors.New("download link refresh returned insufficient expiry")
+		s.refreshErr = err
+		return DownloadLink{}, err
+	}
+	s.link = next
+	s.refreshed = true
+	s.refreshErr = nil
+	return next, nil
+}
+
+func (s *downloadLinkState) resetRefreshError() {
+	s.mu.Lock()
+	s.refreshErr = nil
+	s.mu.Unlock()
+}
+
+func (s *downloadLinkState) canRefresh() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refresh != nil
+}
+
+func (s *downloadLinkState) hasRefreshed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshed
+}
+
+// renewingDownloadClient rewrites every range GET to the current signed URL.
+type renewingDownloadClient struct {
+	state *downloadLinkState
+	next  *downloadClient
+}
+
+func (c *renewingDownloadClient) Do(req *http.Request) (*http.Response, error) {
+	link, err := c.state.current(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(link.URL)
+	if err != nil {
+		return nil, errors.New("invalid download link")
+	}
+	clone := req.Clone(req.Context())
+	clone.URL = u
+	clone.Host = ""
+	clone.RequestURI = ""
+	return c.next.Do(clone)
 }
 
 type downloadHTTPStatusError struct {
@@ -82,21 +210,37 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 	parent, stop := context.WithTimeout(context.Background(), overall)
 	defer stop()
 	if err := fsutil.EnsureDir(filepath.Dir(destPath), fsutil.DirMode); err != nil {
-		return DownloadResult{Error: err.Error()}
+		return DownloadResult{Error: err.Error(), ErrorCode: storageErrorCode(err)}
 	}
 	checkpoint, err := os.MkdirTemp(filepath.Dir(destPath), ".audio-checkpoint-")
 	if err != nil {
-		return DownloadResult{Error: err.Error()}
+		return DownloadResult{Error: err.Error(), ErrorCode: storageErrorCode(err)}
 	}
 	defer os.RemoveAll(checkpoint)
 	staged := filepath.Join(checkpoint, "audio")
 	var lastErr error
-	refreshed := false
+	var linkState *downloadLinkState
+	if opts.InitialLink != nil || opts.RefreshLink != nil {
+		initial := DownloadLink{URL: rawURL}
+		if opts.InitialLink != nil {
+			initial = *opts.InitialLink
+		}
+		linkState = newDownloadLinkState(initial, opts.RefreshLink)
+	}
+	forcedRefresh := false
 	for attempt := 1; attempt <= retries; attempt++ {
 		logger.Info(fmt.Sprintf("[downloader] 开始下载 %s (attempt %d/%d)", filepath.Base(destPath), attempt, retries))
 		ctx, cancel := context.WithTimeout(parent, timeout)
-		transport := &downloadClient{client: client, header: opts.HeaderTimeout, idle: opts.IdleTimeout, strict: refreshed}
-		err = ossdownload.Download(ctx, transport, rawURL, "audio", staged, checkpoint, maxAudioBytes, true)
+		transport := &downloadClient{client: client, header: opts.HeaderTimeout, idle: opts.IdleTimeout}
+		if linkState != nil {
+			linkState.resetRefreshError()
+			transport.strictFn = linkState.hasRefreshed
+		}
+		var httpClient ossdownload.HTTPClient = transport
+		if linkState != nil {
+			httpClient = &renewingDownloadClient{state: linkState, next: transport}
+		}
+		err = ossdownload.Download(ctx, httpClient, rawURL, "audio", staged, checkpoint, maxAudioBytes, true)
 		if errors.Is(err, ossdownload.ErrNoRange) {
 			logger.Info("[downloader] 源站不支持可靠分段下载，转为单流下载")
 			var req *http.Request
@@ -104,7 +248,7 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			if err == nil {
 				req.Header.Set("Accept-Encoding", "identity")
 				var resp *http.Response
-				resp, err = transport.Do(req)
+				resp, err = httpClient.Do(req)
 				if err == nil {
 					err = writeDownloadResponse(resp, staged)
 					resp.Body.Close()
@@ -121,25 +265,24 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 		if err == nil {
 			info, e := os.Stat(destPath)
 			if e != nil {
-				return DownloadResult{Error: e.Error()}
+				return DownloadResult{Error: e.Error(), ErrorCode: storageErrorCode(e)}
 			}
 			logger.Info(fmt.Sprintf("[downloader] 下载完成 %s (%d bytes, %s)", filepath.Base(destPath), info.Size(), time.Since(start)))
 			return DownloadResult{OK: true, SizeBytes: info.Size(), Elapsed: time.Since(start)}
 		}
 		lastErr = err
 		logger.Warn(fmt.Sprintf("[downloader] 下载失败 (attempt %d/%d): %s", attempt, retries, safeDownloadError(err)))
-		if downloadStatus(err) == 403 && !refreshed && opts.RefreshURL != nil && parent.Err() == nil {
-			refreshed = true
+		if downloadStatus(err) == 403 && !forcedRefresh && linkState != nil && linkState.canRefresh() && parent.Err() == nil {
+			forcedRefresh = true
 			logger.Info("[downloader] HTTP 403，开始刷新签名链接（本轮最多一次）")
-			refreshCtx, done := context.WithTimeout(parent, 30*time.Second)
-			next, e := opts.RefreshURL(refreshCtx)
+			refreshCtx, done := context.WithTimeout(parent, downloadLinkRefreshTimeout)
+			_, e := linkState.forceRefresh(refreshCtx)
 			done()
 			if e != nil {
 				lastErr = e
 				logger.Warn("[downloader] 签名链接刷新失败: " + safeDownloadError(e))
 				break
 			}
-			rawURL = next
 			logger.Info("[downloader] 签名链接已刷新，继续下载")
 			// The refresh retry is available even when the attempt budget was exhausted.
 			if attempt == retries {
@@ -166,7 +309,7 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			}
 		}
 	}
-	return DownloadResult{Error: safeDownloadError(lastErr), Elapsed: time.Since(start)}
+	return DownloadResult{Error: safeDownloadError(lastErr), Elapsed: time.Since(start), ErrorCode: storageErrorCode(lastErr)}
 }
 
 const maxAudioBytes int64 = 5 << 30
@@ -200,7 +343,7 @@ func safeDownloadError(err error) string {
 type downloadClient struct {
 	client       *http.Client
 	header, idle time.Duration
-	strict       bool
+	strictFn     func() bool
 }
 
 func (d *downloadClient) Do(req *http.Request) (*http.Response, error) {
@@ -217,7 +360,7 @@ func (d *downloadClient) Do(req *http.Request) (*http.Response, error) {
 	deadline := &headerDeadline{cancel: cancel}
 	timer := time.AfterFunc(header, deadline.expire)
 	client := *d.client
-	if d.strict {
+	if d.strictFn != nil && d.strictFn() {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
 	resp, err := client.Do(req)

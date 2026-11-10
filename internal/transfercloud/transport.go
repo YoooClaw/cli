@@ -37,12 +37,57 @@ func retry(ctx context.Context, fn func() error) error {
 	return err
 }
 
+// uploadCompletion normalizes the two completion receipts (migration and
+// recording) for the shared upload pipeline.
+type uploadCompletion struct {
+	taskID, objectKey, status string
+	fileSize                  int64
+	recording                 *RecordingReceipt
+}
+
+type uploadFilePlan struct {
+	create              func(context.Context, string) (*UploadTask, error)
+	refresh             func(context.Context, *UploadTask) (*UploadTask, error)
+	complete            func(context.Context, string, string) (*uploadCompletion, error)
+	contentType         string
+	kind                string
+	invalidFileMessage  string
+	sizeMismatchMessage string
+	completeHint        func(*UploadTask) string
+	taskCreated         func(*UploadTask) error
+}
+
 // Upload uses SDK multipart checkpoints for retries within this invocation.
 // The task is created once; confirmation retries never start another upload.
 func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
+	done, err := c.uploadFile(ctx, path, uploadFilePlan{
+		create:  c.Create,
+		refresh: c.Refresh,
+		complete: func(ctx context.Context, id, key string) (*uploadCompletion, error) {
+			receipt, err := c.Complete(ctx, id, key)
+			if err != nil {
+				return nil, err
+			}
+			return &uploadCompletion{taskID: receipt.TaskID, objectKey: receipt.ObjectKey, status: receipt.Status, fileSize: int64(receipt.FileSize)}, nil
+		},
+		contentType:         "application/gzip",
+		kind:                "迁移",
+		invalidFileMessage:  "迁移压缩包无效或超过 5 GiB",
+		sizeMismatchMessage: "上传确认的文件大小不匹配",
+		completeHint: func(task *UploadTask) string {
+			return "上传已完成，但确认失败；重试：yoooclaw transfer complete --task " + task.TaskID + " --object-key " + task.ObjectKey
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Receipt{TaskID: done.taskID, ObjectKey: done.objectKey, Status: done.status, FileSize: Number(done.fileSize)}, nil
+}
+
+func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePlan) (*uploadCompletion, error) {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxBytes {
-		return nil, failure("CLOUD_FILE_INVALID", "迁移压缩包无效或超过 5 GiB")
+		return nil, failure("CLOUD_FILE_INVALID", plan.invalidFileMessage)
 	}
 	if err = c.CheckAuth(); err != nil {
 		return nil, err
@@ -52,11 +97,16 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(checkpoint)
-	task, err := c.Create(ctx, filepath.Base(path))
+	task, err := plan.create(ctx, filepath.Base(path))
 	if err != nil {
 		return nil, err
 	}
-	provider := &uploadCredentials{cloud: c, task: *task}
+	if plan.taskCreated != nil {
+		if err := plan.taskCreated(task); err != nil {
+			return nil, err
+		}
+	}
+	provider := &uploadCredentials{cloud: c, task: *task, refresh: plan.refresh, kind: plan.kind}
 	cfg := oss.LoadDefaultConfig().WithLogLevel(oss.LogOff).WithRegion(strings.TrimPrefix(task.Region, "oss-")).WithEndpoint(task.Endpoint).
 		WithCredentialsProvider(provider).WithHttpClient(c.http)
 	uploader := oss.NewUploader(oss.NewClient(cfg), func(o *oss.UploaderOptions) {
@@ -65,17 +115,17 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 		o.EnableCheckpoint = true
 		o.CheckpointDir = checkpoint
 	})
-	var receipt *Receipt
+	var completion *uploadCompletion
 	err = retry(ctx, func() error {
 		if _, e := provider.GetCredentials(ctx); e != nil {
 			return e
 		}
-		_, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{Bucket: oss.Ptr(task.Bucket), Key: oss.Ptr(task.ObjectKey), ContentType: oss.Ptr("application/gzip")}, path)
+		_, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{Bucket: oss.Ptr(task.Bucket), Key: oss.Ptr(task.ObjectKey), ContentType: oss.Ptr(plan.contentType)}, path)
 		if e != nil {
 			// The OSS completion response may be lost after the object was committed.
 			// Confirm the existing task before attempting the SDK upload again.
-			if confirmed, confirmErr := c.Complete(ctx, task.TaskID, task.ObjectKey); confirmErr == nil {
-				receipt = confirmed
+			if confirmed, confirmErr := plan.complete(ctx, task.TaskID, task.ObjectKey); confirmErr == nil {
+				completion = confirmed
 				return nil
 			}
 			var serviceErr *oss.ServiceError
@@ -89,16 +139,20 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 	if err != nil {
 		return nil, err
 	}
-	if receipt == nil {
-		err = retry(ctx, func() error { var e error; receipt, e = c.Complete(ctx, task.TaskID, task.ObjectKey); return e })
+	if completion == nil {
+		err = retry(ctx, func() error {
+			var e error
+			completion, e = plan.complete(ctx, task.TaskID, task.ObjectKey)
+			return e
+		})
 	}
 	if err != nil {
-		return nil, failure("CLOUD_COMPLETE_FAILED", "上传已完成，但确认失败；重试：yoooclaw transfer complete --task "+task.TaskID+" --object-key "+task.ObjectKey)
+		return nil, failure("CLOUD_COMPLETE_FAILED", plan.completeHint(task))
 	}
-	if int64(receipt.FileSize) != info.Size() {
-		return nil, failure("CLOUD_SIZE_MISMATCH", "上传确认的文件大小不匹配，任务 "+task.TaskID)
+	if completion.fileSize != info.Size() {
+		return nil, failure("CLOUD_SIZE_MISMATCH", plan.sizeMismatchMessage+"，任务 "+task.TaskID)
 	}
-	return receipt, nil
+	return completion, nil
 }
 
 func (c *Client) Download(ctx context.Context, id, path string) error {

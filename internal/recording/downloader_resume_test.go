@@ -3,6 +3,7 @@ package recording
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -94,7 +95,10 @@ func TestDownloadRefreshOnce(t *testing.T) {
 			}))
 			defer srv.Close()
 			dest := filepath.Join(t.TempDir(), "audio")
-			result := DownloadFile(srv.URL+"/expired", dest, testLogger{t}, DownloadOptions{MaxRetries: 1, RefreshURL: func(context.Context) (string, error) { calls.Add(1); return srv.URL + "/new", nil }})
+			result := DownloadFile(srv.URL+"/expired", dest, testLogger{t}, DownloadOptions{MaxRetries: 1, RefreshLink: func(context.Context) (DownloadLink, error) {
+				calls.Add(1)
+				return DownloadLink{URL: srv.URL + "/new"}, nil
+			}})
 			if result.OK != succeed || calls.Load() != 1 {
 				t.Fatalf("result=%+v calls=%d", result, calls.Load())
 			}
@@ -133,7 +137,7 @@ func TestDownloadRejectsRefreshedRedirect(t *testing.T) {
 		w.WriteHeader(403)
 	}))
 	defer srv.Close()
-	result := DownloadFile(srv.URL, filepath.Join(t.TempDir(), "audio"), testLogger{t}, DownloadOptions{MaxRetries: 1, RefreshURL: func(context.Context) (string, error) { return srv.URL + "/new", nil }})
+	result := DownloadFile(srv.URL, filepath.Join(t.TempDir(), "audio"), testLogger{t}, DownloadOptions{MaxRetries: 1, RefreshLink: func(context.Context) (DownloadLink, error) { return DownloadLink{URL: srv.URL + "/new"}, nil }})
 	if result.OK || leaked.Load() != 0 {
 		t.Fatalf("redirect followed: %+v", result)
 	}
@@ -180,7 +184,7 @@ func TestRefreshKeepsCheckpointAndRejectsChangedVersion(t *testing.T) {
 			}))
 			defer srv.Close()
 			dest := filepath.Join(t.TempDir(), "audio")
-			result := DownloadFile(srv.URL+"/old", dest, testLogger{t}, DownloadOptions{MaxRetries: 1, OverallTimeout: 10 * time.Second, RefreshURL: func(context.Context) (string, error) { return srv.URL + "/new", nil }})
+			result := DownloadFile(srv.URL+"/old", dest, testLogger{t}, DownloadOptions{MaxRetries: 1, OverallTimeout: 10 * time.Second, RefreshLink: func(context.Context) (DownloadLink, error) { return DownloadLink{URL: srv.URL + "/new"}, nil }})
 			if !result.OK {
 				t.Fatal(result.Error)
 			}
@@ -222,5 +226,141 @@ func TestDownloadBoundsZeroProgressRetries(t *testing.T) {
 	result := DownloadFile(srv.URL, filepath.Join(t.TempDir(), "audio"), testLogger{t}, DownloadOptions{MaxRetries: 1, OverallTimeout: time.Second})
 	if result.OK || attempts.Load() != 3 {
 		t.Fatalf("result=%+v attempts=%d", result, attempts.Load())
+	}
+}
+
+func TestDownloadRefreshesNearExpiryBeforeRequest(t *testing.T) {
+	payload := []byte("audio")
+	var oldHits, newHits, refreshes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/old":
+			oldHits.Add(1)
+		case "/new":
+			newHits.Add(1)
+		}
+		var start, end int
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			t.Error("missing range")
+			w.WriteHeader(400)
+			return
+		}
+		w.Header().Set("ETag", `"stable"`)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.Itoa(end-start+1))
+		w.WriteHeader(206)
+		w.Write(payload[start : end+1])
+	}))
+	defer srv.Close()
+
+	now := time.Now()
+	result := DownloadFile(srv.URL+"/old", filepath.Join(t.TempDir(), "audio"), testLogger{t}, DownloadOptions{
+		MaxRetries:  1,
+		InitialLink: &DownloadLink{URL: srv.URL + "/old", ExpiresAt: now.Add(time.Minute)},
+		RefreshLink: func(context.Context) (DownloadLink, error) {
+			refreshes.Add(1)
+			return DownloadLink{URL: srv.URL + "/new", ExpiresAt: now.Add(time.Hour)}, nil
+		},
+	})
+	if !result.OK {
+		t.Fatal(result.Error)
+	}
+	if refreshes.Load() != 1 || oldHits.Load() != 0 || newHits.Load() == 0 {
+		t.Fatalf("refreshes=%d old=%d new=%d", refreshes.Load(), oldHits.Load(), newHits.Load())
+	}
+}
+
+func TestDownloadUsesInitialLinkBeforeExpiry(t *testing.T) {
+	payload := []byte("audio")
+	var refreshes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var start, end int
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			t.Error("missing range")
+			w.WriteHeader(400)
+			return
+		}
+		w.Header().Set("ETag", `"stable"`)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.Itoa(end-start+1))
+		w.WriteHeader(206)
+		w.Write(payload[start : end+1])
+	}))
+	defer srv.Close()
+
+	now := time.Now()
+	result := DownloadFile(srv.URL, filepath.Join(t.TempDir(), "audio"), testLogger{t}, DownloadOptions{
+		MaxRetries:  1,
+		InitialLink: &DownloadLink{URL: srv.URL, ExpiresAt: now.Add(time.Hour)},
+		RefreshLink: func(context.Context) (DownloadLink, error) {
+			refreshes.Add(1)
+			return DownloadLink{URL: srv.URL, ExpiresAt: now.Add(2 * time.Hour)}, nil
+		},
+	})
+	if !result.OK {
+		t.Fatal(result.Error)
+	}
+	if refreshes.Load() != 0 {
+		t.Fatalf("refreshes=%d", refreshes.Load())
+	}
+}
+
+func TestDownloadLinkStateSharesRefresh(t *testing.T) {
+	var calls atomic.Int32
+	state := newDownloadLinkState(
+		DownloadLink{URL: "https://example.test/old", ExpiresAt: time.Now().Add(time.Minute)},
+		func(context.Context) (DownloadLink, error) {
+			calls.Add(1)
+			time.Sleep(10 * time.Millisecond)
+			return DownloadLink{URL: "https://example.test/new", ExpiresAt: time.Now().Add(time.Hour)}, nil
+		},
+	)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := state.current(context.Background())
+			if err != nil || got.URL != "https://example.test/new" {
+				t.Errorf("link=%+v err=%v", got, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls=%d", calls.Load())
+	}
+}
+
+func TestDownloadLinkStateCachesRefreshFailurePerAttempt(t *testing.T) {
+	var calls atomic.Int32
+	wantErr := errors.New("refresh failed")
+	state := newDownloadLinkState(
+		DownloadLink{URL: "https://example.test/old", ExpiresAt: time.Now().Add(time.Minute)},
+		func(context.Context) (DownloadLink, error) {
+			calls.Add(1)
+			return DownloadLink{}, wantErr
+		},
+	)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := state.current(context.Background()); !errors.Is(err, wantErr) {
+				t.Errorf("err=%v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls=%d", calls.Load())
+	}
+	state.resetRefreshError()
+	if _, err := state.current(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("retry err=%v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("refresh calls after reset=%d", calls.Load())
 	}
 }
