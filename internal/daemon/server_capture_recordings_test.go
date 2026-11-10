@@ -276,3 +276,42 @@ func TestConcurrentRecordingWritesCannotClaimBothSources(t *testing.T) {
 		t.Fatalf("expected only one source to claim the ID: %v", codes)
 	}
 }
+
+func TestCorruptCaptureIndexDegradesOnlyCaptureSource(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	withRecordings(t, srv)
+	root := withCaptureRecordings(t, srv)
+	if _, err := srv.recordingStorage.Ingest("mobile", recording.Metadata{Name: "手机录音"}, "wuying-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.captureRecordingStorage.Ingest("meeting", recording.Metadata{Name: "Capture 录音"}, "wuying-a"); err != nil {
+		t.Fatal(err)
+	}
+	// 索引损坏时 daemon 启动不能失败，只降级 Capture 来源。
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened := recording.NewCaptureStorage(root, srv.logger)
+	if err := reopened.Init(); err != nil {
+		t.Fatalf("corrupt Capture index must not abort startup: %v", err)
+	}
+	if reopened.LoadError() == nil {
+		t.Fatal("corrupt Capture index should degrade the Capture source")
+	}
+	srv.captureRecordingStorage = reopened
+
+	call := func(source string) map[string]any {
+		return asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a",
+			fmt.Sprintf(`{"sourceType":%q}`, source))
+	}
+	capture := call(recording.SourceCaptureApp)
+	problem, _ := capture["error"].(map[string]any)
+	if capture["ok"] != false || problem["code"] != "RECORDING_LIST_UNAVAILABLE" {
+		t.Fatalf("degraded Capture list = %v", capture)
+	}
+	mobile := gatewayData(t, call(recording.SourceMobileApp))
+	recordings, _ := mobile["recordings"].([]any)
+	if mobile["total"] != float64(1) || len(recordings) != 1 {
+		t.Fatalf("mobile source must keep working: %v", mobile)
+	}
+}
