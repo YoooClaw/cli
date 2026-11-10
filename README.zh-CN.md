@@ -379,7 +379,7 @@ yoooclaw log +errors                  # 昨天起的 error 级日志
 yoooclaw notification search --app 微信 --keyword 会议 --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # 大批量通知分片总结：create→next→commit→result
-yoooclaw recording list [--source all|capture_app|smart_hardware] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
+yoooclaw recording list [--source all|mobile_app|capture_app] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # 繁体中文 / 台湾语境提示
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # 繁体中文脚本提示
@@ -406,8 +406,11 @@ ASR 语言提示中，`auto` 表示保留 provider 侧自动识别；台湾繁�
 `voice apps` 默认查询滚动最近 7 天，按 `app_id` 去重并同时返回实际的 `app_id` 与
 `app_name`；显式查询全历史 App 清单请使用 `voice apps --all`。
 Voice 历史从每日 `audio-jsonl/YYYY-MM-DD.jsonl` 读取，对外 ID 是稳定的字符串
-`voice_id`，不会回退读取旧 SQLite。录音查询默认同时覆盖 `YoooClaw Capture`
-（`capture_app`）和 YoooClaw 智能硬件（`smart_hardware`），每条结果都会标明来源。
+`voice_id`，不会回退读取旧 SQLite。Recordings 查询默认同时覆盖 `YoooClaw Capture`
+（`capture_app`）和 YoooClaw 智能硬件（`mobile_app`），每条结果都会标明来源；
+旧参数 `--source smart_hardware` 保留为 `mobile_app` 的别名。Capture 录音以网关
+`recordings.result.write` 写入的 `voice/recordings/index.json` 为准；旧版应用写入的
+`voice/recordings-jsonl/` 只作为尚未迁移的历史录音兜底，同一 ID 以网关为准。
 
 ### 3. Raw API
 

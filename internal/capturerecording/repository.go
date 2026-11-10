@@ -1,4 +1,6 @@
-// Package capturerecording 只读查询 YoooClaw Capture 写入的会议录音每日索引。
+// Package capturerecording 只读查询旧版 YoooClaw Capture 写入的会议录音每日索引。
+// 网关 recordings.result.write 写入的 voice/recordings/index.json 是当前权威索引；
+// 每日索引仅为历史录音兜底，不再由应用继续写入。
 package capturerecording
 
 import (

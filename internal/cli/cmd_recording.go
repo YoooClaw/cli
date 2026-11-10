@@ -26,9 +26,9 @@ func newRecordingCmd() *cobra.Command {
 	list.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	list.Flags().String("from", "", "录音时间起点（含，ISO 8601 或 YYYY-MM-DD）")
 	list.Flags().String("to", "", "录音时间终点（不含，ISO 8601 或 YYYY-MM-DD）")
-	list.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	list.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 	status := &cobra.Command{Use: "status <id>", Short: "查看单条录音详情 🟢", Args: cobra.ExactArgs(1), RunE: run(recordingStatusCmd)}
-	status.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	status.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 	storagePath := &cobra.Command{Use: "storage-path", Short: "打印录音存储目录绝对路径 🟢", Args: cobra.NoArgs, RunE: run(recordingStoragePath)}
 
 	setupAsr := &cobra.Command{Use: "setup-asr", Short: "交互式配置 ASR 转写参数 🟢", Args: cobra.NoArgs, RunE: run(recordingSetupAsr)}
@@ -46,20 +46,20 @@ func newRecordingCmd() *cobra.Command {
 	events.Flags().String("limit", "200", "返回条数上限")
 
 	latest := &cobra.Command{Use: "+latest", Short: "展示最新一条录音详情", Args: cobra.NoArgs, RunE: run(recordingLatest)}
-	latest.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	latest.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 	today := &cobra.Command{Use: "+today", Short: "列出本地自然日内的今日录音", Args: cobra.NoArgs, RunE: run(recordingToday)}
 	today.Flags().String("status", "", "按录音来源状态过滤")
 	today.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
-	today.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	today.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 
 	c.AddCommand(list, status, storagePath, setupAsr, events, latest, today)
 	return c
 }
 
-func recToListItem(r recording.Entry) map[string]any {
+func recToListItem(r recording.Entry, sourceType string) map[string]any {
 	return map[string]any{
-		"id": r.ID, "source_type": recordingSourceSmartHardware,
-		"source_name": recordingSourceSmartHardwareName,
+		"id": r.ID, "source_type": sourceType,
+		"source_name": recordingSourceName(sourceType),
 		"clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
 		"title":        nilIfEmpty(r.Title),
 		"duration_ms":  int64(r.Metadata.DurationSec * 1000),
@@ -75,9 +75,17 @@ func recToListItem(r recording.Entry) map[string]any {
 
 const (
 	recordingSourceAll               = "all"
-	recordingSourceSmartHardware     = "smart_hardware"
+	recordingSourceMobileApp         = "mobile_app"
+	recordingSourceSmartHardware     = "smart_hardware" // 兼容旧参数的别名，内部统一为 mobile_app
 	recordingSourceSmartHardwareName = "YoooClaw 智能硬件"
 )
+
+func recordingSourceName(sourceType string) string {
+	if sourceType == capturerecording.SourceType {
+		return capturerecording.SourceName
+	}
+	return recordingSourceSmartHardwareName
+}
 
 type recordingQueryItem struct {
 	id         string
@@ -94,12 +102,30 @@ func parseRecordingSource(raw string) (string, error) {
 		source = recordingSourceAll
 	}
 	switch source {
-	case recordingSourceAll, capturerecording.SourceType, recordingSourceSmartHardware:
+	case recordingSourceAll, recordingSourceMobileApp, capturerecording.SourceType:
 		return source, nil
+	case recordingSourceSmartHardware:
+		// 旧参数保留为别名，查询与输出统一使用网关枚举。
+		return recordingSourceMobileApp, nil
 	default:
 		return "", errs.Newf(errs.CodeInvalidArgument,
-			"--source 必须是 all、capture_app 或 smart_hardware（收到 %q）", raw)
+			"--source 必须是 all、mobile_app 或 capture_app（smart_hardware 为 mobile_app 别名，收到 %q）", raw)
 	}
+}
+
+func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	from, err := parseRecordingBoundary(flagStr(cmd, "from"), "--from")
+	if err != nil {
+		return nil, err
+	}
+	to, err := parseRecordingBoundary(flagStr(cmd, "to"), "--to")
+	if err != nil {
+		return nil, err
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return nil, errs.New(errs.CodeInvalidArgument, "--from 必须早于 --to")
+	}
+	return recordingListRange(cmd.Context(), ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), flagStr(cmd, "source"), from, to)
 }
 
 func captureToListItem(item capturerecording.Item) map[string]any {
@@ -127,30 +153,15 @@ func captureDetail(item capturerecording.Item) map[string]any {
 	return detail
 }
 
-func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	from, err := parseRecordingBoundary(flagStr(cmd, "from"), "--from")
-	if err != nil {
-		return nil, err
-	}
-	to, err := parseRecordingBoundary(flagStr(cmd, "to"), "--to")
-	if err != nil {
-		return nil, err
-	}
-	if from != nil && to != nil && !from.Before(*to) {
-		return nil, errs.New(errs.CodeInvalidArgument, "--from 必须早于 --to")
-	}
-	return recordingListRange(cmd.Context(), ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), flagStr(cmd, "source"), from, to)
-}
-
 func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, client, source string, from, to *time.Time) ([]recordingQueryItem, error) {
 	source, err := parseRecordingSource(source)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]recordingQueryItem, 0)
-	appendIndexed := func(root, sourceType string, skip map[string]bool) {
-		for _, entry := range recording.ReadIndex(root) {
-			if skip[entry.ID] || status != "" && entry.Status != status ||
+	appendEntries := func(entries []recording.Entry, sourceType string) {
+		for _, entry := range entries {
+			if status != "" && entry.Status != status ||
 				client != "" && client != "all" && labelOrLegacy2(entry.ClientLabel) != client {
 				continue
 			}
@@ -159,9 +170,9 @@ func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, clie
 				from != nil && occurredAt.Before(*from) || to != nil && !occurredAt.Before(*to) {
 				continue
 			}
-			list, detail := recToListItem(entry), recordingDetail(entry)
+			list, detail := recToListItem(entry, sourceType), recordingDetail(entry, sourceType)
 			if sourceType == capturerecording.SourceType {
-				addCaptureUploadPaths(root, entry, list, detail)
+				addCaptureUploadPaths(capturerecording.RecordingsPath(ctx.Paths.Voice), entry, list, detail)
 			}
 			items = append(items, recordingQueryItem{
 				id: entry.ID, sourceType: sourceType,
@@ -169,29 +180,37 @@ func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, clie
 			})
 		}
 	}
-	if source == recordingSourceAll || source == recordingSourceSmartHardware {
-		appendIndexed(ctx.Paths.Recordings, recordingSourceSmartHardware, nil)
+	// The gateway index is authoritative for any ID it knows. The legacy daily
+	// index only fills in recordings that were never migrated, so an uploaded
+	// recording can never be overridden by stale local state.
+	uploadedCaptureIDs := map[string]bool{}
+	if source == recordingSourceAll || source == recordingSourceMobileApp {
+		appendEntries(recording.ReadIndex(ctx.Paths.Recordings), recordingSourceMobileApp)
 	}
-	nativeCaptureIDs := map[string]bool{}
-	if (source == recordingSourceAll || source == capturerecording.SourceType) &&
-		(client == "" || client == "all") {
-		captureItems, err := capturerecording.List(queryCtx, ctx.Paths.Voice, capturerecording.Query{
-			From: from, To: to, Status: status,
-		})
+	if source == recordingSourceAll || source == capturerecording.SourceType {
+		entries := recording.ReadIndex(capturerecording.RecordingsPath(ctx.Paths.Voice))
+		for _, entry := range entries {
+			uploadedCaptureIDs[entry.ID] = true
+		}
+		appendEntries(entries, capturerecording.SourceType)
+	}
+	// Legacy Capture entries have no clientLabel, so they cannot satisfy a
+	// --client filter; skip the legacy source instead of returning mismatches.
+	if (source == recordingSourceAll || source == capturerecording.SourceType) && (client == "" || client == "all") {
+		legacy, err := capturerecording.List(queryCtx, ctx.Paths.Voice, capturerecording.Query{From: from, To: to, Status: status})
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range captureItems {
-			nativeCaptureIDs[item.ID] = true
+		for _, item := range legacy {
+			if uploadedCaptureIDs[item.ID] {
+				continue
+			}
 			items = append(items, recordingQueryItem{
 				id: item.ID, sourceType: capturerecording.SourceType,
 				occurredAt: item.RecordedTime, hasTime: true,
 				list: captureToListItem(item), detail: captureDetail(item),
 			})
 		}
-	}
-	if source == recordingSourceAll || source == capturerecording.SourceType {
-		appendIndexed(capturerecording.RecordingsPath(ctx.Paths.Voice), capturerecording.SourceType, nativeCaptureIDs)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].hasTime != items[j].hasTime {
@@ -236,14 +255,14 @@ func parseRecordingBoundary(raw, flagName string) (*time.Time, error) {
 	return &parsed, nil
 }
 
-func recordingDetail(r recording.Entry) map[string]any {
+func recordingDetail(r recording.Entry, sourceType string) map[string]any {
 	var markers any = r.Metadata.Markers
 	if markers == nil {
 		markers = []any{}
 	}
 	return map[string]any{
-		"id": r.ID, "source_type": recordingSourceSmartHardware,
-		"source_name": recordingSourceSmartHardwareName,
+		"id": r.ID, "source_type": sourceType,
+		"source_name": recordingSourceName(sourceType),
 		"clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
 		"recorded_at":       r.Metadata.CreatedAt,
 		"duration_ms":       int64(r.Metadata.DurationSec * 1000),
@@ -294,13 +313,12 @@ func recordingStoragePath(ctx *clictx.Context, _ *cobra.Command, _ []string) (an
 	return map[string]any{
 		"ok": true, "path": ctx.Paths.Recordings,
 		"sources": map[string]any{
-			recordingSourceSmartHardware: map[string]any{
+			recordingSourceMobileApp: map[string]any{
 				"path": ctx.Paths.Recordings, "index": filepath.Join(ctx.Paths.Recordings, "index.json"),
 			},
 			capturerecording.SourceType: map[string]any{
-				"path":    capturerecording.RecordingsPath(ctx.Paths.Voice),
-				"history": capturerecording.HistoryPath(ctx.Paths.Voice),
-				"index":   filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "index.json"),
+				"path":  capturerecording.RecordingsPath(ctx.Paths.Voice),
+				"index": filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "index.json"),
 			},
 		},
 	}, nil

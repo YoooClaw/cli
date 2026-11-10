@@ -6,7 +6,8 @@ import (
 	"github.com/YoooClaw/cli/internal/recording"
 )
 
-// Use the same source and artifact fields as the native Capture projection.
+// addCaptureUploadPaths resolves the gateway-written capture index artifacts.
+// Capture recordings are only written through recordings.result.write.
 func addCaptureUploadPaths(root string, entry recording.Entry, list, detail map[string]any) {
 	missing := []string{}
 	for _, artifact := range []struct{ kind, relative string }{

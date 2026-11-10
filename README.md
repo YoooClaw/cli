@@ -386,7 +386,7 @@ Run `yoooclaw <service> --help` to see all shortcuts for a given service.
 yoooclaw notification search --app WeChat --keyword meeting --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # Chunked summarization for large notification batches: create→next→commit→result
-yoooclaw recording list [--source all|capture_app|smart_hardware] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
+yoooclaw recording list [--source all|mobile_app|capture_app] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
@@ -415,8 +415,12 @@ An unfiltered `voice list` returns the rolling last 72 hours and includes an exp
 observed `app_id` and `app_name`; use `voice apps --all` for an explicit all-history inventory.
 Voice history is read from daily `audio-jsonl/YYYY-MM-DD.jsonl` files; returned IDs are stable
 `voice_id` strings and the CLI never falls back to the legacy SQLite database. Recording queries
-default to both `YoooClaw Capture` (`capture_app`) and YoooClaw smart hardware (`smart_hardware`),
-and every result includes its source.
+default to both `YoooClaw Capture` (`capture_app`) and YoooClaw smart hardware (`mobile_app`),
+and every result includes its source; `--source smart_hardware` remains an alias for `mobile_app`.
+Capture recordings use the gateway-written `voice/recordings/index.json` produced by
+`recordings.result.write` as the source of truth; the legacy `voice/recordings-jsonl/`
+index is read only as a fallback for recordings not yet migrated, and the gateway entry
+wins for the same ID.
 
 ### 3. Raw API
 

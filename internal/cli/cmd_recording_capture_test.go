@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,38 +8,71 @@ import (
 	"time"
 )
 
-func writeCaptureCLIIndex(t *testing.T, home, id, title string, recorded time.Time, missingTranscript bool) {
+// writeUploadedCaptureIndex writes the gateway-owned capture index. Capture
+// recordings are only written through recordings.result.write.
+func writeUploadedCaptureIndex(t *testing.T, home, id, title string, created time.Time, missingTranscript bool) {
 	t.Helper()
-	voiceRoot := filepath.Join(home, "profiles", "default", "voice")
-	history := filepath.Join(voiceRoot, "recordings-jsonl")
-	artifactDir := filepath.Join(voiceRoot, "recordings", recorded.Format("2006"), recorded.Format("01"), id)
+	root := filepath.Join(home, "profiles", "default", "voice", "recordings")
+	audioDir := filepath.Join(root, "audio")
+	if err := os.MkdirAll(audioDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(audioDir, id+".m4a"), []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summaryDir := filepath.Join(root, "summaries")
+	if err := os.MkdirAll(summaryDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(summaryDir, id+".md"), []byte("summary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The index always declares the transcript; missingTranscript only omits the
+	// file so status can report it as a missing artifact.
+	if !missingTranscript {
+		dir := filepath.Join(root, "transcript-data")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(`{"transcripts":[]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index := fmt.Sprintf(`{"recordings":[{"id":%q,"sourceType":"capture_app","clientLabel":"wuying","metadata":{"name":%q,"created_at":%q},"status":"transcribed","audioStatus":"downloaded","audioFile":"audio/%s.m4a","transcriptFile":"transcript-data/%s.json","summaryFile":"summaries/%s.md"}]}`,
+		id, title, created.Format(time.RFC3339), id, id, id)
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeLegacyCaptureIndex writes the pre-migration Capture daily index. The
+// gateway index is authoritative; these entries are only a fallback.
+func writeLegacyCaptureIndex(t *testing.T, home, id, title string, recorded time.Time) {
+	t.Helper()
+	rel := fmt.Sprintf("recordings/%s/%s/%s/audio.m4a", recorded.Format("2006"), recorded.Format("01"), id)
+	audio := filepath.Join(home, "profiles", "default", "voice", filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(audio), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(audio, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history := filepath.Join(home, "profiles", "default", "voice", "recordings-jsonl")
 	if err := os.MkdirAll(history, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+	line := fmt.Sprintf(`{"id":%q,"title":%q,"audio_rel_path":%q,"transcript_rel_path":null,"summary_rel_path":null,"recorded_at":%q,"duration_ms":60000,"status":"completed"}`+"\n",
+		id, title, rel, recorded.Format(time.RFC3339))
+	file, err := os.OpenFile(filepath.Join(history, recorded.Format("2006-01-02")+".jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
 		t.Fatal(err)
 	}
-	relRoot := filepath.ToSlash(filepath.Join("recordings", recorded.Format("2006"), recorded.Format("01"), id))
-	row := map[string]any{
-		"id": id, "title": title,
-		"audio_rel_path":      relRoot + "/audio.m4a",
-		"transcript_rel_path": relRoot + "/transcript.json",
-		"summary_rel_path":    relRoot + "/summary.md",
-		"recorded_at":         recorded.Format(time.RFC3339), "duration_ms": 12500, "status": "completed",
-	}
-	line, _ := json.Marshal(row)
-	if err := os.WriteFile(filepath.Join(history, recorded.Format("2006-01-02")+".jsonl"), append(line, '\n'), 0o600); err != nil {
+	if _, err := file.WriteString(line); err != nil {
+		file.Close()
 		t.Fatal(err)
 	}
-	for _, name := range []string{"audio.m4a", "summary.md"} {
-		if err := os.WriteFile(filepath.Join(artifactDir, name), []byte(name), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !missingTranscript {
-		if err := os.WriteFile(filepath.Join(artifactDir, "transcript.json"), []byte(`{"transcripts":[]}`), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -60,7 +92,7 @@ func TestRecordingMergesCaptureAndSmartHardwareSources(t *testing.T) {
 	home := sandbox(t)
 	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
 	writeHardwareCLIIndex(t, home, "hardware-id", base)
-	writeCaptureCLIIndex(t, home, "capture-id", "输入法会议", base.Add(time.Hour), true)
+	writeUploadedCaptureIndex(t, home, "capture-id", "输入法会议", base.Add(time.Hour), true)
 
 	out, code := execCLI(t, "recording", "list", "--format", "json")
 	if code != 0 {
@@ -74,7 +106,7 @@ func TestRecordingMergesCaptureAndSmartHardwareSources(t *testing.T) {
 	if items[0].(map[string]any)["source_type"] != "capture_app" || items[0].(map[string]any)["source_name"] != "YoooClaw Capture" {
 		t.Fatalf("capture source identity missing: %s", out)
 	}
-	if items[1].(map[string]any)["source_type"] != "smart_hardware" || items[1].(map[string]any)["source_name"] != "YoooClaw 智能硬件" {
+	if items[1].(map[string]any)["source_type"] != "mobile_app" || items[1].(map[string]any)["source_name"] != "YoooClaw 智能硬件" {
 		t.Fatalf("hardware source identity missing: %s", out)
 	}
 
@@ -109,7 +141,7 @@ func TestRecordingMergesCaptureAndSmartHardwareSources(t *testing.T) {
 
 	out, code = execCLI(t, "recording", "storage-path", "--format", "json")
 	sources := decode(t, out)["sources"].(map[string]any)
-	if code != 0 || sources["capture_app"] == nil || sources["smart_hardware"] == nil {
+	if code != 0 || sources["capture_app"] == nil || sources["mobile_app"] == nil {
 		t.Fatalf("recording storage-path must describe both sources: code=%d %s", code, out)
 	}
 }
@@ -117,7 +149,6 @@ func TestRecordingMergesCaptureAndSmartHardwareSources(t *testing.T) {
 func TestRecordingQueriesUploadedCaptureIndex(t *testing.T) {
 	home := sandbox(t)
 	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.Local)
-	writeCaptureCLIIndex(t, home, "same-id", "本机会议", base, false)
 	root := filepath.Join(home, "profiles", "default", "voice", "recordings")
 	audio := filepath.Join(root, "audio", "uploaded.m4a")
 	if err := os.MkdirAll(filepath.Dir(audio), 0o700); err != nil {
@@ -126,16 +157,16 @@ func TestRecordingQueriesUploadedCaptureIndex(t *testing.T) {
 	if err := os.WriteFile(audio, []byte("audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	index := `{"recordings":[
-		{"id":"uploaded","sourceType":"capture_app","clientLabel":"wuying","metadata":{"name":"云端会议","created_at":"2026-08-20T12:00:00+08:00"},"status":"synced","audioStatus":"downloaded","audioFile":"audio/uploaded.m4a"},
-		{"id":"same-id","sourceType":"capture_app","clientLabel":"wuying","metadata":{"name":"同步副本"},"status":"synced"}
-	]}`
+	index := fmt.Sprintf(`{"recordings":[
+		{"id":"uploaded","sourceType":"capture_app","clientLabel":"wuying","metadata":{"name":"云端会议","created_at":%q},"status":"synced","audioStatus":"downloaded","audioFile":"audio/uploaded.m4a"},
+		{"id":"local","sourceType":"capture_app","clientLabel":"wuying","metadata":{"name":"本机会议","created_at":%q},"status":"synced"}
+	]}`, base.Format(time.RFC3339), base.Add(time.Hour).Format(time.RFC3339))
 	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(index), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, code := execCLI(t, "recording", "list", "--source", "capture_app", "--format", "json")
 	if code != 0 || decode(t, out)["total"] != float64(2) {
-		t.Fatalf("expected a single entry per Capture ID: code=%d %s", code, out)
+		t.Fatalf("capture index entries: code=%d %s", code, out)
 	}
 	out, code = execCLI(t, "recording", "status", "uploaded", "--format", "json")
 	if code != 0 {
@@ -148,19 +179,76 @@ func TestRecordingQueriesUploadedCaptureIndex(t *testing.T) {
 	}
 }
 
+func TestRecordingUsesLegacyCaptureIndexOnlyAsFallback(t *testing.T) {
+	home := sandbox(t)
+	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.Local)
+	writeLegacyCaptureIndex(t, home, "legacy-id", "旧版会议", base)
+
+	out, code := execCLI(t, "recording", "list", "--source", "capture_app", "--format", "json")
+	if code != 0 {
+		t.Fatalf("legacy capture list failed: %s", out)
+	}
+	result := decode(t, out)
+	items := result["recordings"].([]any)
+	if result["total"] != float64(1) || len(items) != 1 {
+		t.Fatalf("legacy capture entry missing: %s", out)
+	}
+	item := items[0].(map[string]any)
+	if item["id"] != "legacy-id" || item["source_type"] != "capture_app" || item["status"] != "completed" {
+		t.Fatalf("unexpected legacy entry: %+v", item)
+	}
+	if item["has_audio"] != true || item["has_transcript"] != false {
+		t.Fatalf("legacy artifact facts: %+v", item)
+	}
+
+	out, code = execCLI(t, "recording", "status", "legacy-id", "--format", "json")
+	if code != 0 {
+		t.Fatalf("legacy capture status failed: %s", out)
+	}
+	detail := decode(t, out)["recording"].(map[string]any)
+	if audioPath, ok := detail["audio_path"].(string); !ok || !filepath.IsAbs(audioPath) {
+		t.Fatalf("legacy status must resolve absolute artifact paths: %+v", detail)
+	}
+
+	// A legacy entry has no clientLabel, so --client cannot match it.
+	out, code = execCLI(t, "recording", "list", "--source", "capture_app", "--client", "wuying", "--format", "json")
+	if code != 0 || decode(t, out)["total"] != float64(0) {
+		t.Fatalf("legacy entry should not satisfy --client: code=%d %s", code, out)
+	}
+
+	// Once the gateway knows the ID, it wins over stale legacy state.
+	writeUploadedCaptureIndex(t, home, "legacy-id", "网关会议", base, false)
+	out, code = execCLI(t, "recording", "list", "--source", "capture_app", "--format", "json")
+	if code != 0 {
+		t.Fatalf("merged capture list failed: %s", out)
+	}
+	merged := decode(t, out)
+	if merged["total"] != float64(1) {
+		t.Fatalf("gateway and legacy entries must dedupe by ID: %s", out)
+	}
+	item = merged["recordings"].([]any)[0].(map[string]any)
+	if item["name"] != "网关会议" || item["status"] != "transcribed" || item["audio_status"] != "downloaded" {
+		t.Fatalf("gateway entry must override legacy state: %+v", item)
+	}
+}
+
 func TestRecordingStatusRequiresSourceWhenIDIsAmbiguous(t *testing.T) {
 	home := sandbox(t)
 	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.Local)
 	writeHardwareCLIIndex(t, home, "same-id", base)
-	writeCaptureCLIIndex(t, home, "same-id", "同 ID 会议", base.Add(time.Hour), false)
+	writeUploadedCaptureIndex(t, home, "same-id", "同 ID 会议", base.Add(time.Hour), false)
 
 	out, code := execCLI(t, "recording", "status", "same-id", "--format", "json")
 	if code == 0 || decode(t, out)["error"].(map[string]any)["code"] != "YOOOCLAW_INVALID_ARGUMENT" {
 		t.Fatalf("ambiguous status must fail: code=%d %s", code, out)
 	}
 	out, code = execCLI(t, "recording", "status", "same-id", "--source", "smart_hardware", "--format", "json")
-	if code != 0 || decode(t, out)["recording"].(map[string]any)["source_type"] != "smart_hardware" {
-		t.Fatalf("explicit source should disambiguate: code=%d %s", code, out)
+	if code != 0 || decode(t, out)["recording"].(map[string]any)["source_type"] != "mobile_app" {
+		t.Fatalf("smart_hardware alias should resolve to mobile_app: code=%d %s", code, out)
+	}
+	out, code = execCLI(t, "recording", "status", "same-id", "--source", "mobile_app", "--format", "json")
+	if code != 0 || decode(t, out)["recording"].(map[string]any)["source_type"] != "mobile_app" {
+		t.Fatalf("explicit mobile_app should disambiguate: code=%d %s", code, out)
 	}
 	out, code = execCLI(t, "recording", "list", "--source", "mobile", "--format", "json")
 	if code == 0 || decode(t, out)["error"].(map[string]any)["code"] != "YOOOCLAW_INVALID_ARGUMENT" {
