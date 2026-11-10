@@ -28,4 +28,5 @@ func addCaptureUploadPaths(root string, entry recording.Entry, list, detail map[
 		item["source_name"] = capturerecording.SourceName
 		item["missing_artifacts"] = missing
 	}
+	detail["diagnostics"] = []string{}
 }

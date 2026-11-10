@@ -67,7 +67,8 @@ func recToListItem(r recording.Entry, sourceType string) map[string]any {
 		"status":            r.Status,
 		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
 		"audio_status":      r.AudioStatus,
-		"has_audio":         r.AudioFile != "", "has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
+		"has_audio":         r.AudioFile != "", "has_srt": r.SrtFile != "",
+		"has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
 		"missing_artifacts": []string{},
 		"created_at":        r.Metadata.CreatedAt, "updated_at": r.UpdatedAt, "error": nilIfEmpty(r.LastError),
 	}
@@ -128,22 +129,55 @@ func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 	return recordingListRange(cmd.Context(), ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), flagStr(cmd, "source"), from, to)
 }
 
+// captureToListItem builds legacy Capture fallback entries through the same
+// schema as gateway-index entries, then adds the legacy-only extras.
 func captureToListItem(item capturerecording.Item) map[string]any {
-	return map[string]any{
-		"id": item.ID, "source_type": capturerecording.SourceType,
-		"source_name": capturerecording.SourceName,
-		"clientLabel": nil, "name": item.Title, "title": item.Title,
-		"duration_ms": item.DurationMS, "duration_sec": float64(item.DurationMS) / 1000,
-		"duration_display": recording.FormatDurationDisplay(float64(item.DurationMS) / 1000),
-		"status":           item.Status, "file_size_display": "--", "audio_status": nil,
-		"has_audio": item.HasAudio, "has_transcript": item.HasTranscript, "has_summary": item.HasSummary,
-		"recorded_at": item.RecordedAt, "created_at": item.RecordedAt, "updated_at": nil, "error": nil,
-		"missing_artifacts": item.MissingArtifacts, "diagnostics": item.Diagnostics,
+	entry := recording.Entry{
+		ID: item.ID,
+		Metadata: recording.Metadata{
+			Name: item.Title, CreatedAt: item.RecordedAt,
+			DurationSec: float64(item.DurationMS) / 1000,
+		},
+		Status:         item.Status,
+		AudioFile:      stringOrEmpty(item.AudioRelPath),
+		TranscriptFile: stringOrEmpty(item.TranscriptRelPath),
+		SummaryFile:    stringOrEmpty(item.SummaryRelPath),
+		Title:          item.Title,
 	}
+	list := recToListItem(entry, capturerecording.SourceType)
+	// Legacy items carry file facts rather than index paths; keep the actual
+	// presence flags instead of the rel-path approximation.
+	list["has_audio"], list["has_transcript"], list["has_summary"] = item.HasAudio, item.HasTranscript, item.HasSummary
+	list["missing_artifacts"] = nonNilStrings(item.MissingArtifacts)
+	list["recorded_at"] = item.RecordedAt
+	list["diagnostics"] = nonNilStrings(item.Diagnostics)
+	return list
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+func stringOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func captureDetail(item capturerecording.Item) map[string]any {
 	detail := captureToListItem(item)
+	// Fill the same detail schema as recordingDetail; legacy entries have no
+	// markers/SRT/ingest state, but consumers must not see missing keys.
+	detail["location"] = nil
+	detail["markers"] = []any{}
+	detail["srtFile"] = nil
+	detail["transcriptDataFile"] = nil
+	detail["ingestedAt"] = ""
+	detail["updatedAt"] = ""
 	detail["audioFile"] = stringPointerValue(item.AudioRelPath)
 	detail["transcriptFile"] = stringPointerValue(item.TranscriptRelPath)
 	detail["summaryFile"] = stringPointerValue(item.SummaryRelPath)
@@ -271,12 +305,13 @@ func recordingDetail(r recording.Entry, sourceType string) map[string]any {
 		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
 		"status":            r.Status, "created_at": r.Metadata.CreatedAt, "location": r.Metadata.Location,
 		"audio_status": r.AudioStatus,
-		"has_audio":    r.AudioFile != "", "has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
+		"has_audio":    r.AudioFile != "", "has_srt": r.SrtFile != "",
+		"has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
 		"missing_artifacts": []string{},
 		"markers":           markers, "audioFile": nilIfEmpty(r.AudioFile), "srtFile": nilIfEmpty(r.SrtFile),
 		"transcriptDataFile": nilIfEmpty(r.TranscriptDataFile), "transcriptFile": nilIfEmpty(r.TranscriptFile),
 		"summaryFile": nilIfEmpty(r.SummaryFile), "title": nilIfEmpty(r.Title), "error": nilIfEmpty(r.LastError),
-		"ingestedAt": r.IngestedAt, "updatedAt": r.UpdatedAt,
+		"ingestedAt": r.IngestedAt, "updatedAt": r.UpdatedAt, "updated_at": r.UpdatedAt,
 	}
 }
 

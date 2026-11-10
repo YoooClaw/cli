@@ -2,8 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -229,6 +231,71 @@ func TestRecordingUsesLegacyCaptureIndexOnlyAsFallback(t *testing.T) {
 	item = merged["recordings"].([]any)[0].(map[string]any)
 	if item["name"] != "网关会议" || item["status"] != "transcribed" || item["audio_status"] != "downloaded" {
 		t.Fatalf("gateway entry must override legacy state: %+v", item)
+	}
+}
+
+func TestRecordingListItemsShareSchemaAcrossSources(t *testing.T) {
+	home := sandbox(t)
+	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.Local)
+	writeHardwareCLIIndex(t, home, "mobile-id", base)
+	writeUploadedCaptureIndex(t, home, "capture-id", "已上报会议", base.Add(time.Hour), false)
+	writeLegacyCaptureIndex(t, home, "legacy-id", "旧版会议", base.Add(2*time.Hour))
+
+	out, code := execCLI(t, "recording", "list", "--source", "all", "--format", "json")
+	if code != 0 {
+		t.Fatalf("recording list failed: %s", out)
+	}
+	items := decode(t, out)["recordings"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("expected three sources: %s", out)
+	}
+	byID := map[string]map[string]any{}
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		byID[item["id"].(string)] = item
+	}
+	keys := func(item map[string]any) []string {
+		out := slices.Collect(maps.Keys(item))
+		slices.Sort(out)
+		return out
+	}
+	mobile, uploaded, legacy := byID["mobile-id"], byID["capture-id"], byID["legacy-id"]
+	if mobile == nil || uploaded == nil || legacy == nil {
+		t.Fatalf("missing source in merged list: %s", out)
+	}
+	if !slices.Equal(keys(mobile), keys(uploaded)) {
+		t.Fatalf("gateway entries differ in schema:\n%v\n%v", keys(mobile), keys(uploaded))
+	}
+	// The legacy fallback may only add recorded_at/diagnostics on top of the
+	// common schema; everything else must match.
+	wantLegacy := append(slices.Clone(keys(mobile)), "diagnostics", "recorded_at")
+	slices.Sort(wantLegacy)
+	if !slices.Equal(keys(legacy), wantLegacy) {
+		t.Fatalf("legacy schema = %v, want %v", keys(legacy), wantLegacy)
+	}
+	for id, item := range byID {
+		if _, ok := item["has_srt"]; !ok {
+			t.Fatalf("%s is missing has_srt: %+v", id, item)
+		}
+	}
+	if legacy["clientLabel"] != "legacy" || legacy["audio_status"] != "" {
+		t.Fatalf("legacy values must follow the common conventions: %+v", legacy)
+	}
+	if missing, ok := legacy["missing_artifacts"].([]any); !ok || len(missing) != 0 {
+		t.Fatalf("legacy missing_artifacts must be an empty array: %+v", legacy["missing_artifacts"])
+	}
+
+	// Status details of the legacy fallback and the gateway index must also
+	// expose the same key set.
+	detailKeys := func(id string) []string {
+		out, code := execCLI(t, "recording", "status", id, "--source", "capture_app", "--format", "json")
+		if code != 0 {
+			t.Fatalf("recording status %s failed: %s", id, out)
+		}
+		return keys(decode(t, out)["recording"].(map[string]any))
+	}
+	if legacyKeys, uploadedKeys := detailKeys("legacy-id"), detailKeys("capture-id"); !slices.Equal(legacyKeys, uploadedKeys) {
+		t.Fatalf("detail schema differs:\nlegacy=%v\nuploaded=%v", legacyKeys, uploadedKeys)
 	}
 }
 
