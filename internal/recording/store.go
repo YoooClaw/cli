@@ -849,8 +849,7 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 	entry.LastError = ""
 	entry.ErrorCode = ""
 	entry.UpdatedAt = nowISO()
-	s.index.Recordings[idx] = entry
-	if err := s.saveIndexLocked(); err != nil {
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		if code := storageErrorCode(err); code != "" {
 			entry.AudioStatus = AudioStatusFailed
 			entry.LastError = "音频状态保存失败: " + err.Error()

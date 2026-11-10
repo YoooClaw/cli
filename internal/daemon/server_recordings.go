@@ -88,10 +88,6 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符（不允许路径分隔符等）")
 			return
 		}
-		if body.Transcript == nil && body.Summary == nil {
-			gatewayErr(w, "INVALID_PARAMS", "transcript or summary is required")
-			return
-		}
 		store, ok := s.recordingStore(w, body.SourceType, method)
 		if !ok {
 			return
@@ -342,7 +338,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if source == "" {
 			source = recording.SourceMobileApp
 		}
-		store, ok := s.recordingStore(w, source)
+		store, ok := s.recordingStore(w, source, method)
 		if !ok {
 			return
 		}
