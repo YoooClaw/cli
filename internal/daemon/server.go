@@ -196,7 +196,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			Recordings:    recordingStorage,
 		},
 	}
-	_ = srv.exportService()
+	srv.initRecordingExports()
 	if err := srv.startTransferImports(); err != nil {
 		srv.logger.Warn("[transfer] automatic import unavailable: invalid fulfillment configuration; check cloud host and report URL override")
 	}
@@ -292,9 +292,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			if sup := srv.supervisor(); sup != nil {
 				sup.StopAll(reason)
 			}
-			if srv.recordingExports != nil {
-				srv.recordingExports.Close()
-			}
+			srv.closeRecordingExports()
 			if srv.dataImports != nil {
 				srv.dataImports.Cancel()
 			}
@@ -328,38 +326,39 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 }
 
 type server struct {
-	lastRecordingActivity atomic.Int64
-	activeRecordingWrites atomic.Int64
-	activeRequests        atomic.Int64
-	ctx                   *clictx.Context
-	cfg                   config.Config
-	logger                *Logger
-	st                    *runtimeState
-	storage               *notif.Storage
-	recordingStorage      *recording.Storage
-	recordingEventLog     *recording.EventLog
-	recordingExports      *recording.ExportService
-	exportOnce            sync.Once
-	exportCloudFn         func(label string) (recording.ExportCloud, error)
-	transfer              *transfer.Service
-	transferImports       *transferjob.Service
-	ingressMode           string
-	token                 string
-	ignored               map[string]bool
-	bind                  string
-	port                  int
-	owner                 string
-	generation            string
-	executable            string
-	dataImports           *data.Imports
-	shutdown              func(string)
-	shutdownOnce          sync.Once
-	locationStorage       *location.Storage
-	calendarStorage       *calendar.Storage
-	reminderStorage       *reminders.Storage
-	healthDataStorage     *healthdata.Storage
-	assetReader           *assets.Service
-	assetOnce             sync.Once
+	lastRecordingActivity   atomic.Int64
+	activeRecordingWrites   atomic.Int64
+	activeRequests          atomic.Int64
+	ctx                     *clictx.Context
+	cfg                     config.Config
+	logger                  *Logger
+	st                      *runtimeState
+	storage                 *notif.Storage
+	recordingStorage        *recording.Storage
+	recordingEventLog       *recording.EventLog
+	recordingExports        *recording.ExportService
+	captureRecordingExports *recording.ExportService
+	exportOnce              sync.Once
+	exportCloudFn           func(label string) (recording.ExportCloud, error)
+	transfer                *transfer.Service
+	transferImports         *transferjob.Service
+	ingressMode             string
+	token                   string
+	ignored                 map[string]bool
+	bind                    string
+	port                    int
+	owner                   string
+	generation              string
+	executable              string
+	dataImports             *data.Imports
+	shutdown                func(string)
+	shutdownOnce            sync.Once
+	locationStorage         *location.Storage
+	calendarStorage         *calendar.Storage
+	reminderStorage         *reminders.Storage
+	healthDataStorage       *healthdata.Storage
+	assetReader             *assets.Service
+	assetOnce               sync.Once
 
 	captureRecordingStorage  *recording.Storage
 	captureRecordingEventLog *recording.EventLog

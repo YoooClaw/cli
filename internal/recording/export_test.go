@@ -158,6 +158,9 @@ func TestExportReadyBuildsWritePayload(t *testing.T) {
 	if result.WritePayload.RecordingID != "rec_export" || result.WritePayload.OssTaskID != "file-task-1" || result.WritePayload.OssURL == "" {
 		t.Fatalf("payload=%+v", result.WritePayload)
 	}
+	if result.WritePayload.SourceType != SourceMobileApp {
+		t.Fatalf("sourceType=%s", result.WritePayload.SourceType)
+	}
 	if result.WritePayload.DurationMillis == nil || *result.WritePayload.DurationMillis != 120000 {
 		t.Fatalf("durationMillis=%v", result.WritePayload.DurationMillis)
 	}

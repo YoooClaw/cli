@@ -143,17 +143,11 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		gatewayOK(w, result)
 
 	case "recordings.export.start", "recordings.export.status":
-		// 导出只基于 mobile_app 存储；降级模式下与列表一致返回不可用。
-		if s.recordingStorage != nil {
-			if err := s.recordingStorage.LoadError(); err != nil {
-				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
-				return
-			}
-		}
+		// 导出按 sourceType 选择存储；降级模式下与列表一致返回该来源不可用。
 		if method == "recordings.export.start" {
-			s.handleRecordingExportStart(w, r, auth)
+			s.handleRecordingExportStart(w, r, auth, method)
 		} else {
-			s.handleRecordingExportStatus(w, r, auth)
+			s.handleRecordingExportStatus(w, r, auth, method)
 		}
 
 	case "recordings.retranscribe":
@@ -410,10 +404,12 @@ func recordingListItem(entry recording.Entry, exportable bool) map[string]any {
 		"has_audio":          entry.AudioFile != "",
 		"has_srt":            entry.SrtFile != "",
 		"has_transcript":     entry.TranscriptFile != "",
+		"has_summary":        entry.SummaryFile != "",
 		"exportable":         exportable,
 		"audioFile":          nilIfEmptyStr(entry.AudioFile),
 		"transcriptDataFile": nilIfEmptyStr(entry.TranscriptDataFile),
 		"transcriptFile":     nilIfEmptyStr(entry.TranscriptFile),
+		"summaryFile":        nilIfEmptyStr(entry.SummaryFile),
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
 		"errorCode":          nilIfEmptyStr(entry.ErrorCode),

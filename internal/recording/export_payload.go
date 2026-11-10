@@ -36,6 +36,7 @@ type ExportRecording struct {
 // ExportPayload mirrors recordings.result.write params.
 type ExportPayload struct {
 	RecordingID    string            `json:"recordingId"`
+	SourceType     string            `json:"sourceType"`
 	OssTaskID      string            `json:"ossTaskId"`
 	OssURL         string            `json:"ossUrl"`
 	DurationMillis *float64          `json:"durationMillis,omitempty"`
@@ -162,6 +163,8 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 	}
 	payload := ExportPayload{
 		RecordingID: entry.ID,
+		// 接收方按 sourceType 把导出的录音写回对应来源；旧索引条目回退 mobile_app。
+		SourceType: entry.RecordingSource(),
 		Recording: ExportRecording{
 			Name: entry.Metadata.Name, CreatedAt: entry.Metadata.CreatedAt,
 			DurationSec: entry.Metadata.DurationSec, DurationDisplay: entry.Metadata.DurationDisplay,

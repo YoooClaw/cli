@@ -273,6 +273,12 @@ func (s *Storage) loadIndex() error {
 	now := nowISO()
 	for i := range wrapper.Recordings {
 		entry := &wrapper.Recordings[i]
+		// Capture 索引的条目都属于 capture_app；旧索引缺少字段或误写成
+		// mobile_app 时以所在存储为准纠正，避免列表/状态/导出载荷误标来源。
+		if s.capture && entry.SourceType != SourceCaptureApp {
+			entry.SourceType = SourceCaptureApp
+			needsRewrite = true
+		}
 		durationSec := normalizeDurationSeconds(entry.Metadata.DurationSec)
 		durationDisplay := FormatDurationDisplay(durationSec)
 		if entry.Metadata.DurationSec != durationSec || entry.Metadata.DurationDisplay != durationDisplay {
