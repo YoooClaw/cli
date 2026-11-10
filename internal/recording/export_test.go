@@ -317,9 +317,12 @@ func forceLinkRefresh(t *testing.T, service *ExportService, exportID string) {
 	if state == nil {
 		t.Fatalf("missing link state for %s", exportID)
 	}
-	state.mu.Lock()
-	state.link.ExpiresAt = time.Now().Add(time.Minute)
-	state.mu.Unlock()
+	link, err := state.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.ExpiresAt = time.Now().Add(time.Minute)
+	state.Set(link)
 }
 
 func TestExportLinkRefreshFailureKeepsReady(t *testing.T) {

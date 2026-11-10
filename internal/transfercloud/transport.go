@@ -175,7 +175,7 @@ func (c *Client) download(ctx context.Context, id, path string, progress func(in
 		if e != nil {
 			return e
 		}
-		client := &renewingDownloadClient{cloud: c, taskID: id, link: link, now: time.Now}
+		client := newRenewingDownloadClient(c, id, link, time.Now)
 		e = ossdownload.Download(ctx, client, link.SignedURL, id, downloaded, checkpoint, 0, false, progress)
 		if e != nil {
 			return failure("CLOUD_DOWNLOAD_FAILED", "迁移包下载失败，任务 "+id)

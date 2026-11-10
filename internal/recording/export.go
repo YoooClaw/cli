@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/YoooClaw/cli/internal/ossdownload"
 )
 
 const (
@@ -105,14 +107,14 @@ type ExportService struct {
 	wg     sync.WaitGroup
 
 	linkMu sync.Mutex
-	links  map[string]*downloadLinkState
+	links  map[string]*ossdownload.LinkRefresher
 }
 
 func NewExportService(storage *Storage, logger Logger) *ExportService {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ExportService{
 		storage: storage, logger: logger, timeout: defaultExportTimeout, now: time.Now,
-		ctx: ctx, cancel: cancel, links: map[string]*downloadLinkState{},
+		ctx: ctx, cancel: cancel, links: map[string]*ossdownload.LinkRefresher{},
 	}
 }
 
@@ -220,8 +222,8 @@ func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, clo
 	}
 	linkState := s.linkState(record.ExportID, record.TaskID, cloud)
 	// 每次 status 都是独立的刷新尝试：上一次失败不应让 ready 导出永久不可用。
-	linkState.resetRefreshError()
-	link, err := linkState.current(ctx)
+	linkState.ResetError()
+	link, err := linkState.Current(ctx)
 	if err != nil {
 		if errors.Is(err, ErrExportObjectGone) {
 			return s.expireStatus(recordingID, exportID), nil
@@ -300,7 +302,7 @@ func (s *ExportService) fail(recordingID, exportID, code, message, scope string,
 	}
 }
 
-func (s *ExportService) linkState(exportID, taskID string, cloud ExportCloud) *downloadLinkState {
+func (s *ExportService) linkState(exportID, taskID string, cloud ExportCloud) *ossdownload.LinkRefresher {
 	s.linkMu.Lock()
 	defer s.linkMu.Unlock()
 	if state := s.links[exportID]; state != nil {
@@ -309,7 +311,7 @@ func (s *ExportService) linkState(exportID, taskID string, cloud ExportCloud) *d
 	refresh := func(ctx context.Context) (DownloadLink, error) {
 		return cloud.RecordingDownloadLink(ctx, taskID)
 	}
-	state := newDownloadLinkState(DownloadLink{}, refresh)
+	state := newDownloadLinkRefresher(DownloadLink{}, refresh)
 	s.links[exportID] = state
 	return state
 }
@@ -320,7 +322,7 @@ func (s *ExportService) setInitialLink(exportID string, link DownloadLink, cloud
 	refresh := func(ctx context.Context) (DownloadLink, error) {
 		return cloud.RecordingDownloadLink(ctx, taskID)
 	}
-	s.links[exportID] = newDownloadLinkState(link, refresh)
+	s.links[exportID] = newDownloadLinkRefresher(link, refresh)
 }
 
 func (s *ExportService) runExport(recordingID, exportID string, cloud ExportCloud) {

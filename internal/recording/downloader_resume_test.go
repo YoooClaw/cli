@@ -3,7 +3,6 @@ package recording
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -302,65 +301,5 @@ func TestDownloadUsesInitialLinkBeforeExpiry(t *testing.T) {
 	}
 	if refreshes.Load() != 0 {
 		t.Fatalf("refreshes=%d", refreshes.Load())
-	}
-}
-
-func TestDownloadLinkStateSharesRefresh(t *testing.T) {
-	var calls atomic.Int32
-	state := newDownloadLinkState(
-		DownloadLink{URL: "https://example.test/old", ExpiresAt: time.Now().Add(time.Minute)},
-		func(context.Context) (DownloadLink, error) {
-			calls.Add(1)
-			time.Sleep(10 * time.Millisecond)
-			return DownloadLink{URL: "https://example.test/new", ExpiresAt: time.Now().Add(time.Hour)}, nil
-		},
-	)
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			got, err := state.current(context.Background())
-			if err != nil || got.URL != "https://example.test/new" {
-				t.Errorf("link=%+v err=%v", got, err)
-			}
-		}()
-	}
-	wg.Wait()
-	if calls.Load() != 1 {
-		t.Fatalf("refresh calls=%d", calls.Load())
-	}
-}
-
-func TestDownloadLinkStateCachesRefreshFailurePerAttempt(t *testing.T) {
-	var calls atomic.Int32
-	wantErr := errors.New("refresh failed")
-	state := newDownloadLinkState(
-		DownloadLink{URL: "https://example.test/old", ExpiresAt: time.Now().Add(time.Minute)},
-		func(context.Context) (DownloadLink, error) {
-			calls.Add(1)
-			return DownloadLink{}, wantErr
-		},
-	)
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := state.current(context.Background()); !errors.Is(err, wantErr) {
-				t.Errorf("err=%v", err)
-			}
-		}()
-	}
-	wg.Wait()
-	if calls.Load() != 1 {
-		t.Fatalf("refresh calls=%d", calls.Load())
-	}
-	state.resetRefreshError()
-	if _, err := state.current(context.Background()); !errors.Is(err, wantErr) {
-		t.Fatalf("retry err=%v", err)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("refresh calls after reset=%d", calls.Load())
 	}
 }
