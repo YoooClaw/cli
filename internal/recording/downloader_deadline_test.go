@@ -72,7 +72,7 @@ func TestDownloadTerminalFailuresAreLoggedWithoutSignedURL(t *testing.T) {
 			log := &downloadLogCapture{}
 			opts := DownloadOptions{MaxRetries: 1}
 			if code == 403 {
-				opts.RefreshURL = func(context.Context) (string, error) { return "", errors.New("refresh rejected") }
+				opts.RefreshLink = func(context.Context) (DownloadLink, error) { return DownloadLink{}, errors.New("refresh rejected") }
 			}
 			result := DownloadFile(source.URL+"?signature=secret-value", filepath.Join(t.TempDir(), "audio"), log, opts)
 			messages := strings.Join(log.messages, "\n")

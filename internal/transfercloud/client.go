@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,6 +34,25 @@ var ossHostRE = regexp.MustCompile(`^(?:[a-z0-9][a-z0-9-]*\.)?oss-[a-z0-9-]+\.al
 
 func ValidTaskID(id string) bool         { return taskRE.MatchString(id) }
 func failure(code, message string) error { return errs.New("YOOOCLAW_TRANSFER_"+code, message) }
+
+// HTTPStatusError preserves a non-2xx status while keeping the structured
+// error code/message for existing consumers.
+type HTTPStatusError struct {
+	StatusCode int
+	Err        *errs.Error
+}
+
+func (e *HTTPStatusError) Error() string { return e.Err.Error() }
+func (e *HTTPStatusError) Unwrap() error { return e.Err }
+
+// IsTaskGone reports the file-service taskId lookup semantics: 404 means the
+// record does not exist, 409 means it is unfinished or deleted. C-005 uses
+// both for an object that can no longer be signed.
+func IsTaskGone(err error) bool {
+	var statusErr *HTTPStatusError
+	return errors.As(err, &statusErr) &&
+		(statusErr.StatusCode == http.StatusNotFound || statusErr.StatusCode == http.StatusConflict)
+}
 
 // Number accepts the decimal strings used by the server's Java Long serializer.
 type Number int64
@@ -115,7 +135,10 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any) e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return failure("CLOUD_HTTP_ERROR", fmt.Sprintf("迁移服务返回 HTTP %d", resp.StatusCode))
+		return &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Err:        errs.New("YOOOCLAW_TRANSFER_CLOUD_HTTP_ERROR", fmt.Sprintf("迁移服务返回 HTTP %d", resp.StatusCode)),
+		}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
@@ -233,16 +256,41 @@ func validObjectKey(id, key string) bool {
 	return len(match) == 2 && match[1] == id
 }
 
+// DownloadLink is a signed OSS URL together with its expiry.
+type DownloadLink struct {
+	URL       string
+	ExpiresAt time.Time
+}
+
 // RecordingDownloadURL refreshes a recording task without imposing migration ID syntax.
 func (c *Client) RecordingDownloadURL(ctx context.Context, id string) (string, error) {
-	return c.FileDownloadURL(ctx, id)
+	link, err := c.RecordingDownloadLink(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return link.URL, nil
+}
+
+// RecordingDownloadLink returns the signed URL and expiry for a recording task.
+func (c *Client) RecordingDownloadLink(ctx context.Context, id string) (DownloadLink, error) {
+	return c.FileDownloadLink(ctx, id)
 }
 
 // FileDownloadURL reuses the existing file-service task lookup for uploaded objects.
 // The service authorizes the task against this client's API key.
 func (c *Client) FileDownloadURL(ctx context.Context, id string) (string, error) {
+	link, err := c.FileDownloadLink(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return link.URL, nil
+}
+
+// FileDownloadLink returns the signed URL and expiry so callers can renew
+// before a long download starts failing range requests.
+func (c *Client) FileDownloadLink(ctx context.Context, id string) (DownloadLink, error) {
 	if strings.TrimSpace(id) == "" || len(id) > 256 {
-		return "", failure("INVALID_TASK", "录音 taskId 无效")
+		return DownloadLink{}, failure("INVALID_TASK", "录音 taskId 无效")
 	}
 	var result struct {
 		TaskID    string `json:"taskId"`
@@ -250,17 +298,17 @@ func (c *Client) FileDownloadURL(ctx context.Context, id string) (string, error)
 		ExpiresAt Number `json:"expiresAt"`
 	}
 	if err := c.call(ctx, http.MethodPost, "/download-url", map[string]string{"taskId": id}, &result); err != nil {
-		return "", err
+		return DownloadLink{}, err
 	}
 	if result.TaskID != id || int64(result.ExpiresAt) <= time.Now().UnixMilli() {
-		return "", failure("CLOUD_RESPONSE_INVALID", "录音签名任务不匹配或已过期")
+		return DownloadLink{}, failure("CLOUD_RESPONSE_INVALID", "录音签名任务不匹配或已过期")
 	}
 	u, err := validateOSSURL(result.SignedURL)
 	if err != nil {
-		return "", err
+		return DownloadLink{}, err
 	}
 	if u.Port() != "" || !strings.Contains(u.Hostname(), ".oss-") {
-		return "", failure("CLOUD_URL_INVALID", "录音 OSS 地址无效")
+		return DownloadLink{}, failure("CLOUD_URL_INVALID", "录音 OSS 地址无效")
 	}
-	return result.SignedURL, nil
+	return DownloadLink{URL: result.SignedURL, ExpiresAt: time.UnixMilli(int64(result.ExpiresAt))}, nil
 }

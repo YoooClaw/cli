@@ -19,6 +19,17 @@ type recordingIDBody struct {
 
 func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, auth authResult, path string) {
 	method := strings.TrimPrefix(path, "/gateway/")
+	if s.recordingStorage != nil && method != "recordings.asr.init" {
+		if err := s.recordingStorage.LoadError(); err != nil {
+			switch method {
+			case "recordings.result.write", "recordings.retranscribe", "recordings.rename", "recordings.delete":
+				gatewayErr(w, "RECORDING_STORAGE_UNAVAILABLE", "recording storage unavailable")
+			default:
+				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
+			}
+			return
+		}
+	}
 	switch method {
 	case "recordings.result.write":
 		defer s.beginRecordingWrite()()
@@ -52,7 +63,8 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			switch {
 			case strings.HasPrefix(err.Error(), "Recording not found:"):
 				code = "NOT_FOUND"
-			case strings.HasPrefix(err.Error(), "ossTaskId") || err.Error() == "recordingId is required" || err.Error() == "transcript or summary is required":
+			case strings.HasPrefix(err.Error(), "ossTaskId") || err.Error() == "recordingId is required" ||
+				err.Error() == "transcript or summary is required" || strings.Contains(err.Error(), "recording_type"):
 				code = "INVALID_PARAMS"
 			}
 			s.logRecordingWriteFailure(recordingID, r.Header.Get(relay.InternalRequestIDHeader), err)
@@ -60,6 +72,12 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		gatewayOK(w, result)
+
+	case "recordings.export.start":
+		s.handleRecordingExportStart(w, r, auth)
+
+	case "recordings.export.status":
+		s.handleRecordingExportStatus(w, r, auth)
 
 	case "recordings.retranscribe":
 		var body recordingIDBody
@@ -137,17 +155,24 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "invalid recording status: "+status)
 			return
 		}
-		entries := s.recordingStorage.ListAll()
-		if status != "" {
-			entries = s.recordingStorage.ListByStatus(status)
+		entries, err := s.recordingStorage.ReadIndexSnapshot(r.Context())
+		if err != nil {
+			s.logger.Warn("[recording-list] 索引读取失败: " + err.Error())
+			gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
+			return
 		}
+		recording.SortByCreatedDesc(entries)
 		scope := auth.scope()
+		exportable := s.recordingStorage.ExportableEntries(entries)
 		items := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
+			if status != "" && entry.Status != status {
+				continue
+			}
 			if !clientlabel.Visible(entry.ClientLabel, scope) {
 				continue
 			}
-			items = append(items, recordingListItem(entry))
+			items = append(items, recordingListItem(entry, exportable[entry.ID]))
 		}
 		gatewayOK(w, map[string]any{"total": len(items), "recordings": items})
 
@@ -291,7 +316,7 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 	}
 }
 
-func recordingListItem(entry recording.Entry) map[string]any {
+func recordingListItem(entry recording.Entry, exportable bool) map[string]any {
 	result := map[string]any{
 		"recordingId":        entry.ID,
 		"name":               entry.Metadata.Name,
@@ -299,17 +324,20 @@ func recordingListItem(entry recording.Entry) map[string]any {
 		"duration_display":   recording.FormatDurationDisplay(entry.Metadata.DurationSec),
 		"file_size_display":  firstNonEmptyStr(entry.Metadata.FileSizeDisplay, "--"),
 		"created_at":         entry.Metadata.CreatedAt,
+		"recording_type":     recording.NormalizeRecordingType(entry.Metadata.RecordingType),
 		"transfer_status":    entry.Status,
 		"audio_status":       entry.AudioStatus,
 		"marker_count":       len(entry.Metadata.Markers),
 		"has_audio":          entry.AudioFile != "",
 		"has_srt":            entry.SrtFile != "",
 		"has_transcript":     entry.TranscriptFile != "",
+		"exportable":         exportable,
 		"audioFile":          nilIfEmptyStr(entry.AudioFile),
 		"transcriptDataFile": nilIfEmptyStr(entry.TranscriptDataFile),
 		"transcriptFile":     nilIfEmptyStr(entry.TranscriptFile),
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
+		"errorCode":          nilIfEmptyStr(entry.ErrorCode),
 	}
 	if entry.OssTaskID != "" {
 		result["ossTaskId"] = entry.OssTaskID
@@ -326,6 +354,7 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"duration_display":   recording.FormatDurationDisplay(entry.Metadata.DurationSec),
 		"file_size_display":  firstNonEmptyStr(entry.Metadata.FileSizeDisplay, "--"),
 		"created_at":         entry.Metadata.CreatedAt,
+		"recording_type":     recording.NormalizeRecordingType(entry.Metadata.RecordingType),
 		"location":           entry.Metadata.Location,
 		"oss_audio_url":      entry.Metadata.OssAudioURL,
 		"oss_srt_url":        nilIfEmptyStr(entry.Metadata.OssSrtURL),
@@ -341,6 +370,7 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"ingestedAt":         entry.IngestedAt,
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
+		"errorCode":          nilIfEmptyStr(entry.ErrorCode),
 	}
 	if entry.OssTaskID != "" {
 		result["ossTaskId"] = entry.OssTaskID

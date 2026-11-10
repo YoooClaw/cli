@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
@@ -101,6 +102,11 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		taskID = strings.TrimSpace(*params.OssTaskID)
 		if taskID == "" || len(taskID) > 256 || resultOssURL(params) == "" {
 			return ResultWriteResult{}, errors.New("ossTaskId requires a nonempty task ID (max 256 bytes) and ossUrl")
+		}
+	}
+	if params.Recording != nil {
+		if err := ValidateRecordingType(params.Recording.RecordingType); err != nil {
+			return ResultWriteResult{}, err
 		}
 	}
 	entry, found := storage.FindByID(recordingID)
@@ -278,6 +284,12 @@ func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, 
 		if value := strings.TrimSpace(incoming.OssSrtURL); value != "" && value != merged.OssSrtURL {
 			merged.OssSrtURL, changed = value, true
 		}
+		if incoming.RecordingType != nil {
+			value := *incoming.RecordingType
+			if merged.RecordingType == nil || *merged.RecordingType != value {
+				merged.RecordingType, changed = &value, true
+			}
+		}
 	}
 	if durationSec, ok := providedResultDurationSec(params); ok && durationSec != merged.DurationSec {
 		merged.DurationSec, changed = durationSec, true
@@ -408,18 +420,32 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 	}
 	if entry.OssTaskID != "" && opts.URLRefresher != nil {
 		refresh := opts.URLRefresher(entry.ClientLabel, entry.OssTaskID)
-		downloadOpts.RefreshURL = func(ctx context.Context) (string, error) {
+		refreshLink := func(ctx context.Context) (DownloadLink, error) {
 			if !isCurrent() {
-				return "", errors.New("recording download superseded")
+				return DownloadLink{}, errors.New("recording download superseded")
 			}
 			next, err := refresh(ctx)
 			if err != nil {
-				return "", err
+				return DownloadLink{}, err
 			}
 			if !isCurrent() {
-				return "", errors.New("recording download superseded")
+				return DownloadLink{}, errors.New("recording download superseded")
 			}
 			return next, nil
+		}
+		downloadOpts.RefreshLink = refreshLink
+		// Fetch an initial link up front so the downloader knows the actual
+		// expiry and can refresh before a range fails, not only after a 403.
+		// If this lookup fails, keep the App-provided URL as fallback.
+		initialCtx, initialDone := context.WithTimeout(context.Background(), downloadLinkRefreshTimeout)
+		initial, initialErr := refreshLink(initialCtx)
+		initialDone()
+		if initialErr == nil && (initial.ExpiresAt.IsZero() || initial.ExpiresAt.After(time.Now().Add(downloadLinkRefreshWindow))) {
+			downloadOpts.InitialLink = &initial
+		} else if initialErr == nil {
+			logger.Warn("[recording-result] 初始签名链接有效期不足，使用原始链接: " + recordingID)
+		} else {
+			logger.Warn("[recording-result] 初始签名链接刷新失败，使用原始链接: " + safeDownloadError(initialErr) + ": " + recordingID)
 		}
 	}
 	result := DownloadFile(ossURL, staged, logger, downloadOpts)
@@ -429,7 +455,7 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 	if !result.OK {
 		message := "音频下载失败: " + result.Error
 		logger.Error("[recording-result] " + message + ": " + recordingID)
-		applied, setErr := storage.SetResultAudioFailed(recordingID, ossURL, message)
+		applied, setErr := storage.SetResultAudioFailedWithCode(recordingID, ossURL, message, result.ErrorCode)
 		if setErr != nil {
 			logger.Error("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID)
 			return

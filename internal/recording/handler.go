@@ -7,7 +7,7 @@ import (
 
 // SyncOptions 控制录音后台流程（转写、result.write 音频下载）。
 type SyncOptions struct {
-	URLRefresher    func(label, taskID string) func(context.Context) (string, error)
+	URLRefresher    func(label, taskID string) func(context.Context) (DownloadLink, error)
 	NotifyStatus    func(StatusEvent)
 	DownloadOptions DownloadOptions
 	// ClientLabel 是本次调用的来源客户端 label（daemon 侧鉴权解析，非请求体字段）；

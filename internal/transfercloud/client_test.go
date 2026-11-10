@@ -3,6 +3,7 @@ package transfercloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -186,5 +187,46 @@ func TestRecordingDownloadURLValidation(t *testing.T) {
 				t.Fatalf("err=%v", err)
 			}
 		})
+	}
+}
+
+func TestRecordingDownloadLinkReturnsExpiry(t *testing.T) {
+	expiry := time.Now().Add(time.Hour).UnixMilli()
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, map[string]any{"taskId": "recording-task-1", "signedUrl": signedURL, "expiresAt": expiry})
+	})
+	link, err := c.RecordingDownloadLink(context.Background(), "recording-task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.URL != signedURL || link.ExpiresAt.UnixMilli() != expiry {
+		t.Fatalf("link=%+v", link)
+	}
+}
+
+func TestFileDownloadLinkPreservesTaskGoneStatus(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		gone   bool
+	}{
+		{http.StatusNotFound, true},
+		{http.StatusConflict, true},
+		{http.StatusServiceUnavailable, false},
+		{http.StatusInternalServerError, false},
+	} {
+		c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+		})
+		_, err := c.FileDownloadLink(context.Background(), testID)
+		if err == nil {
+			t.Fatalf("status %d: expected error", tc.status)
+		}
+		if got := IsTaskGone(err); got != tc.gone {
+			t.Fatalf("status %d: IsTaskGone=%v", tc.status, got)
+		}
+		var statusErr *HTTPStatusError
+		if !errors.As(err, &statusErr) || statusErr.StatusCode != tc.status {
+			t.Fatalf("status %d: error=%v", tc.status, err)
+		}
 	}
 }
