@@ -327,6 +327,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		defer s.beginRecordingWrite()()
 		var body struct {
 			RecordingID  string `json:"recordingId"`
+			SourceType   string `json:"sourceType"`
 			DeleteRemote bool   `json:"deleteRemote"`
 		}
 		if !decodeBody(w, r, &body) {
@@ -337,12 +338,20 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
 			return
 		}
-		if existing, found := s.recordingStorage.FindByID(recordingID); !found ||
+		source := strings.TrimSpace(body.SourceType)
+		if source == "" {
+			source = recording.SourceMobileApp
+		}
+		store, ok := s.recordingStore(w, source)
+		if !ok {
+			return
+		}
+		if existing, found := store.FindByID(recordingID); !found ||
 			!clientlabel.Visible(existing.ClientLabel, auth.scope()) {
 			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 			return
 		}
-		deleted, err := s.recordingStorage.Delete(recordingID, !body.DeleteRemote)
+		deleted, err := store.Delete(recordingID, !body.DeleteRemote)
 		if err != nil {
 			gatewayErr(w, "INTERNAL_ERROR", err.Error())
 			return
@@ -351,7 +360,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 			return
 		}
-		gatewayOK(w, map[string]any{"ok": true, "recordingId": recordingID, "deletedRemote": body.DeleteRemote})
+		gatewayOK(w, map[string]any{"ok": true, "recordingId": recordingID, "sourceType": source, "deletedRemote": body.DeleteRemote})
 
 	default:
 		writeJSON(w, 404, errBody("YOOOCLAW_NOT_FOUND", "未知路径："+path))

@@ -162,6 +162,51 @@ func TestCaptureRecordingGatewayPersistsBeforeNotifying(t *testing.T) {
 	}
 }
 
+func TestCaptureRecordingDeleteRequiresSource(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	withRecordings(t, srv)
+	root := withCaptureRecordings(t, srv)
+	if _, err := srv.recordingStorage.Ingest("mobile", recording.Metadata{Name: "手机录音"}, "wuying-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.captureRecordingStorage.Ingest("meeting", recording.Metadata{Name: "Capture 录音"}, "wuying-a"); err != nil {
+		t.Fatal(err)
+	}
+	call := func(label, body string) map[string]any {
+		return asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.delete", label, body)
+	}
+	codeOf := func(resp map[string]any) string {
+		problem, _ := resp["error"].(map[string]any)
+		code, _ := problem["code"].(string)
+		return code
+	}
+
+	// Omitting sourceType keeps the historical mobile_app default.
+	if resp := call("wuying-a", `{"recordingId":"meeting"}`); codeOf(resp) != "NOT_FOUND" {
+		t.Fatalf("default delete must not reach capture: %v", resp)
+	}
+	if resp := call("wuying-a", `{"recordingId":"meeting","sourceType":"unknown"}`); codeOf(resp) != "INVALID_PARAMS" {
+		t.Fatalf("invalid sourceType = %v", resp)
+	}
+	if resp := call("wuying-b", `{"recordingId":"meeting","sourceType":"capture_app","deleteRemote":true}`); codeOf(resp) != "NOT_FOUND" {
+		t.Fatalf("delete must stay inside the client scope: %v", resp)
+	}
+	if records := recording.ReadIndex(root); len(records) != 1 {
+		t.Fatalf("failed deletes changed the capture index: %+v", records)
+	}
+
+	data := gatewayData(t, call("wuying-a", `{"recordingId":"meeting","sourceType":"capture_app","deleteRemote":true}`))
+	if data["sourceType"] != recording.SourceCaptureApp || data["deletedRemote"] != true {
+		t.Fatalf("unexpected delete response: %v", data)
+	}
+	if records := recording.ReadIndex(root); len(records) != 0 {
+		t.Fatalf("capture entry survived delete: %+v", records)
+	}
+	if entries := srv.recordingStorage.ListAll(); len(entries) != 1 || entries[0].ID != "mobile" {
+		t.Fatalf("capture delete leaked to the mobile index: %+v", entries)
+	}
+}
+
 func TestCaptureRecordingRecoversPendingDownload(t *testing.T) {
 	srv, _ := newTestServer(t, "")
 	root := withCaptureRecordings(t, srv)

@@ -12,7 +12,7 @@
 
 不改变 App 的录音同步协议形态：`recordings.result.write` 异步受理，使用原 `recording.status` 事件及 `recordings.status` 查询确认完成，不新增事件名或 HTTP 录音入口。
 
-`recordings.result.write`、`recordings.list`、`recordings.status`、`recordings.rename` 和 `recordings.retranscribe` 的请求体可选 `sourceType`。省略时选择 `mobile_app`，沿用 profile 的 `recordings/`。显式传入 `capture_app` 时选择 `voice/recordings/`，CLI 用该目录的 `index.json` 维护上报录音的全量索引与状态。旧版 Capture 应用写入的 `voice/recordings-jsonl/` 只作为未迁移历史录音的只读兜底，同一 ID 以网关索引为准。
+`recordings.result.write`、`recordings.list`、`recordings.status`、`recordings.rename`、`recordings.retranscribe` 和 `recordings.delete` 的请求体可选 `sourceType`。省略时选择 `mobile_app`，沿用 profile 的 `recordings/`。显式传入 `capture_app` 时选择 `voice/recordings/`，CLI 用该目录的 `index.json` 维护上报录音的全量索引与状态。旧版 Capture 应用写入的 `voice/recordings-jsonl/` 只作为未迁移历史录音的只读兜底，同一 ID 以网关索引为准。
 
 调用方使用同一个 `recordingId` 和 `sourceType` 对账。音频和索引均写入后，CLI 通过原 `recording.status` 通知目标客户端，事件中的 `audio_status` 为 `downloaded` 且 `audioFile` 非空。客户端可向同一来源查询状态后清理临时 OSS 文件。
 
