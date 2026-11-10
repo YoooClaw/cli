@@ -422,6 +422,11 @@ Capture recordings use the gateway-written `voice/recordings/index.json` produce
 index is read only as a fallback for recordings not yet migrated, and the gateway entry
 wins for the same ID.
 
+> **Upgrade note**: recording query output now uses `mobile_app` instead of `smart_hardware`
+> for `source_type`; `mobile_app` is the YoooClaw hardware connected through the App.
+> `--source smart_hardware` remains an input alias. Scripts that read JSON should map the old
+> value to `mobile_app`.
+
 ### 3. Raw API
 
 `yoooclaw api <METHOD> <PATH> [--data ...]` reaches daemon HTTP endpoints directly, covering anything not wrapped by a service command.
@@ -492,7 +497,7 @@ yoooclaw recording events --id <recording-id> --watch
 
 Audio downloads reuse the Alibaba Cloud OSS Go SDK v2 multipart downloader (8 MiB parts, concurrency 3, Range + ETag validation): a flaky network resumes from the checkpoint within the current download instead of deleting the partial file and starting over; 5 GiB max per audio file, and an existing non-empty local audio file is reused. `recordings.result.write` accepts an optional top-level `ossTaskId` (the upload service's task ID, ≤256 characters, must come with an audio URL; not the ASR task ID in `transcript.source.taskId`): on a 403 the daemon uses the api-key that wrote the recording to fetch a fresh signed URL from the cloud and retries — the api-key is never sent to OSS. `ossTaskId` is stored in the recording index and echoed in the write response, `recording list/status` and `recording.status` events (omitted when absent); a new write without it clears the old value.
 
-Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
+Recording config lives under the current profile at `recordings/asr-config.json`. `recording events` merges the `mobile_app` stream at `recordings/state/events.jsonl` and the `capture_app` stream at `voice/recordings/state/events.jsonl`, sorted by event time; every event carries `sourceType`, so merged results stay attributable to their source. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
 
 ### Health Data Ingest
 

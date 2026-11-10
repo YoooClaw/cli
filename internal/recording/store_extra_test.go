@@ -270,6 +270,41 @@ func TestLoadIndexRecoversTranscribing(t *testing.T) {
 	}
 }
 
+func TestLoadIndexNormalizesMobileSourceType(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "recordings")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{
+	  "recordings": [
+	    {"id":"capture-tag","sourceType":"capture_app","status":"synced","metadata":{"name":"x","created_at":"2026-06-01T00:00:00Z"}},
+	    {"id":"unknown-tag","sourceType":"legacy","status":"synced","metadata":{"name":"y","created_at":"2026-06-01T00:00:00Z"}},
+	    {"id":"explicit-mobile","sourceType":"mobile_app","status":"synced","metadata":{"name":"z","created_at":"2026-06-01T00:00:00Z"}}
+	  ]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	storage := NewStorage(dir, testLogger{t})
+	if err := storage.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"capture-tag", "unknown-tag", "explicit-mobile"} {
+		entry, ok := storage.FindByID(id)
+		if !ok {
+			t.Fatalf("missing %s", id)
+		}
+		if got := entry.RecordingSource(); got != SourceMobileApp {
+			t.Fatalf("%s source = %s, want %s", id, got, SourceMobileApp)
+		}
+	}
+	for _, entry := range ReadIndex(dir) {
+		if entry.SourceType == SourceCaptureApp || entry.SourceType == "legacy" {
+			t.Fatalf("mislabeled sourceType not normalized on disk: %+v", entry)
+		}
+	}
+}
+
 func TestLoadIndexMarksMissingAudioForRecovery(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "recordings")

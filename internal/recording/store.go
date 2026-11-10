@@ -273,10 +273,16 @@ func (s *Storage) loadIndex() error {
 	now := nowISO()
 	for i := range wrapper.Recordings {
 		entry := &wrapper.Recordings[i]
-		// Capture 索引的条目都属于 capture_app；旧索引缺少字段或误写成
-		// mobile_app 时以所在存储为准纠正，避免列表/状态/导出载荷误标来源。
-		if s.capture && entry.SourceType != SourceCaptureApp {
-			entry.SourceType = SourceCaptureApp
+		// 条目来源由所在索引决定：Capture 索引归一到 capture_app；移动端索引
+		// 出现 capture_app 或未知值时清空，由 RecordingSource 回落 mobile_app，
+		// 避免列表/状态/事件路由/导出载荷读到与存储位置不符的来源。
+		if s.capture {
+			if entry.SourceType != SourceCaptureApp {
+				entry.SourceType = SourceCaptureApp
+				needsRewrite = true
+			}
+		} else if entry.SourceType != "" && entry.SourceType != SourceMobileApp {
+			entry.SourceType = ""
 			needsRewrite = true
 		}
 		durationSec := normalizeDurationSeconds(entry.Metadata.DurationSec)

@@ -322,3 +322,68 @@ func TestRecordingStatusRequiresSourceWhenIDIsAmbiguous(t *testing.T) {
 		t.Fatalf("invalid source should fail: code=%d %s", code, out)
 	}
 }
+
+func TestRecordingEventsMergesBothSources(t *testing.T) {
+	home := sandbox(t)
+	writeEvents := func(dir, body string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEvents(filepath.Join(home, "profiles", "default", "recordings", "state"), `{"ts":"2026-06-01T00:00:00Z","recordingId":"m1","transfer_status":"synced"}
+{"ts":"2026-06-01T02:00:00Z","recordingId":"m2","sourceType":"mobile_app","transfer_status":"transcribed"}
+`)
+	writeEvents(filepath.Join(home, "profiles", "default", "voice", "recordings", "state"), `{"ts":"2026-06-01T01:00:00Z","recordingId":"c1","sourceType":"capture_app","transfer_status":"transcribed"}
+`)
+
+	out, code := execCLI(t, "recording", "events", "--format", "json")
+	if code != 0 {
+		t.Fatalf("recording events failed: %s", out)
+	}
+	events, _ := decode(t, out)["events"].([]any)
+	if len(events) != 3 {
+		t.Fatalf("expected merged events from both sources, got %s", out)
+	}
+	ids := make([]string, 0, len(events))
+	for _, item := range events {
+		e := item.(map[string]any)
+		ids = append(ids, e["recordingId"].(string))
+		if e["sourceType"] == "" {
+			t.Fatalf("event has no sourceType: %+v", e)
+		}
+	}
+	if !slices.Equal(ids, []string{"m1", "c1", "m2"}) {
+		t.Fatalf("events not merged in time order: %v", ids)
+	}
+	if events[0].(map[string]any)["sourceType"] != "mobile_app" {
+		t.Fatalf("legacy mobile event should default to mobile_app: %+v", events[0])
+	}
+
+	out, code = execCLI(t, "recording", "events", "--id", "c1", "--format", "json")
+	if code != 0 {
+		t.Fatalf("recording events --id failed: %s", out)
+	}
+	events, _ = decode(t, out)["events"].([]any)
+	if len(events) != 1 || events[0].(map[string]any)["recordingId"] != "c1" {
+		t.Fatalf("--id should keep only the capture event: %s", out)
+	}
+}
+
+func TestRecordingStoragePathReportsCaptureHistory(t *testing.T) {
+	home := sandbox(t)
+	out, code := execCLI(t, "recording", "storage-path", "--format", "json")
+	if code != 0 {
+		t.Fatalf("storage-path failed: %s", out)
+	}
+	sources, _ := decode(t, out)["sources"].(map[string]any)
+	capture, _ := sources["capture_app"].(map[string]any)
+	history, _ := capture["history"].(string)
+	want := filepath.Join(home, "profiles", "default", "voice", "recordings-jsonl")
+	if history != want {
+		t.Fatalf("capture history=%q, want %q", history, want)
+	}
+}

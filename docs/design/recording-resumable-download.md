@@ -12,7 +12,9 @@
 
 不改变 App 的录音同步协议形态：`recordings.result.write` 异步受理，使用原 `recording.status` 事件及 `recordings.status` 查询确认完成，不新增事件名或 HTTP 录音入口。
 
-`recordings.result.write`、`recordings.list`、`recordings.status`、`recordings.rename`、`recordings.retranscribe`、`recordings.delete` 和 `recordings.export.start` / `recordings.export.status` 的请求体可选 `sourceType`。省略时选择 `mobile_app`，沿用 profile 的 `recordings/`。显式传入 `capture_app` 时选择 `voice/recordings/`，CLI 用该目录的 `index.json` 维护上报录音的全量索引与状态。旧版 Capture 应用写入的 `voice/recordings-jsonl/` 只作为未迁移历史录音的只读兜底，同一 ID 以网关索引为准。
+`recordings.result.write`、`recordings.list`、`recordings.status`、`recordings.rename`、`recordings.retranscribe`、`recordings.delete` 和 `recordings.export.start` / `recordings.export.status` 的请求体可选 `sourceType`。省略时选择 `mobile_app`，沿用 profile 的 `recordings/`；`recordings.list` 例外，省略时返回 `mobile_app` 与 `capture_app` 的合并列表，并按实际时间倒序排列。显式传入 `capture_app` 时选择 `voice/recordings/`，CLI 用该目录的 `index.json` 维护上报录音的全量索引与状态。旧版 Capture 应用写入的 `voice/recordings-jsonl/` 只作为未迁移历史录音的只读兜底，同一 ID 以网关索引为准。
+
+合并列表时，任一侧索引降级或读取失败只跳过该来源，另一来源继续返回；响应通过 `degradedSources` 标明被跳过的来源。两侧都不可用时返回 `RECORDING_LIST_UNAVAILABLE`。显式指定 `sourceType` 时仍保持单来源语义，该来源不可用即返回错误。
 
 调用方使用同一个 `recordingId` 和 `sourceType` 对账。音频和索引均写入后，CLI 通过原 `recording.status` 通知目标客户端，事件中的 `audio_status` 为 `downloaded` 且 `audioFile` 非空。客户端可向同一来源查询状态后清理临时 OSS 文件。导出接口按来源查找索引，导出载荷 `writePayload` 同样携带 `sourceType`，接收方据此把录音写回对应来源。
 

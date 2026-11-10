@@ -352,8 +352,9 @@ func recordingStoragePath(ctx *clictx.Context, _ *cobra.Command, _ []string) (an
 				"path": ctx.Paths.Recordings, "index": filepath.Join(ctx.Paths.Recordings, "index.json"),
 			},
 			capturerecording.SourceType: map[string]any{
-				"path":  capturerecording.RecordingsPath(ctx.Paths.Voice),
-				"index": filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "index.json"),
+				"path":    capturerecording.RecordingsPath(ctx.Paths.Voice),
+				"index":   filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "index.json"),
+				"history": capturerecording.HistoryPath(ctx.Paths.Voice),
 			},
 		},
 	}, nil
@@ -407,31 +408,58 @@ func parseSince(input string) (*time.Time, error) {
 }
 
 func recordingEvents(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	path := filepath.Join(ctx.Paths.Recordings, "state", "events.jsonl")
+	paths := map[string]string{
+		recordingSourceMobileApp:    filepath.Join(ctx.Paths.Recordings, "state", "events.jsonl"),
+		capturerecording.SourceType: filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "state", "events.jsonl"),
+	}
 	limit := atoiDefault(flagStr(cmd, "limit"), 200)
 	since, err := parseSince(flagStr(cmd, "since"))
 	if err != nil {
 		return nil, err
 	}
 	id := flagStr(cmd, "id")
-	events := recording.ReadEvents(path)
-	filtered := make([]any, 0, len(events))
-	for _, e := range events {
-		if id != "" && e["recordingId"] != id {
-			continue
-		}
-		if since != nil {
-			tsStr, _ := e["ts"].(string)
-			if ts, ok := parseEventTime(tsStr); !ok || ts.Before(*since) {
+	type timedEvent struct {
+		event recording.Event
+		at    time.Time
+		valid bool
+	}
+	merged := make([]timedEvent, 0)
+	// 默认合并两个来源的事件流；每条事件自带 sourceType，合并后仍可区分来源。
+	for _, source := range []string{recordingSourceMobileApp, capturerecording.SourceType} {
+		for _, e := range recording.ReadEvents(paths[source]) {
+			if value, _ := e["sourceType"].(string); value == "" {
+				// 旧版本事件没有 sourceType，按所在文件补齐。
+				e["sourceType"] = source
+			}
+			if id != "" && e["recordingId"] != id {
 				continue
 			}
+			tsStr, _ := e["ts"].(string)
+			ts, ok := parseEventTime(tsStr)
+			if since != nil && (!ok || ts.Before(*since)) {
+				continue
+			}
+			merged = append(merged, timedEvent{event: e, at: ts, valid: ok})
 		}
-		filtered = append(filtered, e)
 	}
-	if len(filtered) > limit {
-		filtered = filtered[len(filtered)-limit:]
+	// 时间不可解析的事件按原始顺序排在最前，避免它们挤掉最近的事件。
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].valid != merged[j].valid {
+			return !merged[i].valid
+		}
+		if !merged[i].valid {
+			return false
+		}
+		return merged[i].at.Before(merged[j].at)
+	})
+	if len(merged) > limit {
+		merged = merged[len(merged)-limit:]
 	}
-	return map[string]any{"ok": true, "path": path, "total": len(filtered), "events": filtered}, nil
+	events := make([]any, 0, len(merged))
+	for _, item := range merged {
+		events = append(events, item.event)
+	}
+	return map[string]any{"ok": true, "paths": paths, "total": len(events), "events": events}, nil
 }
 
 func parseEventTime(s string) (time.Time, bool) {

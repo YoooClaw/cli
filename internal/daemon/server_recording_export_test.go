@@ -94,9 +94,15 @@ func TestRecordingExportRoutesStartAndStatus(t *testing.T) {
 	if exportID == "" {
 		t.Fatalf("start=%+v", start)
 	}
+	if start["sourceType"] != recording.SourceMobileApp {
+		t.Fatalf("start sourceType=%v, want %s", start["sourceType"], recording.SourceMobileApp)
+	}
 	status := waitGatewayExport(t, ts.URL, "phone-a", "rec_export", exportID)
 	if status["state"] != "ready" {
 		t.Fatalf("status=%+v", status)
+	}
+	if status["sourceType"] != recording.SourceMobileApp {
+		t.Fatalf("status sourceType=%v, want %s", status["sourceType"], recording.SourceMobileApp)
 	}
 	result, _ := status["result"].(map[string]any)
 	payload, _ := result["writePayload"].(map[string]any)
@@ -159,9 +165,15 @@ func TestCaptureRecordingExportRoutesStartAndStatus(t *testing.T) {
 	if exportID == "" {
 		t.Fatalf("start=%+v", start)
 	}
+	if start["sourceType"] != recording.SourceCaptureApp {
+		t.Fatalf("start sourceType=%v, want %s", start["sourceType"], recording.SourceCaptureApp)
+	}
 	status := waitGatewayExport(t, ts.URL, "phone-a", "cap_export", exportID, recording.SourceCaptureApp)
 	if status["state"] != "ready" {
 		t.Fatalf("status=%+v", status)
+	}
+	if status["sourceType"] != recording.SourceCaptureApp {
+		t.Fatalf("status sourceType=%v, want %s", status["sourceType"], recording.SourceCaptureApp)
 	}
 	result, _ := status["result"].(map[string]any)
 	payload, _ := result["writePayload"].(map[string]any)

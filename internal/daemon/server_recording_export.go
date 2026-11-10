@@ -136,6 +136,11 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	// 回显实际使用的来源，省略 sourceType 时明确返回默认的 mobile_app。
+	sourceType := recording.SourceMobileApp
+	if store == s.captureRecordingStorage {
+		sourceType = recording.SourceCaptureApp
+	}
 	entry, ok := store.FindByID(recordingID)
 	if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
 		gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
@@ -151,6 +156,7 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 		}
 		gatewayOK(w, recording.ExportStartResult{
 			RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State,
+			SourceType: sourceType,
 		})
 		return
 	}
@@ -174,6 +180,7 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 		writeRecordingExportError(w, err)
 		return
 	}
+	result.SourceType = sourceType
 	gatewayOK(w, result)
 }
 
@@ -204,6 +211,11 @@ func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	// 回显实际使用的来源，省略 sourceType 时明确返回默认的 mobile_app。
+	sourceType := recording.SourceMobileApp
+	if store == s.captureRecordingStorage {
+		sourceType = recording.SourceCaptureApp
+	}
 	entry, ok := store.FindByID(recordingID)
 	if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
 		gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
@@ -221,6 +233,7 @@ func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Requ
 		writeRecordingExportError(w, err)
 		return
 	}
+	status.SourceType = sourceType
 	gatewayOK(w, status)
 }
 

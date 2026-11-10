@@ -118,7 +118,6 @@ func TestCaptureRecordingGatewayPersistsBeforeNotifying(t *testing.T) {
 		label, query string
 		ids          []string
 	}{
-		{label, `{}`, []string{"mobile"}},
 		{label, `{"sourceType":"mobile_app"}`, []string{"mobile"}},
 		{label, captureQuery, []string{"meeting"}},
 		{"wuying-b", captureQuery, nil},
@@ -274,6 +273,107 @@ func TestConcurrentRecordingWritesCannotClaimBothSources(t *testing.T) {
 	if !slices.Equal(codes, []string{"OK", "SOURCE_CONFLICT"}) ||
 		len(srv.recordingStorage.ListAll())+len(srv.captureRecordingStorage.ListAll()) != 1 {
 		t.Fatalf("expected only one source to claim the ID: %v", codes)
+	}
+}
+
+func TestRecordingListWithoutSourceTypeMergesBothSources(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	mobile := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
+	base := time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+	if _, err := mobile.Ingest("mobile-id", recording.Metadata{Name: "手机录音", CreatedAt: base.Format(time.RFC3339)}, "wuying-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.captureRecordingStorage.Ingest("capture-id", recording.Metadata{Name: "会议录音", CreatedAt: base.Add(time.Hour).Format(time.RFC3339)}, "wuying-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	list := func(body string) map[string]any {
+		t.Helper()
+		resp := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a", body)
+		if resp["ok"] != true {
+			t.Fatalf("recordings.list %s failed: %+v", body, resp)
+		}
+		return gatewayData(t, resp)
+	}
+
+	all := list(`{}`)
+	raw, _ := all["recordings"].([]any)
+	if all["total"] != float64(2) || len(raw) != 2 {
+		t.Fatalf("merged list = %+v", all)
+	}
+	first, _ := raw[0].(map[string]any)
+	second, _ := raw[1].(map[string]any)
+	if first["recordingId"] != "capture-id" || first["sourceType"] != recording.SourceCaptureApp {
+		t.Fatalf("newest capture entry = %+v", first)
+	}
+	if second["recordingId"] != "mobile-id" || second["sourceType"] != recording.SourceMobileApp {
+		t.Fatalf("mobile entry = %+v", second)
+	}
+	if _, ok := all["degradedSources"]; ok {
+		t.Fatalf("healthy merge must not report degraded sources: %+v", all)
+	}
+
+	for source, wantID := range map[string]string{
+		recording.SourceMobileApp:  "mobile-id",
+		recording.SourceCaptureApp: "capture-id",
+	} {
+		got := list(fmt.Sprintf(`{"sourceType":%q}`, source))
+		items, _ := got["recordings"].([]any)
+		if got["total"] != float64(1) || len(items) != 1 || items[0].(map[string]any)["recordingId"] != wantID {
+			t.Fatalf("explicit %s list = %+v", source, got)
+		}
+	}
+}
+
+func TestRecordingListWithoutSourceTypeSkipsDegradedSource(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	mobile := withRecordings(t, srv)
+	root := withCaptureRecordings(t, srv)
+	if _, err := mobile.Ingest("mobile-id", recording.Metadata{Name: "手机录音"}, "wuying-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	degradedCapture := recording.NewCaptureStorage(root, srv.logger)
+	if err := degradedCapture.Init(); err != nil {
+		t.Fatalf("Capture Init must not fail: %v", err)
+	}
+	srv.captureRecordingStorage = degradedCapture
+
+	data := gatewayData(t, asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a", `{}`))
+	items, _ := data["recordings"].([]any)
+	if data["total"] != float64(1) || len(items) != 1 || items[0].(map[string]any)["recordingId"] != "mobile-id" {
+		t.Fatalf("degraded Capture must not hide mobile: %+v", data)
+	}
+	degraded, _ := data["degradedSources"].([]any)
+	if len(degraded) != 1 || degraded[0] != recording.SourceCaptureApp {
+		t.Fatalf("degradedSources = %+v", data["degradedSources"])
+	}
+
+	// 显式指定来源时仍保持单来源语义，该来源不可用即报错。
+	explicit := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a",
+		fmt.Sprintf(`{"sourceType":%q}`, recording.SourceCaptureApp))
+	errObj, _ := explicit["error"].(map[string]any)
+	if explicit["ok"] != false || errObj["code"] != "RECORDING_LIST_UNAVAILABLE" {
+		t.Fatalf("explicit degraded capture = %+v", explicit)
+	}
+
+	// 两侧都不可用时，合并列表返回整体不可用。
+	mobileDir := filepath.Dir(mobile.AudioDir())
+	if err := os.WriteFile(filepath.Join(mobileDir, "index.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	degradedMobile := recording.NewStorage(mobileDir, srv.logger)
+	if err := degradedMobile.Init(); err != nil {
+		t.Fatalf("mobile Init must not fail: %v", err)
+	}
+	srv.recordingStorage = degradedMobile
+	both := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a", `{}`)
+	errObj, _ = both["error"].(map[string]any)
+	if both["ok"] != false || errObj["code"] != "RECORDING_LIST_UNAVAILABLE" {
+		t.Fatalf("all-degraded list = %+v", both)
 	}
 }
 

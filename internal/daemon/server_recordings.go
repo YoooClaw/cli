@@ -68,6 +68,40 @@ func (s *server) recordingStore(w http.ResponseWriter, source, method string) (*
 	return store, true
 }
 
+type recordingListSource struct {
+	source string
+	store  *recording.Storage
+}
+
+// recordingListSources resolves the stores for recordings.list. An empty
+// sourceType means both sources; an explicit value keeps the single-source
+// behavior, including its degradation error.
+func (s *server) recordingListSources(w http.ResponseWriter, source, method string) ([]recordingListSource, bool) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		sources := make([]recordingListSource, 0, 2)
+		if s.recordingStorage != nil {
+			sources = append(sources, recordingListSource{source: recording.SourceMobileApp, store: s.recordingStorage})
+		}
+		if s.captureRecordingStorage != nil {
+			sources = append(sources, recordingListSource{source: recording.SourceCaptureApp, store: s.captureRecordingStorage})
+		}
+		if len(sources) == 0 {
+			gatewayErr(w, "INTERNAL_ERROR", "recording storage unavailable")
+			return nil, false
+		}
+		return sources, true
+	}
+	store, ok := s.recordingStore(w, source, method)
+	if !ok {
+		return nil, false
+	}
+	if source == recording.SourceCaptureApp {
+		return []recordingListSource{{source: recording.SourceCaptureApp, store: store}}, true
+	}
+	return []recordingListSource{{source: recording.SourceMobileApp, store: store}}, true
+}
+
 func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, auth authResult, path string) {
 	method := strings.TrimPrefix(path, "/gateway/")
 	switch method {
@@ -231,30 +265,61 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "invalid recording status: "+status)
 			return
 		}
-		store, ok := s.recordingStore(w, body.SourceType, method)
+		sources, ok := s.recordingListSources(w, body.SourceType, method)
 		if !ok {
 			return
 		}
-		entries, err := store.ReadIndexSnapshot(r.Context())
-		if err != nil {
-			s.logger.Warn("[recording-list] 索引读取失败: " + err.Error())
+		scope := auth.scope()
+		entries := make([]recording.Entry, 0)
+		exportableBySource := make(map[string]map[string]bool, len(sources))
+		degraded := make([]string, 0, len(sources))
+		for _, source := range sources {
+			// 显式指定来源时保持原语义：该来源不可用就报错。省略来源时跳过
+			// 降级的一侧，另一侧仍可查询。
+			if len(sources) > 1 {
+				if err := source.store.LoadError(); err != nil {
+					degraded = append(degraded, source.source)
+					continue
+				}
+			}
+			snapshot, err := source.store.ReadIndexSnapshot(r.Context())
+			if err != nil {
+				if len(sources) == 1 {
+					s.logger.Warn("[recording-list] 索引读取失败: " + err.Error())
+					gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
+					return
+				}
+				degraded = append(degraded, source.source)
+				s.logger.Warn("[recording-list] " + source.source + " 索引读取失败，已跳过: " + err.Error())
+				continue
+			}
+			exportableBySource[source.source] = source.store.ExportableEntries(snapshot)
+			for _, entry := range snapshot {
+				if status != "" && entry.Status != status {
+					continue
+				}
+				if !clientlabel.Visible(entry.ClientLabel, scope) {
+					continue
+				}
+				// 来源由所在存储决定，避免历史索引里误标的 sourceType 影响合并结果。
+				entry.SourceType = source.source
+				entries = append(entries, entry)
+			}
+		}
+		if len(degraded) == len(sources) {
 			gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
 			return
 		}
 		recording.SortByCreatedDesc(entries)
-		scope := auth.scope()
-		exportable := store.ExportableEntries(entries)
 		items := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
-			if status != "" && entry.Status != status {
-				continue
-			}
-			if !clientlabel.Visible(entry.ClientLabel, scope) {
-				continue
-			}
-			items = append(items, recordingListItem(entry, exportable[entry.ID]))
+			items = append(items, recordingListItem(entry, exportableBySource[entry.RecordingSource()][entry.ID]))
 		}
-		gatewayOK(w, map[string]any{"total": len(items), "recordings": items})
+		result := map[string]any{"total": len(items), "recordings": items}
+		if len(degraded) > 0 {
+			result["degradedSources"] = degraded
+		}
+		gatewayOK(w, result)
 
 	case "recordings.status":
 		var body recordingIDBody

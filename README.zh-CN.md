@@ -412,6 +412,10 @@ Voice 历史从每日 `audio-jsonl/YYYY-MM-DD.jsonl` 读取，对外 ID 是稳�
 `recordings.result.write` 写入的 `voice/recordings/index.json` 为准；旧版应用写入的
 `voice/recordings-jsonl/` 只作为尚未迁移的历史录音兜底，同一 ID 以网关为准。
 
+> **升级说明**：录音查询输出的 `source_type` 已从 `smart_hardware` 统一为 `mobile_app`，
+> `mobile_app` 即 App 连接的 YoooClaw 智能硬件。输入参数 `--source smart_hardware` 仍作为
+> `mobile_app` 的别名；读取 JSON 的脚本请把旧值映射为 `mobile_app`。
+
 ### 3. Raw API
 
 `yoooclaw api <METHOD> <PATH> [--data ...]` 直达 daemon HTTP 端点，覆盖未被 service 命令封装的部分。
@@ -577,7 +581,7 @@ yoooclaw recording events --id <recording-id> --watch
 
 音频下载复用阿里云 OSS Go SDK v2 的分片下载（8 MiB 分片、并发 3、Range + ETag 校验）：网络抖动时在本次下载内从断点续传，不再删掉片段从头重下；单个音频上限 5 GiB，本地已有非空音频时直接复用。`recordings.result.write` 可在顶层带可选的 `ossTaskId`（上传服务返回的任务 ID，≤256 字符，必须同时带音频 URL；不是 `transcript.source.taskId` 这个 ASR 任务 ID）：下载遇到 403 时 daemon 用发起写入的 api-key 向云端换一个新签名 URL 再试，api-key 不会发往 OSS；`ossTaskId` 保存到录音索引，并在写入响应、`recording list/status` 与 `recording.status` 事件中回显（无值时省略），新写入不带它时清除旧值。
 
-录音配置与事件分别落在当前 profile 的 `recordings/asr-config.json` 与 `recordings/state/events.jsonl`；`transcripts/` / `summaries/` 文件名约定为 `<YYYYMMDDHH>_<标题>_<id>.md`，按文件名即可时间排序（升级前的旧文件保留原名，不做批量迁移）。经 `/gateway/recordings.*` 写入的录音会打上发起写入的 api-key 对应 `clientLabel`，读侧（`recording list/status/events`）同样按这个标签隔离——通过 Relay 隧道或某个 api-key 接入的客户端只能看到自己名下的录音，本机 loopback / gateway token 请求不受限，`synced-web-page` 与相关端点同理。
+录音配置落在当前 profile 的 `recordings/asr-config.json`。`recording events` 默认合并 `mobile_app` 的 `recordings/state/events.jsonl` 与 `capture_app` 的 `voice/recordings/state/events.jsonl`，按事件时间排序返回；每条事件都带 `sourceType`，合并结果仍可区分来源。`transcripts/` / `summaries/` 文件名约定为 `<YYYYMMDDHH>_<标题>_<id>.md`，按文件名即可时间排序（升级前的旧文件保留原名，不做批量迁移）。经 `/gateway/recordings.*` 写入的录音会打上发起写入的 api-key 对应 `clientLabel`，读侧（`recording list/status/events`）同样按这个标签隔离——通过 Relay 隧道或某个 api-key 接入的客户端只能看到自己名下的录音，本机 loopback / gateway token 请求不受限，`synced-web-page` 与相关端点同理。
 
 ### 数据迁移
 
