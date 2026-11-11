@@ -27,7 +27,7 @@ func TestOptionalDetailsRoundTripAndReceiptCounts(t *testing.T) {
 		t.Fatal("receipt count", batch.ItemCount)
 	}
 	store := NewStorage(t.TempDir())
-	if err := store.Append(batch); err != nil {
+	if _, err := store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -45,7 +45,7 @@ func TestOptionalDetailsRoundTripAndReceiptCounts(t *testing.T) {
 		t.Fatal("changed details")
 	}
 	first := append([]byte(nil), stored...)
-	if err := store.Append(batch); err != nil {
+	if _, err := store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -76,7 +76,8 @@ func TestDetailValidationRejectsMalformedRecordsBeforeStorage(t *testing.T) {
 		func(d *DailySnapshot) {
 			d.Medications[0].DoseEvents = append(d.Medications[0].DoseEvents, d.Medications[0].DoseEvents[0])
 		},
-		func(d *DailySnapshot) { d.Workouts[0].DurationMinutes = 46 },
+		func(d *DailySnapshot) { d.Workouts[0].DurationMinutes = -1 },
+		func(d *DailySnapshot) { d.Workouts[0].EndAt = "2026-11-05T00:00:00+08:00" },
 		func(d *DailySnapshot) { d.Workouts[0].StartAt = "2026-11-04T09:00:00+08:00" },
 		func(d *DailySnapshot) { d.IntakeRecords[0].Unit = "L" },
 		func(d *DailySnapshot) { d.IntakeRecords = append(d.IntakeRecords, d.IntakeRecords[0]) },
@@ -107,7 +108,7 @@ func TestDetailReplacementDoesNotRetainOldEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewStorage(t.TempDir())
-	if err = store.Append(batch); err != nil {
+	if _, err = store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	batch.daily.CollectedAt = "2026-11-05T19:00:00+08:00"
@@ -117,7 +118,7 @@ func TestDetailReplacementDoesNotRetainOldEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Append(next); err != nil {
+	if _, err = store.Append(next); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -129,7 +130,7 @@ func TestDetailReplacementDoesNotRetainOldEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Append(stale); err != nil {
+	if _, err = store.Append(stale); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -182,5 +183,44 @@ func TestDetailScalarsRequirePresenceAndAcceptZero(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Providers may round duration independently from start/end timestamps.
+// Preserve their reported value through both ingest and snapshot reads.
+func TestWorkoutDurationPreservesProviderRounding(t *testing.T) {
+	for _, duration := range []float64{5.5, 6, 7} {
+		var payload DailyBatch
+		if err := json.Unmarshal(detailsFixture(t), &payload); err != nil {
+			t.Fatal(err)
+		}
+		payload.Provider = "honor"
+		w := &payload.Days[0].Workouts[0]
+		w.StartAt = "2026-11-05T14:10:57+08:00"
+		w.EndAt = "2026-11-05T14:16:27+08:00"
+		w.DurationMinutes = duration
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch, err := Prepare(raw)
+		if err != nil {
+			t.Fatalf("duration %v rejected: %v", duration, err)
+		}
+		store := NewStorage(t.TempDir())
+		if _, err := store.Append(batch); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		day, _, err := ReadSnapshot(stored, "2026-11-05")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := day.Workouts[0].DurationMinutes; got != duration {
+			t.Fatalf("provider duration changed: got %v, want %v", got, duration)
+		}
 	}
 }

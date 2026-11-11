@@ -99,7 +99,7 @@ func TestHealthDetailsRemainAvailableAndCorrectionsChangeMemoryVersion(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Append(batch); err != nil {
+	if _, err = store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	now, _ := time.Parse(time.RFC3339, "2026-11-05T20:00:00+08:00")
@@ -128,7 +128,7 @@ func TestHealthDetailsRemainAvailableAndCorrectionsChangeMemoryVersion(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Append(batch); err != nil {
+	if _, err = store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	memory, err = Next(p, "health-data", Options{All: true}, false)

@@ -74,7 +74,7 @@ latest / average 延续现有命名规则，在 metric 基名后增加 `_latest`
 
 日 JSONL 继续先写原 header、普通指标及 type=sleepSession/session；新增四种可选行：
 `type=medications/workouts/intakeRecords/moods`，`records` 为完整数组。
-整批校验后按日期原子替换，较旧 collectedAt 不覆盖新快照。
+整批校验后按日期原子替换。覆盖顺序见下文“每日来源优先级”。
 
 `health-data get --date YYYY-MM-DD` 返回完整明细。
 默认 list、记忆批次和资产列表保留运动记录，用药返回元数据、事件数与最新事件；
@@ -82,3 +82,41 @@ latest / average 延续现有命名规则，在 metric 基名后增加 `_latest`
 完整明细均参与内容版本，单独修改一次服药事件也会被后续记忆批次检测到；
 没有新明细的旧日期保持原内容版本计算，不触发历史重消费。
 手机资产页现有数值展示增加名称/单位映射，本轮不新增用药等明细页面。
+
+运动 durationMinutes 保留厂商上报值。
+厂商取整口径不同，不再与起止时间差比较上限。
+仍校验时长非负且有限、结束时间不早于开始时间。
+
+## 每日来源优先级
+
+按日期选择整份快照，不跨来源拼接字段。
+provider 去除首尾空白并转为小写后保存。
+新上报和已有快照都按归一后的 provider 判断来源。
+`provider=healthkit` 表示苹果，其余非空来源归为非苹果类。
+provider 是开放标识，不设置厂商白名单；它不构成来源真实性认证。
+苹果可覆盖非苹果快照，不要求采集时间更新。
+该日期已有苹果快照时，忽略非苹果上报。
+安卓厂商与鸿蒙之间可以相互覆盖。
+同类按 collectedAt 比较，更旧的上报不覆盖。
+时间相等时，沿用后处理的上报覆盖。
+优先级仅限该日期，不影响其他日期的来源。
+被忽略的上报不改文件，不产生新的数据版本。
+
+## 健康上报回执
+
+`POST /health-data` 成功仍返回 `ok`、`ingested`、`deleted`。
+`ingested` 表示校验通过的请求条目数，不表示实际落盘数。
+条目口径见上文，`deleted` 仍为 0。
+新增 `days` 数组，按请求日期顺序返回写入决定：
+
+```json
+{"ok":true,"ingested":2,"deleted":0,"days":[{"date":"1997-01-01","applied":false,"reason":"apple_priority"},{"date":"1997-01-02","applied":true}]}
+```
+
+- `applied:true`：采用该日快照。幂等替换也返回 true，不代表版本变化。
+- `applied:false`、`reason:apple_priority`：已有苹果快照，忽略非苹果数据。
+- `applied:false`、`reason:stale_collected_at`：同类来源的采集时间更旧。
+
+跳过属于成功处理，无需原样重试。日志记录逐日决定及原因。
+写入失败仍返回 500；此前已完成的日期决定保留在日志中。
+多日期写入不是跨日期事务，客户端可按原请求幂等重试。

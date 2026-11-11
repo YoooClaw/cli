@@ -36,7 +36,7 @@ func TestSleepOnlyDayIsStoredCompletelyAndCorrectedByReplacement(t *testing.T) {
 		t.Fatal("session not counted in receipt")
 	}
 	for range 2 {
-		if err = store.Append(b); err != nil {
+		if _, err = store.Append(b); err != nil {
 			t.Fatal(err)
 		}
 	}

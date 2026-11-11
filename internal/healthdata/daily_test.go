@@ -21,7 +21,7 @@ func TestDailyUsesMeasurementDateAndReplacesRatherThanAdds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := store.Append(batch); err != nil {
+		if _, err := store.Append(batch); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -40,7 +40,7 @@ func TestDailyUsesMeasurementDateAndReplacesRatherThanAdds(t *testing.T) {
 	corrected := strings.ReplaceAll(dailyBody, "31502", "31510")
 	corrected = strings.ReplaceAll(corrected, "16:00:00", "17:00:00")
 	next, _ := Prepare([]byte(corrected))
-	if err := store.Append(next); err != nil {
+	if _, err := store.Append(next); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(path)
@@ -48,7 +48,7 @@ func TestDailyUsesMeasurementDateAndReplacesRatherThanAdds(t *testing.T) {
 		t.Fatalf("old total retained: %s", got)
 	}
 	// An older request finishing later cannot roll back a newer snapshot.
-	if err := store.Append(batch); err != nil {
+	if _, err := store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	later, _ := os.ReadFile(path)
@@ -88,7 +88,7 @@ func TestConcurrentDailySnapshotsAlwaysLeaveNewestCompleteResult(t *testing.T) {
 			body = strings.Replace(body, "31502", fmt.Sprint(n), 1)
 			batch, err := Prepare([]byte(body))
 			if err == nil {
-				err = store.Append(batch)
+				_, err = store.Append(batch)
 			}
 			if err != nil {
 				t.Error(err)
@@ -121,7 +121,7 @@ func TestUnknownRootFormatIsNotArchivedOrOverwritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	batch, _ := Prepare([]byte(dailyBody))
-	if err := NewStorage(dir).Append(batch); err == nil {
+	if _, err := NewStorage(dir).Append(batch); err == nil {
 		t.Fatal("unknown version overwritten")
 	}
 	got, _ := os.ReadFile(path)
@@ -144,7 +144,7 @@ func TestDailyUnknownRootFileAtOtherDateDoesNotBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := NewStorage(dir).Append(batch); err != nil {
+	if _, err := NewStorage(dir).Append(batch); err != nil {
 		t.Fatalf("stray root file blocked ingest: %v", err)
 	}
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, unknown) {
@@ -162,7 +162,7 @@ func TestDailyEmptyRootFileIsReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	batch, _ := Prepare([]byte(dailyBody))
-	if err := NewStorage(dir).Append(batch); err != nil {
+	if _, err := NewStorage(dir).Append(batch); err != nil {
 		t.Fatalf("empty root file blocked ingest: %v", err)
 	}
 	raw, err := os.ReadFile(path)

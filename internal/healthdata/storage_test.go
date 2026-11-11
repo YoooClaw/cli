@@ -23,7 +23,7 @@ func TestSnapshotsPreserveLargeNumbersPermissionsAndUnrelatedHistory(t *testing.
 		t.Fatal(err)
 	}
 	store := NewStorage(dir)
-	if err = store.Append(batch); err != nil {
+	if _, err = store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "2026-09-30.jsonl")
@@ -36,7 +36,7 @@ func TestSnapshotsPreserveLargeNumbersPermissionsAndUnrelatedHistory(t *testing.
 	if err = os.WriteFile(oldPath, historical, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Append(batch); err != nil {
+	if _, err = store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	kept, _ := os.ReadFile(oldPath)
