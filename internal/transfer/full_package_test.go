@@ -345,9 +345,14 @@ func TestMainWorkspaceFilesImportDirectly(t *testing.T) {
 	}
 }
 
-func TestImportMoreThan100000BusinessRecords(t *testing.T) {
+func TestImportBusinessRecordsBothSchemas(t *testing.T) {
+	testImportBusinessRecords(t, 100)
+}
+
+func testImportBusinessRecords(t *testing.T, count int) {
+	t.Helper()
 	root := t.TempDir()
-	rows := make([]map[string]any, 100001)
+	rows := make([]map[string]any, count)
 	for i := range rows {
 		rows[i] = map[string]any{"appName": "test", "title": fmt.Sprint(i), "content": "test", "timestamp": "2026-11-02T00:00:00Z"}
 	}
@@ -378,23 +383,28 @@ func TestImportMoreThan100000BusinessRecords(t *testing.T) {
 	}
 }
 
-func TestFullImportWithoutFileCountOrMetadataSizeCaps(t *testing.T) {
+func TestFullImportFilesAndMetadata(t *testing.T) {
+	testFullImportFilesAndMetadata(t, 100, 64*1024)
+}
+
+func testFullImportFilesAndMetadata(t *testing.T, count, paddingBytes int) {
+	t.Helper()
 	pkg := t.TempDir()
-	body := append([]byte(`{"jobs":[]}`), []byte(strings.Repeat(" ", 64*1024*1024))...)
+	body := append([]byte(`{"jobs":[]}`), []byte(strings.Repeat(" ", paddingBytes))...)
 	h := sha(string(body))
 	testutil.WriteFile(t, filepath.Join(pkg, "blobs", h), body)
 	m := Manifest{SchemaVersion: 2, PackageID: newUUID(), Files: []FullFile{{"cron", "main", "jobs.json", h, int64(len(body))}}}
 	emptyHash := sha("")
 	testutil.WriteFile(t, filepath.Join(pkg, "blobs", emptyHash), nil)
-	for i := 0; i < 100001; i++ {
+	for i := 0; i < count; i++ {
 		m.Files = append(m.Files, FullFile{"workspace", "main", fmt.Sprintf("files/%d.txt", i), emptyHash, 0})
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Valid JSON whitespace makes the manifest itself exceed the former 64 MiB cap.
-	b = append(b, []byte(strings.Repeat(" ", 64*1024*1024))...)
+	// Capacity tests use valid JSON whitespace to exceed the former 64 MiB cap.
+	b = append(b, []byte(strings.Repeat(" ", paddingBytes))...)
 	testutil.WriteFile(t, filepath.Join(pkg, "manifest.json"), b)
 	got, err := ReadPackage(pkg, ReadOptions{})
 	if err != nil {
