@@ -66,13 +66,13 @@ func detailText(s string, maximum int) bool { return strings.TrimSpace(s) != "" 
 func finiteNonnegative(n float64) bool      { return !math.IsNaN(n) && !math.IsInf(n, 0) && n >= 0 }
 func optionalQuantity(n *float64) bool      { return n == nil || finiteNonnegative(*n) }
 
-func detailInterval(id, start, end, date string, zone *time.Location, collected time.Time) (time.Duration, error) {
+func validateInterval(id, start, end, date string, zone *time.Location, collected time.Time) error {
 	a, ea := time.Parse(time.RFC3339Nano, start)
 	b, eb := time.Parse(time.RFC3339Nano, end)
 	if !detailText(id, 256) || ea != nil || eb != nil || b.Before(a) || a.After(collected) || a.In(zone).Format("2006-01-02") != date {
-		return 0, fmt.Errorf("invalid health detail identity, date or interval")
+		return fmt.Errorf("invalid health detail identity, date or interval")
 	}
-	return b.Sub(a), nil
+	return nil
 }
 
 func validateDetails(d DailySnapshot, zone *time.Location, collected time.Time) (int, error) {
@@ -103,7 +103,7 @@ func validateDetails(d DailySnapshot, zone *time.Location, collected time.Time) 
 			return 0, fmt.Errorf("too many medication dose events")
 		}
 		for _, e := range m.DoseEvents {
-			if _, err := detailInterval(e.ID, e.StartAt, e.EndAt, d.Date, zone, collected); err != nil {
+			if err := validateInterval(e.ID, e.StartAt, e.EndAt, d.Date, zone, collected); err != nil {
 				return 0, err
 			}
 			validStatus := map[string]bool{"not_interacted": true, "notification_not_sent": true, "snoozed": true, "taken": true, "skipped": true, "not_logged": true}
@@ -123,7 +123,7 @@ func validateDetails(d DailySnapshot, zone *time.Location, collected time.Time) 
 		}
 	}
 	for _, w := range d.Workouts {
-		_, err := detailInterval(w.ID, w.StartAt, w.EndAt, d.Date, zone, collected)
+		err := validateInterval(w.ID, w.StartAt, w.EndAt, d.Date, zone, collected)
 		if err != nil {
 			return 0, err
 		}
@@ -139,7 +139,7 @@ func validateDetails(d DailySnapshot, zone *time.Location, collected time.Time) 
 		}
 	}
 	for _, intake := range d.IntakeRecords {
-		if _, err := detailInterval(intake.ID, intake.StartAt, intake.EndAt, d.Date, zone, collected); err != nil {
+		if err := validateInterval(intake.ID, intake.StartAt, intake.EndAt, d.Date, zone, collected); err != nil {
 			return 0, err
 		}
 		expectedUnit := map[string]string{"dietary_water": "mL", "dietary_caffeine": "mg"}[intake.Metric]
@@ -148,7 +148,7 @@ func validateDetails(d DailySnapshot, zone *time.Location, collected time.Time) 
 		}
 	}
 	for _, mood := range d.Moods {
-		if _, err := detailInterval(mood.ID, mood.StartAt, mood.EndAt, d.Date, zone, collected); err != nil {
+		if err := validateInterval(mood.ID, mood.StartAt, mood.EndAt, d.Date, zone, collected); err != nil {
 			return 0, err
 		}
 		if !unique("mood", mood.ID) || (mood.Kind != "daily_mood" && mood.Kind != "momentary_emotion") || math.IsNaN(mood.Valence) || mood.Valence < -1 || mood.Valence > 1 || mood.Labels == nil || mood.Associations == nil || len(mood.Labels) > 64 || len(mood.Associations) > 32 {

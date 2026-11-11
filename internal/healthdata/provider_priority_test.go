@@ -43,7 +43,7 @@ func TestDailyProviderPriorityAndCollectionTime(t *testing.T) {
 				t.Run(prior+"/"+incoming+"/"+stamp, func(t *testing.T) {
 					store := NewStorage(t.TempDir())
 					first := providerBatch(t, prior, "2026-10-19T16:00:00+08:00", "2026-09-30")
-					if err := store.Append(first); err != nil {
+					if _, err := store.Append(first); err != nil {
 						t.Fatal(err)
 					}
 					path := filepath.Join(store.dir, "2026-09-30.jsonl")
@@ -53,8 +53,9 @@ func TestDailyProviderPriorityAndCollectionTime(t *testing.T) {
 					}
 					next := providerBatch(t, incoming, "2026-10-19T"+stamp+"+08:00", "2026-09-30")
 					next.daily.Days[0].Items = []json.RawMessage{json.RawMessage(`{"metric":"steps","name":"Steps","value":123,"unit":"steps"}`)}
-					if err := store.Append(next); err != nil {
-						t.Fatal(err)
+					results, err := store.Append(next)
+					if err != nil || len(results) != 1 {
+						t.Fatalf("results=%+v err=%v", results, err)
 					}
 					after, err := os.ReadFile(path)
 					if err != nil {
@@ -67,6 +68,19 @@ func TestDailyProviderPriorityAndCollectionTime(t *testing.T) {
 						replace = true
 					} else {
 						replace = stamp >= "16:00:00"
+					}
+					if results[0].Date != "2026-09-30" || results[0].Applied != replace {
+						t.Fatalf("unexpected decision: %+v", results)
+					}
+					wantReason := ""
+					if !replace {
+						wantReason = "stale_collected_at"
+						if prior == "healthkit" && incoming != "healthkit" {
+							wantReason = "apple_priority"
+						}
+					}
+					if results[0].Reason != wantReason {
+						t.Fatalf("unexpected reason: %+v", results)
 					}
 					if !replace {
 						if !bytes.Equal(before, after) {
@@ -81,7 +95,7 @@ func TestDailyProviderPriorityAndCollectionTime(t *testing.T) {
 					if header.Provider != incoming || len(day.Items) != 1 || !bytes.Contains(day.Items[0], []byte(`"value":123`)) {
 						t.Fatalf("incoming complete snapshot was not selected: %s", after)
 					}
-					if err := store.Append(next); err != nil {
+					if _, err := store.Append(next); err != nil {
 						t.Fatal(err)
 					}
 					repeated, _ := os.ReadFile(path)
@@ -96,10 +110,10 @@ func TestDailyProviderPriorityAndCollectionTime(t *testing.T) {
 
 func TestApplePriorityIsPerDayWithinBatch(t *testing.T) {
 	store := NewStorage(t.TempDir())
-	if err := store.Append(providerBatch(t, "healthkit", "2026-10-19T15:00:00+08:00", "2026-09-30")); err != nil {
+	if _, err := store.Append(providerBatch(t, "healthkit", "2026-10-19T15:00:00+08:00", "2026-09-30")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(providerBatch(t, "honor", "2026-10-19T16:00:00+08:00", "2026-09-30", "2026-10-01")); err != nil {
+	if _, err := store.Append(providerBatch(t, "honor", "2026-10-19T16:00:00+08:00", "2026-09-30", "2026-10-01")); err != nil {
 		t.Fatal(err)
 	}
 	for date, provider := range map[string]string{"2026-09-30": "healthkit", "2026-10-01": "honor"} {
@@ -111,5 +125,54 @@ func TestApplePriorityIsPerDayWithinBatch(t *testing.T) {
 		if err != nil || header.Provider != provider {
 			t.Fatalf("date %s: header=%+v err=%v", date, header, err)
 		}
+	}
+}
+
+func TestProviderNormalizationAndExistingAppleHeader(t *testing.T) {
+	store := NewStorage(t.TempDir())
+	for _, provider := range []string{" HealthKit ", "HEALTHKIT", "healthkit\t"} {
+		b := providerBatch(t, provider, "2026-10-19T16:00:00+08:00", "2026-09-30")
+		if b.daily.Provider != "healthkit" {
+			t.Fatalf("provider not normalized: %q", b.daily.Provider)
+		}
+		if _, err := store.Append(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(store.dir, "2026-09-30.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise an existing snapshot written before provider normalization.
+	raw = bytes.Replace(raw, []byte(`"provider":"healthkit"`), []byte(`"provider":" HealthKit "`), 1)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	b := providerBatch(t, " Future_Vendor ", "2026-10-19T17:00:00+08:00", "2026-09-30")
+	if b.daily.Provider != "future_vendor" {
+		t.Fatalf("provider=%q", b.daily.Provider)
+	}
+	results, err := store.Append(b)
+	if err != nil || len(results) != 1 || results[0].Applied || results[0].Reason != "apple_priority" {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(raw, after) {
+		t.Fatal("skipped request changed existing snapshot", err)
+	}
+}
+
+func TestDailyWriteResultsSurviveLaterFailure(t *testing.T) {
+	store := NewStorage(t.TempDir())
+	if err := os.Mkdir(filepath.Join(store.dir, "2026-10-01.jsonl"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	results, err := store.Append(providerBatch(t, "honor", "2026-10-19T16:00:00+08:00", "2026-09-30", "2026-10-01"))
+	if err == nil || len(results) != 1 || results[0].Date != "2026-09-30" || !results[0].Applied {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	if _, err := os.Stat(filepath.Join(store.dir, "2026-09-30.jsonl")); err != nil {
+		t.Fatal(err)
 	}
 }

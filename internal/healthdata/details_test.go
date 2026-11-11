@@ -27,7 +27,7 @@ func TestOptionalDetailsRoundTripAndReceiptCounts(t *testing.T) {
 		t.Fatal("receipt count", batch.ItemCount)
 	}
 	store := NewStorage(t.TempDir())
-	if err := store.Append(batch); err != nil {
+	if _, err := store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -45,7 +45,7 @@ func TestOptionalDetailsRoundTripAndReceiptCounts(t *testing.T) {
 		t.Fatal("changed details")
 	}
 	first := append([]byte(nil), stored...)
-	if err := store.Append(batch); err != nil {
+	if _, err := store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -108,7 +108,7 @@ func TestDetailReplacementDoesNotRetainOldEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewStorage(t.TempDir())
-	if err = store.Append(batch); err != nil {
+	if _, err = store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	batch.daily.CollectedAt = "2026-11-05T19:00:00+08:00"
@@ -118,7 +118,7 @@ func TestDetailReplacementDoesNotRetainOldEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Append(next); err != nil {
+	if _, err = store.Append(next); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -130,7 +130,7 @@ func TestDetailReplacementDoesNotRetainOldEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Append(stale); err != nil {
+	if _, err = store.Append(stale); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
@@ -208,7 +208,7 @@ func TestWorkoutDurationPreservesProviderRounding(t *testing.T) {
 			t.Fatalf("duration %v rejected: %v", duration, err)
 		}
 		store := NewStorage(t.TempDir())
-		if err := store.Append(batch); err != nil {
+		if _, err := store.Append(batch); err != nil {
 			t.Fatal(err)
 		}
 		stored, err := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))

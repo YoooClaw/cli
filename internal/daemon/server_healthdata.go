@@ -24,12 +24,17 @@ func (s *server) handleHealthDataIngest(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errBody("INVALID_PARAMS", "collectedAt is too far in the future"))
 		return
 	}
-	if err := s.healthDataStorage.Append(batch); err != nil {
+	days, err := s.healthDataStorage.Append(batch)
+	for _, day := range days {
+		s.logger.Info(fmt.Sprintf("[health-data] requestId=%s date=%s applied=%t reason=%s",
+			r.Header.Get(relay.InternalRequestIDHeader), day.Date, day.Applied, day.Reason))
+	}
+	if err != nil {
 		s.logger.Error(fmt.Sprintf("[health-data] requestId=%s write failed: %v", r.Header.Get(relay.InternalRequestIDHeader), err))
 		writeJSON(w, http.StatusInternalServerError, errBody("HEALTH_DATA_WRITE_FAILED", "健康数据保存失败"))
 		return
 	}
 	s.logger.Info(fmt.Sprintf("[health-data] requestId=%s ingested=%d deleted=%d",
 		r.Header.Get(relay.InternalRequestIDHeader), batch.ItemCount, batch.DeletedCount))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ingested": batch.ItemCount, "deleted": batch.DeletedCount})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ingested": batch.ItemCount, "deleted": batch.DeletedCount, "days": days})
 }

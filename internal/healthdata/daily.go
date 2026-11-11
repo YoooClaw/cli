@@ -47,7 +47,8 @@ func prepareDaily(raw json.RawMessage) (*DailyBatch, time.Time, int, error) {
 	if err := decoder.Decode(&b); err != nil {
 		return nil, time.Time{}, 0, fmt.Errorf("invalid daily snapshot: %w", err)
 	}
-	if b.SchemaVersion != 3 || strings.TrimSpace(b.Provider) == "" {
+	b.Provider = normalizeProvider(b.Provider)
+	if b.SchemaVersion != 3 || b.Provider == "" {
 		return nil, time.Time{}, 0, fmt.Errorf("schemaVersion=3 and provider are required")
 	}
 	collected, err := time.Parse(time.RFC3339Nano, b.CollectedAt)
@@ -132,3 +133,10 @@ func prepareDaily(raw json.RawMessage) (*DailyBatch, time.Time, int, error) {
 	}
 	return &b, collected, count, nil
 }
+
+// Providers are an open namespace; normalization does not authenticate a source.
+func normalizeProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func isAppleProvider(provider string) bool { return normalizeProvider(provider) == "healthkit" }

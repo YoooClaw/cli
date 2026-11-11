@@ -33,7 +33,7 @@ func seedSleep(t *testing.T, s *Service, count, sourceLength int) (string, strin
 		t.Fatal(err)
 	}
 	store := healthdata.NewStorage(s.sources["health-data"].Dir)
-	if err = store.Append(batch); err != nil {
+	if _, err = store.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	page := get(t, s, "health-data", url.Values{})

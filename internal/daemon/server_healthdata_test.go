@@ -263,3 +263,58 @@ func TestHealthDetailsHTTPReceiptAndStoredRecords(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthDataReceiptReportsAppliedAndSkippedDays(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	send := func(provider, collected string, dates ...string) []struct {
+		Date    string `json:"date"`
+		Applied bool   `json:"applied"`
+		Reason  string `json:"reason"`
+	} {
+		t.Helper()
+		days := make([]map[string]any, 0, len(dates))
+		for _, date := range dates {
+			days = append(days, map[string]any{"date": date, "sleepSessions": []any{}, "items": []any{map[string]any{"metric": "steps", "name": "Steps", "value": 1, "unit": "steps"}}})
+		}
+		body, err := json.Marshal(map[string]any{"schemaVersion": 3, "provider": provider, "timeZone": "Asia/Shanghai", "collectedAt": collected, "days": days})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", bytes.NewReader(body)))
+		assertHealthReceipt(t, response.Code, response.Body.Bytes(), len(dates), 0)
+		var receipt struct {
+			Days []struct {
+				Date    string `json:"date"`
+				Applied bool   `json:"applied"`
+				Reason  string `json:"reason"`
+			} `json:"days"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+			t.Fatal(err)
+		}
+		if len(receipt.Days) != len(dates) {
+			t.Fatalf("missing decisions: %s", response.Body.String())
+		}
+		return receipt.Days
+	}
+	first := send(" HealthKit ", "2026-10-19T09:10:00+08:00", "2026-10-18")
+	if !first[0].Applied || first[0].Reason != "" {
+		t.Fatalf("first: %+v", first)
+	}
+	mixed := send("honor", "2026-10-19T09:20:00+08:00", "2026-10-18", "2026-10-19")
+	if mixed[0].Date != "2026-10-18" || mixed[0].Applied || mixed[0].Reason != "apple_priority" || mixed[1].Date != "2026-10-19" || !mixed[1].Applied || mixed[1].Reason != "" {
+		t.Fatalf("mixed: %+v", mixed)
+	}
+	stale := send("HEALTHKIT", "2026-10-19T09:00:00+08:00", "2026-10-18")
+	if stale[0].Applied || stale[0].Reason != "stale_collected_at" {
+		t.Fatalf("stale: %+v", stale)
+	}
+	// Apple can supersede the newer Android snapshot, then replay identically.
+	for i := 0; i < 2; i++ {
+		applied := send("healthkit", "2026-10-19T09:00:00+08:00", "2026-10-19")
+		if !applied[0].Applied || applied[0].Reason != "" {
+			t.Fatalf("applied: %+v", applied)
+		}
+	}
+}

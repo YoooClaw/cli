@@ -154,7 +154,7 @@ func TestHealthRealStoreUpdatesReplaceInsteadOfAccumulate(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		if e = store.Append(b); e != nil {
+		if _, e = store.Append(b); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -174,7 +174,7 @@ func TestHealthOptionalDetailsAreExposedWithoutChangingOldShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err = healthdata.NewStorage(dir).Append(batch); err != nil {
+	if _, err = healthdata.NewStorage(dir).Append(batch); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := os.ReadFile(dir + "/2026-11-05.jsonl")
