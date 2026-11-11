@@ -286,6 +286,39 @@ func TestHealthDataRecordDropKeepsDayAndReportsWarnings(t *testing.T) {
 	}
 }
 
+func TestHealthDataCategoryDropLogsWarning(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	body := `{"schemaVersion":3,"provider":"honor","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T09:10:00+08:00","days":[` +
+		`{"date":"2026-10-19","sleepSessions":[],` +
+		`"items":[{"metric":"steps","name":"Steps","value":1,"unit":"steps"}],` +
+		`"workouts":{"not":"an array"}}]}`
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("category drop rejected the request: %d %s", response.Code, response.Body.String())
+	}
+	var receipt struct {
+		OK   bool `json:"ok"`
+		Days []struct {
+			Applied  bool     `json:"applied"`
+			Dropped  int      `json:"dropped"`
+			Warnings []string `json:"warnings"`
+		} `json:"days"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.OK || len(receipt.Days) != 1 || !receipt.Days[0].Applied || receipt.Days[0].Dropped != 0 ||
+		!strings.Contains(strings.Join(receipt.Days[0].Warnings, "\n"), "workouts") {
+		t.Fatalf("receipt=%+v body=%s", receipt, response.Body.String())
+	}
+	logs, err := os.ReadFile(srv.logger.logFile)
+	if err != nil || !strings.Contains(string(logs), "date=2026-10-19 applied=true dropped=0 warnings=") ||
+		!strings.Contains(string(logs), "category dropped") {
+		t.Fatalf("category drop not logged: %s err=%v", logs, err)
+	}
+}
+
 func TestHealthDataAllInvalidDaysStillReturnsPerDayReasons(t *testing.T) {
 	srv, _ := newTestServer(t, "")
 	body := `{"schemaVersion":3,"provider":"honor","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T09:10:00+08:00","days":[` +

@@ -194,6 +194,82 @@ func TestDetailScalarsRequirePresenceAndAcceptZero(t *testing.T) {
 	}
 }
 
+// Inner type errors must drop only the bad child element, not its parent.
+func TestInnerTypeErrorsDropOnlyTheBadElement(t *testing.T) {
+	cases := []struct {
+		name   string
+		warn   string
+		change func(day map[string]any)
+		check  func(t *testing.T, day DailySnapshot)
+	}{
+		{
+			name: "dose event",
+			warn: "doseEvents[1]",
+			change: func(day map[string]any) {
+				medication := day["medications"].([]any)[0].(map[string]any)
+				medication["doseEvents"] = append(medication["doseEvents"].([]any), map[string]any{
+					"id": "bad-dose", "startAt": "2026-11-05T08:00:00+08:00", "endAt": "2026-11-05T08:00:00+08:00",
+					"status": "taken", "scheduleType": "as_needed", "quantity": "wrong-type", "unit": "count",
+				})
+			},
+			check: func(t *testing.T, day DailySnapshot) {
+				if len(day.Medications) != 1 || len(day.Medications[0].DoseEvents) != 1 {
+					t.Fatalf("medication or its valid dose lost: %+v", day.Medications)
+				}
+			},
+		},
+		{
+			name: "workout metric",
+			warn: "items[1]",
+			change: func(day map[string]any) {
+				workout := day["workouts"].([]any)[0].(map[string]any)
+				workout["items"] = append(workout["items"].([]any), map[string]any{
+					"metric": "bad_metric", "name": "Bad", "value": "wrong-type", "unit": "bpm",
+				})
+			},
+			check: func(t *testing.T, day DailySnapshot) {
+				if len(day.Workouts) != 1 || len(day.Workouts[0].Items) != 1 {
+					t.Fatalf("workout or its valid metric lost: %+v", day.Workouts)
+				}
+			},
+		},
+		{
+			name: "mood label",
+			warn: "labels",
+			change: func(day map[string]any) {
+				mood := day["moods"].([]any)[0].(map[string]any)
+				mood["labels"] = append(mood["labels"].([]any), 123)
+			},
+			check: func(t *testing.T, day DailySnapshot) {
+				if len(day.Moods) != 1 || len(day.Moods[0].Labels) != 1 || day.Moods[0].Labels[0] != "calm" {
+					t.Fatalf("mood or its valid label lost: %+v", day.Moods)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			if err := json.Unmarshal(detailsFixture(t), &body); err != nil {
+				t.Fatal(err)
+			}
+			tc.change(body["days"].([]any)[0].(map[string]any))
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch, dropped, warnings := drops(raw)
+			if dropped != 1 || batch.dayInfo[0].err != nil {
+				t.Fatalf("parent dropped instead of the bad element: dropped=%d err=%v", dropped, batch.dayInfo[0].err)
+			}
+			if !strings.Contains(strings.Join(warnings, "\n"), tc.warn) {
+				t.Fatalf("warning does not name the bad element: %v", warnings)
+			}
+			tc.check(t, batch.daily.Days[0])
+		})
+	}
+}
+
 // A single malformed record must not cost its category or its day.
 func TestDroppedRecordKeepsCategoryAndDay(t *testing.T) {
 	var payload DailyBatch

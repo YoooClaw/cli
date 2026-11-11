@@ -79,6 +79,41 @@ func detailText(s string, maximum int) bool { return strings.TrimSpace(s) != "" 
 func finiteNonnegative(n float64) bool      { return !math.IsNaN(n) && !math.IsInf(n, 0) && n >= 0 }
 func optionalQuantity(n *float64) bool      { return n == nil || finiteNonnegative(*n) }
 
+// rawMedication keeps doseEvents undecoded so a malformed dose event cannot
+// cost its siblings or the whole medication.
+type rawMedication struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Nickname    *string           `json:"nickname,omitempty"`
+	Form        string            `json:"form"`
+	IsArchived  bool              `json:"isArchived"`
+	HasSchedule bool              `json:"hasSchedule"`
+	DoseEvents  []json.RawMessage `json:"doseEvents"`
+}
+
+// rawWorkout keeps items undecoded for the same reason.
+type rawWorkout struct {
+	ID              string            `json:"id"`
+	Activity        string            `json:"activity"`
+	Name            string            `json:"name"`
+	StartAt         string            `json:"startAt"`
+	EndAt           string            `json:"endAt"`
+	DurationMinutes float64           `json:"durationMinutes"`
+	Items           []json.RawMessage `json:"items"`
+}
+
+// rawMood keeps labels and associations undecoded so one malformed entry does
+// not discard the mood or its remaining labels.
+type rawMood struct {
+	ID           string            `json:"id"`
+	StartAt      string            `json:"startAt"`
+	EndAt        string            `json:"endAt"`
+	Kind         string            `json:"kind"`
+	Valence      float64           `json:"valence"`
+	Labels       []json.RawMessage `json:"labels"`
+	Associations []json.RawMessage `json:"associations"`
+}
+
 // decodeRecord keeps each record's structural errors local to that record.
 func decodeRecord(raw json.RawMessage, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -144,8 +179,8 @@ func filterMedications(records []json.RawMessage, n int, date string, zone *time
 			warnings = append(warnings, fmt.Sprintf("days[%d].medications: %d records exceed limit %d", n, excess, maxMedicationsPerDay))
 			break
 		}
-		var m Medication
-		if err := decodeRecord(record, &m); err != nil {
+		var m rawMedication
+		if err := decodeDetail(record, &m, "isArchived", "hasSchedule"); err != nil {
 			dropped++
 			warnings = append(warnings, fmt.Sprintf("days[%d].medications[%d]: %v", n, i, err))
 			continue
@@ -156,10 +191,16 @@ func filterMedications(records []json.RawMessage, n int, date string, zone *time
 			continue
 		}
 		doses := make([]MedicationDose, 0, len(m.DoseEvents))
-		for j, e := range m.DoseEvents {
+		for j, record := range m.DoseEvents {
 			if totalDoses+len(doses) >= maxDosesPerDay {
 				dropped++
 				warnings = append(warnings, fmt.Sprintf("days[%d].medications[%d].doseEvents[%d]: dose limit %d reached", n, i, j, maxDosesPerDay))
+				continue
+			}
+			var e MedicationDose
+			if err := decodeRecord(record, &e); err != nil {
+				dropped++
+				warnings = append(warnings, fmt.Sprintf("days[%d].medications[%d].doseEvents[%d]: invalid medication dose: %v", n, i, j, err))
 				continue
 			}
 			if seenDoses["dose:"+e.ID] || validDose(e, date, zone, collected) != nil {
@@ -178,8 +219,15 @@ func filterMedications(records []json.RawMessage, n int, date string, zone *time
 			continue
 		}
 		seen["medication:"+m.ID] = true
-		m.DoseEvents = doses
-		kept = append(kept, m)
+		kept = append(kept, Medication{
+			ID:          m.ID,
+			Name:        m.Name,
+			Nickname:    m.Nickname,
+			Form:        m.Form,
+			IsArchived:  m.IsArchived,
+			HasSchedule: m.HasSchedule,
+			DoseEvents:  doses,
+		})
 	}
 	return kept, dropped, warnings
 }
@@ -198,8 +246,8 @@ func filterWorkouts(records []json.RawMessage, n int, date string, zone *time.Lo
 			warnings = append(warnings, fmt.Sprintf("days[%d].workouts: %d records exceed limit %d", n, excess, maxWorkoutsPerDay))
 			break
 		}
-		var w Workout
-		if err := decodeRecord(record, &w); err != nil {
+		var w rawWorkout
+		if err := decodeDetail(record, &w, "durationMinutes"); err != nil {
 			dropped++
 			warnings = append(warnings, fmt.Sprintf("days[%d].workouts[%d]: %v", n, i, err))
 			continue
@@ -216,12 +264,18 @@ func filterWorkouts(records []json.RawMessage, n int, date string, zone *time.Lo
 		}
 		items := make([]DetailMetric, 0, len(w.Items))
 		seenMetrics := map[string]bool{}
-		for j, item := range w.Items {
+		for j, record := range w.Items {
 			if len(items) >= maxWorkoutMetrics {
 				excess := len(w.Items) - j
 				dropped += excess
 				warnings = append(warnings, fmt.Sprintf("days[%d].workouts[%d].items: %d metrics exceed limit %d", n, i, excess, maxWorkoutMetrics))
 				break
+			}
+			var item DetailMetric
+			if err := decodeRecord(record, &item); err != nil {
+				dropped++
+				warnings = append(warnings, fmt.Sprintf("days[%d].workouts[%d].items[%d]: invalid workout metric: %v", n, i, j, err))
+				continue
 			}
 			if !metricPattern.MatchString(item.Metric) || seenMetrics[item.Metric] || !detailText(item.Name, 256) || !detailText(item.Unit, 128) || !finiteNonnegative(item.Value) {
 				dropped++
@@ -232,8 +286,15 @@ func filterWorkouts(records []json.RawMessage, n int, date string, zone *time.Lo
 			items = append(items, item)
 		}
 		seen["workout:"+w.ID] = true
-		w.Items = items
-		kept = append(kept, w)
+		kept = append(kept, Workout{
+			ID:              w.ID,
+			Activity:        w.Activity,
+			Name:            w.Name,
+			StartAt:         w.StartAt,
+			EndAt:           w.EndAt,
+			DurationMinutes: w.DurationMinutes,
+			Items:           items,
+		})
 	}
 	return kept, dropped, warnings
 }
@@ -286,8 +347,8 @@ func filterMoods(records []json.RawMessage, n int, date string, zone *time.Locat
 			warnings = append(warnings, fmt.Sprintf("days[%d].moods: %d records exceed limit %d", n, excess, maxMoodsPerDay))
 			break
 		}
-		var mood Mood
-		if err := decodeRecord(record, &mood); err != nil {
+		var mood rawMood
+		if err := decodeDetail(record, &mood, "valence"); err != nil {
 			dropped++
 			warnings = append(warnings, fmt.Sprintf("days[%d].moods[%d]: %v", n, i, err))
 			continue
@@ -313,22 +374,29 @@ func filterMoods(records []json.RawMessage, n int, date string, zone *time.Locat
 			warnings = append(warnings, fmt.Sprintf("days[%d].moods[%d].associations: %d invalid associations dropped", n, i, associationDrops))
 		}
 		seen["mood:"+mood.ID] = true
-		mood.Labels = labels
-		mood.Associations = associations
-		kept = append(kept, mood)
+		kept = append(kept, Mood{
+			ID:           mood.ID,
+			StartAt:      mood.StartAt,
+			EndAt:        mood.EndAt,
+			Kind:         mood.Kind,
+			Valence:      mood.Valence,
+			Labels:       labels,
+			Associations: associations,
+		})
 	}
 	return kept, dropped, warnings
 }
 
-func filterMoodList(in []string, maximum int) ([]string, int) {
+func filterMoodList(in []json.RawMessage, maximum int) ([]string, int) {
 	kept := make([]string, 0, len(in))
 	dropped := 0
-	for i, label := range in {
+	for i, raw := range in {
 		if len(kept) >= maximum {
 			dropped += len(in) - i
 			break
 		}
-		if !metricPattern.MatchString(label) {
+		var label string
+		if decodeRecord(raw, &label) != nil || !metricPattern.MatchString(label) {
 			dropped++
 			continue
 		}

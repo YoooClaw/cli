@@ -35,7 +35,8 @@ func (s *server) handleHealthDataIngest(w http.ResponseWriter, r *http.Request) 
 			rejected++
 		}
 		if day.Applied {
-			if day.Dropped > 0 {
+			// 类别结构错误只产生 warning 而没有可计数的记录，也要留痕。
+			if day.Dropped > 0 || len(day.Warnings) > 0 {
 				s.logger.Warn(fmt.Sprintf("[health-data] requestId=%s date=%s applied=true dropped=%d warnings=%s",
 					r.Header.Get(relay.InternalRequestIDHeader), day.Date, day.Dropped, strings.Join(day.Warnings, "; ")))
 			} else {
