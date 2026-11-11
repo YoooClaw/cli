@@ -31,6 +31,11 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out ./...
 
+      # Keep real 100001-record / >64 MiB boundary checks mandatory, without
+      # multiplying their cost through race and coverage instrumentation.
+      - name: Transfer capacity regression
+        run: scripts/test-transfer-scale.sh
+
       - name: Verify OSS publication uploader
         run: |
           go -C tools/oss-upload test -race ./...
