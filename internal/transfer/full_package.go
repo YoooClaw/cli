@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -33,7 +34,10 @@ type SeenIndex struct {
 
 func logicalKey(f FullFile) string { return f.Category + ":" + f.Scope + ":" + f.Path }
 func validRelative(p string) bool {
-	if p == "" || len(p) > 4096 || strings.ContainsAny(p, "\\\x00\r\n\t") || strings.HasPrefix(p, "/") {
+	if filepath.Separator == '\\' && (strings.ContainsAny(p, "\\:\r\n\t") || filepath.IsAbs(p)) {
+		return false
+	}
+	if p == "" || len(p) > 4096 || strings.ContainsRune(p, 0) || strings.HasPrefix(p, "/") {
 		return false
 	}
 	for _, c := range strings.Split(p, "/") {
