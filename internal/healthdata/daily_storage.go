@@ -39,8 +39,16 @@ func (s *Storage) replaceDaily(b *DailyBatch) error {
 			scan := bufio.NewScanner(bytes.NewReader(prior))
 			scan.Buffer(make([]byte, 1024), len(prior)+1)
 			if scan.Scan() && json.Unmarshal(scan.Bytes(), &header) == nil && header.SchemaVersion == 3 && header.Date == day.Date {
-				if previous, e := time.Parse(time.RFC3339Nano, header.UpdatedAt); e == nil && previous.After(collected) {
+				// Apple owns the complete day once present. All other providers
+				// share one priority class, including Android and Harmony vendors.
+				priorApple, incomingApple := header.Provider == "healthkit", b.Provider == "healthkit"
+				if priorApple && !incomingApple {
 					continue
+				}
+				if priorApple == incomingApple {
+					if previous, e := time.Parse(time.RFC3339Nano, header.UpdatedAt); e == nil && previous.After(collected) {
+						continue
+					}
 				}
 			}
 		}
