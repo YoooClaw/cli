@@ -20,7 +20,14 @@ import (
 	"github.com/YoooClaw/cli/internal/errs"
 )
 
-const apiPath = "/api/device/file/plugin"
+const (
+	apiPath = "/api/device/file/plugin"
+	// maxHTTPErrorBody 是失败响应正文的读取上限，够覆盖服务端错误码与
+	// Retry-After 提示即可，避免把大响应整个读进内存。
+	maxHTTPErrorBody = 1024
+	// maxHTTPErrorRunes 限制写入日志的正文摘要长度，防止污染日志行。
+	maxHTTPErrorRunes = 300
+)
 
 var taskRE = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var bucketRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
@@ -38,10 +45,17 @@ func failure(code, message string) error { return errs.New("YOOOCLAW_TRANSFER_"+
 type HTTPStatusError struct {
 	StatusCode int
 	Err        *errs.Error
+	// Detail 是只进本地日志的失败上下文（有限长度的响应体摘要）。它刻意不
+	// 进入 Error()：该错误会返回客户端并写入导出记录，而服务端可能在响应
+	// 里回显凭据或签名地址。
+	Detail string
 }
 
 func (e *HTTPStatusError) Error() string { return e.Err.Error() }
 func (e *HTTPStatusError) Unwrap() error { return e.Err }
+
+// Diagnostic returns local-only failure detail for daemon logs.
+func (e *HTTPStatusError) Diagnostic() string { return e.Detail }
 
 // IsTaskGone reports the file-service taskId lookup semantics: 404 means the
 // record does not exist, 409 means it is unfinished or deleted. C-005 uses
@@ -133,9 +147,11 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any) e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, detail := httpFailure(req, resp, c.apiKey)
 		return &HTTPStatusError{
 			StatusCode: resp.StatusCode,
-			Err:        errs.New("YOOOCLAW_TRANSFER_CLOUD_HTTP_ERROR", fmt.Sprintf("迁移服务返回 HTTP %d", resp.StatusCode)),
+			Err:        errs.New("YOOOCLAW_TRANSFER_CLOUD_HTTP_ERROR", message),
+			Detail:     detail,
 		}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
@@ -164,6 +180,56 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any) e
 	}
 	return nil
 }
+
+// httpFailure 汇总服务端排查所需的上下文。message 会进入客户端错误与导出
+// 记录，因此只放方法、主机、路径和 Retry-After；响应体可能回显凭据，只放进
+// detail 供本地日志使用。
+func httpFailure(req *http.Request, resp *http.Response, apiKey string) (message, detail string) {
+	message = fmt.Sprintf("迁移服务返回 HTTP %d", resp.StatusCode)
+	if req != nil && req.URL != nil {
+		message += ": " + req.Method + " " + req.URL.Host + req.URL.Path
+	}
+	if retryAfter := strings.TrimSpace(resp.Header.Get("Retry-After")); retryAfter != "" {
+		message += ", Retry-After=" + retryAfter
+	}
+	if resp.Body == nil {
+		return message, ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPErrorBody+1))
+	if err != nil {
+		return message, ""
+	}
+	if excerpt := errorBodyExcerpt(raw, apiKey); excerpt != "" {
+		detail = "body=" + excerpt
+	}
+	return message, detail
+}
+
+func errorBodyExcerpt(raw []byte, apiKey string) string {
+	text := strings.ToValidUTF8(string(raw), "")
+	if apiKey != "" {
+		text = strings.ReplaceAll(text, apiKey, "[redacted]")
+	}
+	text = strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t':
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, text)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+	if runes := []rune(text); len(runes) > maxHTTPErrorRunes {
+		text = string(runes[:maxHTTPErrorRunes]) + "…"
+	}
+	return text
+}
+
 func validateOSSURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Fragment != "" || (u.Port() != "" && u.Port() != "443") || !ossHostRE.MatchString(u.Hostname()) {

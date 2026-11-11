@@ -244,7 +244,7 @@ func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, clo
 		if errors.Is(err, ErrExportObjectGone) {
 			return s.expireStatus(recordingID, exportID), nil
 		}
-		s.logger.Warn("[recording-export] 签名链接刷新失败: " + safeExportError(err) + ": " + exportID)
+		s.logger.Warn("[recording-export] 签名链接刷新失败: " + exportErrorLog(err) + ": " + exportID)
 		return status, ErrExportLinkUnavailable
 	}
 	// 刷新签名可能耗时，返回前再复核一次来源；仍使用廉价文件身份和文本
@@ -386,7 +386,7 @@ func (s *ExportService) runExport(recordingID, exportID string, cloud ExportClou
 	if err != nil {
 		code, message, scope, retryable := exportRunFailure(err)
 		s.fail(recordingID, exportID, code, message, scope, retryable)
-		s.logger.Warn("[recording-export] 导出失败: " + exportID + ", " + safeExportError(err))
+		s.logger.Warn("[recording-export] 导出失败: " + exportID + ", " + exportErrorLog(err))
 		return
 	}
 	if upload.TaskID == "" || upload.ObjectKey == "" || (taskID != "" && upload.TaskID != taskID) {
@@ -482,13 +482,31 @@ func exportRunFailure(err error) (code, message, scope string, retryable bool) {
 	return "EXPORT_UPLOAD_FAILED", safeExportError(err), "item", true
 }
 
+// exportErrorLog 把失败原因和只进本地日志的服务端响应摘要拼在一起。摘要可
+// 能包含服务端回显内容，因此只用于 daemon 日志，不写入导出记录或返回客户端。
+func exportErrorLog(err error) string {
+	text := safeExportError(err)
+	var detail interface{ Diagnostic() string }
+	if errors.As(err, &detail) {
+		if d := detail.Diagnostic(); d != "" {
+			text += " | " + d
+		}
+	}
+	return text
+}
+
+// maxExportErrorMessage 限制落盘并返回客户端的失败信息长度。迁移服务的失败
+// 信息已带上方法、主机、路径和 Retry-After，需要比旧文案更宽的上限，但仍
+// 不能在索引里塞进无界内容。
+const maxExportErrorMessage = 500
+
 func safeExportError(err error) string {
 	if err == nil {
 		return "export failed"
 	}
 	text := err.Error()
-	if len(text) > 300 {
-		text = text[:300]
+	if runes := []rune(text); len(runes) > maxExportErrorMessage {
+		text = string(runes[:maxExportErrorMessage]) + "…"
 	}
 	return text
 }
