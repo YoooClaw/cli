@@ -130,7 +130,8 @@ func TestSDKDownloadResumesInterruptedRange(t *testing.T) {
 		t.Fatalf("interrupted=%v resumed=%v", interrupted, resumed)
 	}
 }
-func TestDownloadRejectsOversizeAndWrongRange(t *testing.T) {
+func TestDownloadAdapterRejectsExplicitLimitAndWrongRange(t *testing.T) {
+	const adapterLimit int64 = 5 << 30
 	for _, scenario := range []string{"oversize", "wrong-range", "changed-etag", "redirect"} {
 		t.Run(scenario, func(t *testing.T) {
 			c := mockOSSClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +143,7 @@ func TestDownloadRejectsOversizeAndWrongRange(t *testing.T) {
 				rng := "bytes 0-0/10"
 				etag := `"stable"`
 				if scenario == "oversize" {
-					total = MaxBytes + 1
+					total = adapterLimit + 1
 					rng = fmt.Sprintf("bytes 0-0/%d", total)
 				}
 				if r.Header.Get("Range") != "bytes=0-0" {
@@ -168,7 +169,7 @@ func TestDownloadRejectsOversizeAndWrongRange(t *testing.T) {
 					w.Write([]byte("0123456789"))
 				}
 			})
-			d := ossdownload.NewAdapter(c.http, signedURL, MaxBytes, false)
+			d := ossdownload.NewAdapter(c.http, signedURL, adapterLimit, false)
 			_, err := d.HeadObject(context.Background(), &oss.HeadObjectRequest{})
 			if scenario == "oversize" || scenario == "redirect" {
 				if err == nil {
