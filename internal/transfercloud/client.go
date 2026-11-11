@@ -19,8 +19,6 @@ import (
 	"github.com/YoooClaw/cli/internal/errs"
 )
 
-const MaxBytes int64 = 5 << 30
-
 const apiPath = "/api/device/file/plugin"
 
 var taskRE = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -197,7 +195,7 @@ func (c *Client) Complete(ctx context.Context, id, key string) (*Receipt, error)
 	if err := c.call(ctx, http.MethodPost, "/complete", map[string]string{"taskId": id, "objectKey": key}, &receipt); err != nil {
 		return nil, err
 	}
-	if receipt.TaskID != id || receipt.ObjectKey != key || receipt.Status != "COMPLETED" || receipt.FileSize <= 0 || int64(receipt.FileSize) > MaxBytes {
+	if receipt.TaskID != id || receipt.ObjectKey != key || receipt.Status != "COMPLETED" || receipt.FileSize <= 0 {
 		return nil, failure("CLOUD_RESPONSE_INVALID", "迁移上传确认数据无效")
 	}
 	return &receipt, nil
