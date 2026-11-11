@@ -123,11 +123,11 @@ func validateDetails(d DailySnapshot, zone *time.Location, collected time.Time) 
 		}
 	}
 	for _, w := range d.Workouts {
-		elapsed, err := detailInterval(w.ID, w.StartAt, w.EndAt, d.Date, zone, collected)
+		_, err := detailInterval(w.ID, w.StartAt, w.EndAt, d.Date, zone, collected)
 		if err != nil {
 			return 0, err
 		}
-		if !unique("workout", w.ID) || !detailText(w.Name, 256) || !metricPattern.MatchString(w.Activity) || !finiteNonnegative(w.DurationMinutes) || w.DurationMinutes > elapsed.Minutes()+1.0/60 || w.Items == nil || len(w.Items) > 32 {
+		if !unique("workout", w.ID) || !detailText(w.Name, 256) || !metricPattern.MatchString(w.Activity) || !finiteNonnegative(w.DurationMinutes) || w.Items == nil || len(w.Items) > 32 {
 			return 0, fmt.Errorf("invalid workout")
 		}
 		metrics := map[string]bool{}
