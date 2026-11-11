@@ -98,7 +98,7 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || err "缺少依赖: $1"; }
 need_cmd curl
 
 if [ "$OSS_RENDERED" = "1" ]; then
-  # OSS 渲染版：latest 标记文件里存的是纯版本号（只发布正式版）
+  # OSS 渲染版：latest 标记文件里存的是纯版本号（测试区也允许预发布版）
   if [ -z "$VERSION" ]; then
     info "查询 latest 版本…"
     VERSION=$(curl -fsSL "${OSS_BASE_URL}/latest" 2>/dev/null | tr -d '[:space:]' || true)
@@ -107,21 +107,9 @@ if [ "$OSS_RENDERED" = "1" ]; then
   BASE="${OSS_BASE_URL}/v${VERSION}"
 else
   if [ -z "$VERSION" ]; then
-    info "查询最新 release tag…"
-    # 优先用 GitHub API；不带 token 也能匿名用，但有 60 req/h 限制
-    api_url="https://api.github.com/repos/${REPO}/releases?per_page=100"
-    # 只截取 tag_name 字段，再用 cut 取 JSON 字符串值。这里刻意不用
-    # sed 的 \s：macOS 自带的 BSD sed 不支持它，解析失败时会把整行 JSON
-    # 原样传下去，最终污染下载 URL。
-    release_tags=$(curl -fsSL "$api_url" \
-      | grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"cli-v[^"]+"' \
-      | cut -d '"' -f 4 || true)
-    # 只认正式版 tag：预发布版必须由调用方显式 --version 指定
-    latest_tag=$(printf '%s\n' "$release_tags" \
-      | grep -Ev -- '-(beta|alpha|rc)([.-]|$)' \
-      | head -1 || true)
-    [ -z "$latest_tag" ] && err "无法解析最新正式版 tag（API 限流？请用 --version 显式指定）"
-    VERSION="${latest_tag#cli-v}"
+    info "查询生产 OSS latest 版本…"
+    VERSION=$(curl -fsSL "https://artifact.yoooclaw.com/cli/latest" 2>/dev/null | tr -d '[:space:]' || true)
+    [ -z "$VERSION" ] && err "无法解析生产 OSS latest（请用 --version 显式指定）"
   fi
   BASE="https://github.com/${REPO}/releases/download/cli-v${VERSION}"
 fi
