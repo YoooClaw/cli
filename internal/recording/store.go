@@ -807,6 +807,12 @@ func (s *Storage) SetResultAudioFailedWithCode(recordingID, ossURL, message, cod
 	entry.ErrorCode = strings.TrimSpace(code)
 	entry.UpdatedAt = nowISO()
 	if err := s.replaceEntryLocked(idx, entry); err != nil {
+		// 磁盘满时索引通常也写不进去，replaceEntryLocked 会回滚到 downloading。
+		// 但本次失败状态就是 App 停止同步的依据，必须保留在当前进程内存中；
+		// 持久化仍失败，返回错误由调用方记录。
+		if storageErrorCode(err) != "" {
+			s.index.Recordings[idx] = entry
+		}
 		return false, err
 	}
 	return true, nil
@@ -847,6 +853,9 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 		entry.LastError = "音频保存失败: " + err.Error()
 		entry.ErrorCode = storageErrorCode(err)
 		entry.UpdatedAt = nowISO()
+		// entry 是索引条目的值拷贝，必须先写回内存索引再持久化，
+		// 否则查询仍会看到 downloading。
+		s.index.Recordings[idx] = entry
 		if saveErr := s.saveIndexLocked(); saveErr != nil {
 			s.logger.Error("录音音频失败状态写入失败: " + saveErr.Error())
 		}

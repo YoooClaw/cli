@@ -272,26 +272,20 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		scope := auth.scope()
 		entries := make([]recording.Entry, 0)
 		exportableBySource := make(map[string]map[string]bool, len(sources))
-		degraded := make([]string, 0, len(sources))
 		for _, source := range sources {
-			// 显式指定来源时保持原语义：该来源不可用就报错。省略来源时跳过
-			// 降级的一侧，另一侧仍可查询。
-			if len(sources) > 1 {
-				if err := source.store.LoadError(); err != nil {
-					degraded = append(degraded, source.source)
-					continue
-				}
+			// 合并列表必须保持“完整清单”语义：任一侧索引降级或读取失败时
+			// 整体返回不可用，不能返回部分集合让 App 按差集误判。来源隔离
+			// 通过显式 sourceType 查询健康来源实现。
+			if err := source.store.LoadError(); err != nil {
+				s.logger.Warn("[recording-list] " + source.source + " 索引不可用: " + err.Error())
+				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
+				return
 			}
 			snapshot, err := source.store.ReadIndexSnapshot(r.Context())
 			if err != nil {
-				if len(sources) == 1 {
-					s.logger.Warn("[recording-list] 索引读取失败: " + err.Error())
-					gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
-					return
-				}
-				degraded = append(degraded, source.source)
-				s.logger.Warn("[recording-list] " + source.source + " 索引读取失败，已跳过: " + err.Error())
-				continue
+				s.logger.Warn("[recording-list] " + source.source + " 索引读取失败: " + err.Error())
+				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
+				return
 			}
 			exportableBySource[source.source] = source.store.ExportableEntries(snapshot)
 			for _, entry := range snapshot {
@@ -306,20 +300,12 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				entries = append(entries, entry)
 			}
 		}
-		if len(degraded) == len(sources) {
-			gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
-			return
-		}
 		recording.SortByCreatedDesc(entries)
 		items := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
 			items = append(items, recordingListItem(entry, exportableBySource[entry.RecordingSource()][entry.ID]))
 		}
-		result := map[string]any{"total": len(items), "recordings": items}
-		if len(degraded) > 0 {
-			result["degradedSources"] = degraded
-		}
-		gatewayOK(w, result)
+		gatewayOK(w, map[string]any{"total": len(items), "recordings": items})
 
 	case "recordings.status":
 		var body recordingIDBody

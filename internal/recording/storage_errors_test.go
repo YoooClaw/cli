@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 )
@@ -64,5 +65,57 @@ func TestRecordingErrorCodePersistsAndClears(t *testing.T) {
 	entry, _ = reloaded.FindByID("rec_full")
 	if entry.ErrorCode != "" {
 		t.Fatalf("new attempt kept errorCode=%q", entry.ErrorCode)
+	}
+}
+
+func TestAudioFailureStateStaysInMemoryWhenIndexWriteFails(t *testing.T) {
+	storage := newResultStorage(t)
+	const id, url = "rec_full", "https://example.test/audio.m4a"
+	if _, err := storage.Ingest(id, Metadata{Name: "x", OssAudioURL: url}, "phone-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetResultAudioPending(id, url); err != nil {
+		t.Fatal(err)
+	}
+	storage.writeIndex = func(string, any, os.FileMode) error {
+		return fmt.Errorf("write index: %w", syscall.ENOSPC)
+	}
+
+	applied, err := storage.SetResultAudioFailedWithCode(id, url, "音频下载失败: 空间不足", "STORAGE_FULL")
+	if err == nil || applied {
+		t.Fatalf("index write failure = applied %v, err %v", applied, err)
+	}
+	// 落盘失败时仍需在内存保留失败状态，App 才能查询到 STORAGE_FULL 并停止同步。
+	entry, _ := storage.FindByID(id)
+	if entry.AudioStatus != AudioStatusFailed || entry.ErrorCode != "STORAGE_FULL" || entry.LastError == "" {
+		t.Fatalf("failure state not visible in memory: %+v", entry)
+	}
+}
+
+func TestAudioMoveFailureUpdatesInMemoryIndex(t *testing.T) {
+	storage := newResultStorage(t)
+	const id, url = "rec_move", "https://example.test/audio.m4a"
+	if _, err := storage.Ingest(id, Metadata{Name: "x", OssAudioURL: url}, "phone-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetResultAudioPending(id, url); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(storage.AudioDir(), "staged.m4a")
+	if err := os.WriteFile(staged, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 目标路径被目录占住，使 os.Rename 失败。
+	if err := os.Mkdir(filepath.Join(storage.AudioDir(), "blocked.m4a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := storage.CommitResultAudioDownloaded(id, url, staged, "blocked.m4a")
+	if err == nil || applied {
+		t.Fatalf("move failure = applied %v, err %v", applied, err)
+	}
+	entry, _ := storage.FindByID(id)
+	if entry.AudioStatus != AudioStatusFailed || entry.LastError == "" {
+		t.Fatalf("move failure not visible in memory: %+v", entry)
 	}
 }

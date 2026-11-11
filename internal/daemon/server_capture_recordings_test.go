@@ -310,9 +310,6 @@ func TestRecordingListWithoutSourceTypeMergesBothSources(t *testing.T) {
 	if second["recordingId"] != "mobile-id" || second["sourceType"] != recording.SourceMobileApp {
 		t.Fatalf("mobile entry = %+v", second)
 	}
-	if _, ok := all["degradedSources"]; ok {
-		t.Fatalf("healthy merge must not report degraded sources: %+v", all)
-	}
 
 	for source, wantID := range map[string]string{
 		recording.SourceMobileApp:  "mobile-id",
@@ -326,7 +323,7 @@ func TestRecordingListWithoutSourceTypeMergesBothSources(t *testing.T) {
 	}
 }
 
-func TestRecordingListWithoutSourceTypeSkipsDegradedSource(t *testing.T) {
+func TestRecordingListWithoutSourceTypeFailsOnDegradedSource(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	mobile := withRecordings(t, srv)
 	root := withCaptureRecordings(t, srv)
@@ -342,25 +339,30 @@ func TestRecordingListWithoutSourceTypeSkipsDegradedSource(t *testing.T) {
 	}
 	srv.captureRecordingStorage = degradedCapture
 
-	data := gatewayData(t, asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a", `{}`))
-	items, _ := data["recordings"].([]any)
-	if data["total"] != float64(1) || len(items) != 1 || items[0].(map[string]any)["recordingId"] != "mobile-id" {
-		t.Fatalf("degraded Capture must not hide mobile: %+v", data)
+	// 默认合并列表必须保持完整清单语义，不能返回部分集合。
+	merged := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a", `{}`)
+	errObj, _ := merged["error"].(map[string]any)
+	if merged["ok"] != false || errObj["code"] != "RECORDING_LIST_UNAVAILABLE" {
+		t.Fatalf("degraded source must fail the merged list: %+v", merged)
 	}
-	degraded, _ := data["degradedSources"].([]any)
-	if len(degraded) != 1 || degraded[0] != recording.SourceCaptureApp {
-		t.Fatalf("degradedSources = %+v", data["degradedSources"])
+
+	// 显式查询健康来源仍可用，实现来源间隔离。
+	healthy := gatewayData(t, asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a",
+		fmt.Sprintf(`{"sourceType":%q}`, recording.SourceMobileApp)))
+	items, _ := healthy["recordings"].([]any)
+	if healthy["total"] != float64(1) || len(items) != 1 || items[0].(map[string]any)["recordingId"] != "mobile-id" {
+		t.Fatalf("explicit healthy source = %+v", healthy)
 	}
 
 	// 显式指定来源时仍保持单来源语义，该来源不可用即报错。
 	explicit := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "wuying-a",
 		fmt.Sprintf(`{"sourceType":%q}`, recording.SourceCaptureApp))
-	errObj, _ := explicit["error"].(map[string]any)
+	errObj, _ = explicit["error"].(map[string]any)
 	if explicit["ok"] != false || errObj["code"] != "RECORDING_LIST_UNAVAILABLE" {
 		t.Fatalf("explicit degraded capture = %+v", explicit)
 	}
 
-	// 两侧都不可用时，合并列表返回整体不可用。
+	// 两侧都不可用时，合并列表同样返回整体不可用。
 	mobileDir := filepath.Dir(mobile.AudioDir())
 	if err := os.WriteFile(filepath.Join(mobileDir, "index.json"), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
