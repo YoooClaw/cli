@@ -317,16 +317,38 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
 			return
 		}
-		store, ok := s.recordingStore(w, body.SourceType, method)
+		// Like list, an omitted source searches both stores. Filter by client
+		// visibility before detecting ambiguity so hidden records are not exposed.
+		sources, ok := s.recordingListSources(w, body.SourceType, method)
 		if !ok {
 			return
 		}
-		entry, ok := store.FindByID(recordingID)
-		if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
-			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
-			return
+		var match *recording.Entry
+		unavailable := false
+		for _, source := range sources {
+			if source.store.LoadError() != nil {
+				unavailable = true
+				continue
+			}
+			entry, found := source.store.FindByID(recordingID)
+			if !found || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
+				continue
+			}
+			if match != nil {
+				gatewayErr(w, "SOURCE_CONFLICT", "recordingId exists in multiple sources; specify sourceType")
+				return
+			}
+			entry.SourceType = source.source
+			match = &entry
 		}
-		gatewayOK(w, recordingDetail(entry))
+		if match != nil {
+			gatewayOK(w, recordingDetail(*match))
+		} else if unavailable {
+			// A failed store may contain the UUID; absence is not established.
+			gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
+		} else {
+			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
+		}
 
 	case "recordings.rename":
 		defer s.beginRecordingWrite()()
