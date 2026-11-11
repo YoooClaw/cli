@@ -146,7 +146,7 @@ func (c *Client) CompleteRecording(ctx context.Context, id, key string) (*Record
 	if err := c.call(ctx, http.MethodPost, "/complete", map[string]string{"taskId": id, "objectKey": key}, &result); err != nil {
 		return nil, err
 	}
-	if result.TaskID != id || result.ObjectKey != key || result.Status != "COMPLETED" || result.FileSize <= 0 || int64(result.FileSize) > MaxBytes {
+	if result.TaskID != id || result.ObjectKey != key || result.Status != "COMPLETED" || result.FileSize <= 0 {
 		return nil, failure("CLOUD_RESPONSE_INVALID", "录音上传确认数据无效")
 	}
 	u, err := validateOSSURL(result.SignedURL)
@@ -185,7 +185,7 @@ func (c *Client) UploadRecordingWithTask(ctx context.Context, path string, onTas
 		},
 		contentType:         contentType,
 		kind:                "录音",
-		invalidFileMessage:  "录音文件无效或超过 5 GiB",
+		invalidFileMessage:  "录音文件必须是非空普通文件",
 		sizeMismatchMessage: "录音上传确认的文件大小不匹配",
 		completeHint: func(task *UploadTask) string {
 			return "录音上传已完成，但确认失败；任务 " + task.TaskID

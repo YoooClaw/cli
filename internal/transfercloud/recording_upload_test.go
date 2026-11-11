@@ -244,15 +244,17 @@ func TestRecordingContentType(t *testing.T) {
 	}
 }
 
-func TestRecordingCompleteEscapesSizeInError(t *testing.T) {
+func TestRecordingCompleteAcceptsSizeAboveFormerLimit(t *testing.T) {
+	const size = (5 << 30) + 1
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		reply(w, map[string]any{
 			"taskId": recordingTaskID, "objectKey": recordingObjectKey, "status": "COMPLETED",
-			"fileSize": fmt.Sprint(MaxBytes + 1), "signedUrl": signedURL, "expiresAt": time.Now().Add(time.Hour).UnixMilli(),
+			"fileSize": fmt.Sprint(size), "signedUrl": signedURL, "expiresAt": time.Now().Add(time.Hour).UnixMilli(),
 		})
 	})
-	if _, err := c.CompleteRecording(context.Background(), recordingTaskID, recordingObjectKey); err == nil {
-		t.Fatal("accepted oversized object")
+	receipt, err := c.CompleteRecording(context.Background(), recordingTaskID, recordingObjectKey)
+	if err != nil || int64(receipt.FileSize) != size {
+		t.Fatalf("large receipt = %+v, err %v", receipt, err)
 	}
 }
 

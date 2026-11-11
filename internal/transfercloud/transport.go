@@ -72,7 +72,7 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 		},
 		contentType:         "application/gzip",
 		kind:                "迁移",
-		invalidFileMessage:  "迁移压缩包无效或超过 5 GiB",
+		invalidFileMessage:  "迁移压缩包必须是非空普通文件",
 		sizeMismatchMessage: "上传确认的文件大小不匹配",
 		completeHint: func(task *UploadTask) string {
 			return "上传已完成，但确认失败；重试：yoooclaw transfer complete --task " + task.TaskID + " --object-key " + task.ObjectKey
@@ -86,7 +86,7 @@ func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 
 func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePlan) (*uploadCompletion, error) {
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxBytes {
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
 		return nil, failure("CLOUD_FILE_INVALID", plan.invalidFileMessage)
 	}
 	if err = c.CheckAuth(); err != nil {
