@@ -63,8 +63,9 @@ latest / average 延续现有命名规则，在 metric 基名后增加 `_latest`
 - 无数据不代表零或拒绝；无任意可读指标/明细的日期不上传。请求异常不发送部分日期结果。
 - 每日最多 128 药物、4096 服药事件、128 运动、4096 摄入记录、1024 心情；
   每次额外样本查询最多 20000 条，超过时整轮失败，不静默截断。
-- 日文件继续最多 4 MiB，整日不可拆分。回执 ingested 按普通指标、睡眠会话、药物分组、
-  单次运动、摄入记录、心情记录各计一项；药物分组内的 doseEvents 不重复计数。
+- 日文件继续最多 4 MiB，整日不可拆分。超出上限只使该日失败，不影响同批其它日期。
+  回执 ingested 按普通指标、睡眠会话、药物分组、单次运动、摄入记录、心情记录各计一项；
+  药物分组内的 doseEvents 不重复计数；被丢弃的记录不计入 ingested。
 
 ## CLI 存储、读取与兼容
 
@@ -104,19 +105,49 @@ provider 是开放标识，不设置厂商白名单；它不构成来源真实�
 
 ## 健康上报回执
 
-`POST /health-data` 成功仍返回 `ok`、`ingested`、`deleted`。
-`ingested` 表示校验通过的请求条目数，不表示实际落盘数。
-条目口径见上文，`deleted` 仍为 0。
-新增 `days` 数组，按请求日期顺序返回写入决定：
+请求级错误（JSON 无法解析、schemaVersion/provider/collectedAt/timeZone 不合法、
+days 为空或超过 366）整请求返回 400，不写任何日期。
+
+逐日校验独立，且失败按“记录 → 类别 → 天”逐级降级，尽量少丢数据：
+
+1. 记录级：单条指标、睡眠会话、药物分组、服药事件、运动、运动内指标、摄入记录、
+   心情、心情标签/关联校验失败时只丢弃该条记录，同一天其它记录照常写入。
+   数量超限时保留前 N 条并丢弃其余；重复指标或重复会话保留首条。
+2. 类别级：可选明细类别（`medications`/`workouts`/`intakeRecords`/`moods`）整体不是数组时
+   丢弃该类别（按空数组落盘），同一天其它类别继续处理。`items` 与 `sleepSessions`
+   是必填类别，结构错误按天级处理，避免一次格式错误抹掉整类历史。
+3. 天级：`items` 或 `sleepSessions` 缺失、为 null 或不是数组（整类删除语义不明）、
+   日期非法或重复、丢弃后该日已无任何有效记录、单日编码超过 4 MiB 时，该天不写入。
+   同请求中其它合法日期照常写入。
+
+`POST /health-data` 返回 `ok`、`ingested`、`deleted`、`rejected`。
+`ingested` 只统计校验通过并保留的记录数，不含被丢弃的记录，也不表示实际落盘数；
+`rejected` 表示天级校验失败或已有文件不可识别而未写入的天数；`deleted` 仍为 0。
+`days` 数组按请求日期顺序返回写入决定：
 
 ```json
-{"ok":true,"ingested":2,"deleted":0,"days":[{"date":"1997-01-01","applied":false,"reason":"apple_priority"},{"date":"1997-01-02","applied":true}]}
+{"ok":true,"ingested":2,"deleted":0,"rejected":1,"days":[{"date":"1997-01-01","applied":false,"reason":"apple_priority"},{"date":"1997-01-02","applied":true,"dropped":1,"warnings":["days[0].workouts[0]: has invalid fields"]},{"date":"1997-01-03","applied":false,"reason":"invalid_snapshot","message":"days[2]: no valid records remain after dropping invalid records: days[2].items[0]: has invalid metric fields","dropped":1,"warnings":["days[2].items[0]: has invalid metric fields"]}]}
 ```
 
 - `applied:true`：采用该日快照。幂等替换也返回 true，不代表版本变化。
+  若同时返回 `dropped`/`warnings`，表示该日已写入，但其中若干记录被单独丢弃。
 - `applied:false`、`reason:apple_priority`：已有苹果快照，忽略非苹果数据。
 - `applied:false`、`reason:stale_collected_at`：同类来源的采集时间更旧。
+- `applied:false`、`reason:invalid_snapshot`：该日未通过天级校验；`message`
+  给出具体原因，包含 `days[下标]` 和出错字段，不含指标值；`dropped`/`warnings`
+  说明在降级过程中丢弃了哪些记录。
+- `applied:false`、`reason:unreadable_snapshot`：该日已有文件不是本版本可识别的
+  v3 快照，为避免覆盖未知数据而跳过；该文件保持不变，其它日期继续写入。
 
-跳过属于成功处理，无需原样重试。日志记录逐日决定及原因。
-写入失败仍返回 500；此前已完成的日期决定保留在日志中。
+`dropped` 为被丢弃的记录数，跨类别累计，计数精确；
+`warnings` 逐条给出丢弃原因，每天最多 20 条，超出时追加 `(+N more)`。
+两者都是省略字段，没有丢弃时不出现。
+
+返回 200 且 `ok:true` 表示请求已处理，不代表所有日期和记录都已写入；
+客户端应同时检查 `rejected`、`ingested` 与 `days[].applied`/`dropped`。
+跳过与校验失败都属于可解释结果，无需原样重试（原样重试只会得到同一结果）。
+日志逐日记录 `applied`、`reason`、`message`、`dropped` 与 `warnings`；
+有记录被丢弃或整日失败时使用 WARN 级别。
+
+文件级 I/O 失败（目录不可写、磁盘错误）仍返回 500；此前已完成的日期决定保留在日志中。
 多日期写入不是跨日期事务，客户端可按原请求幂等重试。

@@ -76,7 +76,7 @@ func TestSleepRejectsInvalidSummariesAndTimelines(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := sampleSleep()
 			change(&s)
-			if _, err := Prepare(sleepBatch(t, s)); err == nil {
+			if err := rejection(sleepBatch(t, s)); err == nil {
 				t.Fatal("accepted invalid sleep")
 			}
 		})
@@ -116,16 +116,16 @@ func TestMillisecondPrecisionRoundsEndpointsAndKeepsZeroAwakening(t *testing.T) 
 
 func TestV3DayBoundsAndRequiredArrays(t *testing.T) {
 	for name, change := range map[string]func(map[string]any){
-		"missing sessions":  func(day map[string]any) { delete(day, "sleepSessions") },
-		"null sessions":     func(day map[string]any) { day["sleepSessions"] = nil },
-		"missing items":     func(day map[string]any) { delete(day, "items") },
+		"missing sessions": func(day map[string]any) { delete(day, "sleepSessions") },
+		"null sessions":    func(day map[string]any) { day["sleepSessions"] = nil },
+		"missing items":    func(day map[string]any) { delete(day, "items") },
+		"items not array":  func(day map[string]any) { day["items"] = map[string]any{} },
+		"sessions not array": func(day map[string]any) {
+			day["sleepSessions"] = "nope"
+		},
 		"too many sessions": func(day map[string]any) { day["sleepSessions"] = make([]SleepSession, MaxSleepSessions+1) },
-		"too many metrics":  func(day map[string]any) { day["items"] = make([]map[string]any, 257) },
 		"day bytes": func(day map[string]any) {
 			day["items"] = []map[string]any{{"metric": "steps", "name": strings.Repeat("x", MaxDayBytes), "value": 1, "unit": "steps"}}
-		},
-		"old sleep metric": func(day map[string]any) {
-			day["items"] = []map[string]any{{"metric": "sleep_minutes", "name": "Sleep", "value": 1, "unit": "min"}}
 		},
 		"extra field": func(day map[string]any) { day["unexpected"] = true },
 	} {
@@ -139,8 +139,32 @@ func TestV3DayBoundsAndRequiredArrays(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = Prepare(raw); err == nil {
+			if err = rejection(raw); err == nil {
 				t.Fatal("accepted invalid v3 day")
+			}
+		})
+	}
+	// Count overflow and legacy sleep metrics only drop the offending records;
+	// the valid sleep session keeps the day writable.
+	for name, change := range map[string]func(map[string]any){
+		"too many metrics": func(day map[string]any) { day["items"] = make([]map[string]any, 257) },
+		"old sleep metric": func(day map[string]any) {
+			day["items"] = []map[string]any{{"metric": "sleep_minutes", "name": "Sleep", "value": 1, "unit": "min"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var body map[string]any
+			if err := json.Unmarshal(sleepBatch(t, sampleSleep()), &body); err != nil {
+				t.Fatal(err)
+			}
+			change(body["days"].([]any)[0].(map[string]any))
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch, dropped, _ := drops(raw)
+			if dropped == 0 || batch.dayInfo[0].err != nil {
+				t.Fatalf("records were not dropped individually: dropped=%d err=%v", dropped, batch.dayInfo[0].err)
 			}
 		})
 	}

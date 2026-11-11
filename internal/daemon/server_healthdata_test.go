@@ -199,6 +199,124 @@ func TestHealthDataRelayRoundTripIncludesReceiptsAndDailyJSONL(t *testing.T) {
 	}
 }
 
+func TestHealthDataPartialFailureWritesValidDaysAndLogsReason(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	body := `{"schemaVersion":3,"provider":"honor","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T09:10:00+08:00","days":[` +
+		`{"date":"2026-10-19","sleepSessions":[],"items":[{"metric":"steps","name":"Steps","value":1,"unit":"steps"}]},` +
+		`{"date":"2026-10-20","sleepSessions":[],"items":[{"metric":"steps","name":"","value":1,"unit":"steps"}]}]}`
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("partial validation failure rejected the request: %d %s", response.Code, response.Body.String())
+	}
+	var receipt struct {
+		OK       bool `json:"ok"`
+		Ingested int  `json:"ingested"`
+		Rejected int  `json:"rejected"`
+		Days     []struct {
+			Date    string `json:"date"`
+			Applied bool   `json:"applied"`
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"days"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.OK || receipt.Ingested != 1 || receipt.Rejected != 1 || len(receipt.Days) != 2 {
+		t.Fatalf("receipt=%+v body=%s", receipt, response.Body.String())
+	}
+	if !receipt.Days[0].Applied || receipt.Days[0].Reason != "" || receipt.Days[0].Message != "" ||
+		receipt.Days[1].Applied || receipt.Days[1].Reason != "invalid_snapshot" || !strings.Contains(receipt.Days[1].Message, "items[0]") {
+		t.Fatalf("day decisions=%+v", receipt.Days)
+	}
+	if _, err := os.Stat(filepath.Join(srv.ctx.Paths.HealthData, "2026-10-19.jsonl")); err != nil {
+		t.Fatalf("valid day not written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(srv.ctx.Paths.HealthData, "2026-10-20.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("invalid day written: %v", err)
+	}
+	logs, err := os.ReadFile(srv.logger.logFile)
+	if err != nil || !strings.Contains(string(logs), "date=2026-10-20 applied=false reason=invalid_snapshot") ||
+		!strings.Contains(string(logs), "rejected=1") || !strings.Contains(string(logs), "items[0]") {
+		t.Fatalf("missing validation failure log: %s err=%v", logs, err)
+	}
+}
+
+func TestHealthDataRecordDropKeepsDayAndReportsWarnings(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	body := `{"schemaVersion":3,"provider":"honor","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T09:10:00+08:00","days":[` +
+		`{"date":"2026-10-19","sleepSessions":[],` +
+		`"items":[{"metric":"steps","name":"Steps","value":1,"unit":"steps"}],` +
+		`"workouts":[{"id":"bad-workout","activity":"running","name":"Run","startAt":"2026-10-19T08:00:00+08:00","endAt":"2026-10-19T08:30:00+08:00","durationMinutes":-1,"items":[]}]}]}`
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("record drop rejected the request: %d %s", response.Code, response.Body.String())
+	}
+	var receipt struct {
+		OK       bool `json:"ok"`
+		Ingested int  `json:"ingested"`
+		Rejected int  `json:"rejected"`
+		Days     []struct {
+			Applied  bool     `json:"applied"`
+			Dropped  int      `json:"dropped"`
+			Warnings []string `json:"warnings"`
+		} `json:"days"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.OK || receipt.Ingested != 1 || receipt.Rejected != 0 || len(receipt.Days) != 1 ||
+		!receipt.Days[0].Applied || receipt.Days[0].Dropped != 1 ||
+		!strings.Contains(strings.Join(receipt.Days[0].Warnings, "\n"), "workouts[0]") {
+		t.Fatalf("receipt=%+v body=%s", receipt, response.Body.String())
+	}
+	stored, err := os.ReadFile(healthDataFile(srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stored, []byte("bad-workout")) || !bytes.Contains(stored, []byte(`"value":1`)) {
+		t.Fatalf("day not written partially: %s", stored)
+	}
+	logs, err := os.ReadFile(srv.logger.logFile)
+	if err != nil || !strings.Contains(string(logs), "date=2026-10-19 applied=true dropped=1") ||
+		!strings.Contains(string(logs), "dropped=1") {
+		t.Fatalf("missing record drop log: %s err=%v", logs, err)
+	}
+}
+
+func TestHealthDataAllInvalidDaysStillReturnsPerDayReasons(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+	body := `{"schemaVersion":3,"provider":"honor","timeZone":"Asia/Shanghai","collectedAt":"2026-10-19T09:10:00+08:00","days":[` +
+		`{"date":"2026-10-19","sleepSessions":[],"items":[{"metric":"Steps","name":"Steps","value":1,"unit":"steps"}]}]}`
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/health-data", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("all-invalid batch should stay inspectable: %d %s", response.Code, response.Body.String())
+	}
+	var receipt struct {
+		OK       bool `json:"ok"`
+		Ingested int  `json:"ingested"`
+		Rejected int  `json:"rejected"`
+		Days     []struct {
+			Applied bool   `json:"applied"`
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"days"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.OK || receipt.Ingested != 0 || receipt.Rejected != 1 || len(receipt.Days) != 1 ||
+		receipt.Days[0].Applied || receipt.Days[0].Reason != "invalid_snapshot" || receipt.Days[0].Message == "" {
+		t.Fatalf("receipt=%+v body=%s", receipt, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(srv.ctx.Paths.HealthData, "2026-10-19.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("invalid-only batch wrote a day file: %v", err)
+	}
+}
+
 func healthDataFile(srv *server) string {
 	return filepath.Join(srv.ctx.Paths.HealthData, "2026-10-19.jsonl")
 }
@@ -227,6 +345,10 @@ func TestHealthDataRejectsFarFutureCollectedAt(t *testing.T) {
 	}
 	if _, err := os.Stat(srv.ctx.Paths.HealthData); !os.IsNotExist(err) {
 		t.Fatalf("rejected batch wrote health data: %v", err)
+	}
+	logs, err := os.ReadFile(srv.logger.logFile)
+	if err != nil || !strings.Contains(string(logs), "rejected: collectedAt is too far in the future") {
+		t.Fatalf("missing request rejection log: %s err=%v", logs, err)
 	}
 }
 

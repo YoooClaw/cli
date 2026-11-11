@@ -92,13 +92,18 @@ func TestDetailValidationRejectsMalformedRecordsBeforeStorage(t *testing.T) {
 		}
 		change(&b.Days[0])
 		raw, _ := json.Marshal(b)
-		if _, err := Prepare(raw); err == nil {
-			t.Fatalf("accepted malformed case %d", i)
+		batch, dropped, warnings := drops(raw)
+		if dropped == 0 || len(warnings) == 0 {
+			t.Fatalf("malformed case %d was not dropped", i)
+		}
+		if batch.dayInfo[0].err != nil {
+			t.Fatalf("malformed case %d took down the whole day: %v", i, batch.dayInfo[0].err)
 		}
 	}
 	raw := strings.Replace(string(detailsFixture(t)), `"valence": 0.5`, `"valence": 0.5, "unexpected": true`, 1)
-	if _, err := Prepare([]byte(raw)); err == nil {
-		t.Fatal("accepted unknown nested field")
+	batch, dropped, warnings := drops([]byte(raw))
+	if dropped == 0 || len(warnings) == 0 || batch.dayInfo[0].err != nil {
+		t.Fatalf("unknown nested field was not dropped: dropped=%d warnings=%v err=%v", dropped, warnings, batch.dayInfo[0].err)
 	}
 }
 func newFloat(v float64) *float64 { return &v }
@@ -173,16 +178,60 @@ func TestDetailScalarsRequirePresenceAndAcceptZero(t *testing.T) {
 					record[tc.field] = tc.zero
 				}
 				raw, _ := json.Marshal(b)
-				_, err := Prepare(raw)
+				batch, dropped, warnings := drops(raw)
 				if mode == "zero" {
-					if err != nil {
-						t.Fatal(err)
+					if dropped != 0 || batch.dayInfo[0].err != nil {
+						t.Fatalf("zero value was not accepted: dropped=%d err=%v", dropped, batch.dayInfo[0].err)
 					}
-				} else if err == nil || !strings.Contains(err.Error(), tc.field) {
-					t.Fatalf("%s: expected named missing field error, got %v", mode, err)
+					continue
+				}
+				joined := strings.Join(warnings, "\n")
+				if dropped == 0 || !strings.Contains(joined, tc.field) || batch.dayInfo[0].err != nil {
+					t.Fatalf("%s: expected a named drop for %s, got dropped=%d warnings=%v err=%v", mode, tc.field, dropped, warnings, batch.dayInfo[0].err)
 				}
 			}
 		})
+	}
+}
+
+// A single malformed record must not cost its category or its day.
+func TestDroppedRecordKeepsCategoryAndDay(t *testing.T) {
+	var payload DailyBatch
+	if err := json.Unmarshal(detailsFixture(t), &payload); err != nil {
+		t.Fatal(err)
+	}
+	bad := payload.Days[0].Workouts[0]
+	bad.ID = "synthetic-bad-workout"
+	bad.DurationMinutes = -1
+	payload.Days[0].Workouts = append(payload.Days[0].Workouts, bad)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := Prepare(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.dayInfo[0].err != nil || batch.dayInfo[0].dropped != 1 {
+		t.Fatalf("day not isolated: err=%v dropped=%d", batch.dayInfo[0].err, batch.dayInfo[0].dropped)
+	}
+	store := NewStorage(t.TempDir())
+	if _, err := store.Append(batch); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(filepath.Join(store.dir, "2026-11-05.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stored, []byte("synthetic-bad-workout")) {
+		t.Fatal("invalid workout was written")
+	}
+	day, _, err := ReadSnapshot(stored, "2026-11-05")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(day.Workouts) != 1 || len(day.Medications) != 1 || len(day.IntakeRecords) != 1 || len(day.Moods) != 1 {
+		t.Fatalf("category lost with the bad record: %+v", day)
 	}
 }
 
