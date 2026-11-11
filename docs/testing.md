@@ -6,16 +6,23 @@
 ## 快速命令
 
 ```bash
-make test          # go test -race ./...
+make test          # go test -race ./...；不含大样本容量回归
+make test-scale    # 原规模容量回归；确认测试实际通过
 make cover         # 生成 coverage.out + 打印总覆盖率
 make cover-html    # 生成 coverage.html 报告
 make cover-gate    # 覆盖率门禁（低于 MIN_COVERAGE 失败）
 make test-int      # 跑带 integration tag 的破坏性用例（真实钥匙串等）
 make update-golden # 刷新 golden 期望文件
-make ci            # 本地复刻 CI：vet + race + 覆盖率门禁
+make ci            # 本地 Go 门禁：vet + race + 覆盖率 + 容量回归
 ```
 
-CI（`.github/workflows/ci.yml`）跑 `go test -race -coverprofile` + 覆盖率汇总 + 门禁。
+CI（`.github/workflows/ci.yml`）运行竞态检查、覆盖率门禁及容量回归。
+`make ci` 包含这组 Go 门禁；不复刻 Windows 安装或发布步骤。
+容量回归通过 `scripts/test-transfer-scale.sh` 执行。
+脚本同时检查命令成功和顶层 `TestTransferScale` 通过记录。
+测试改名、构建标签排除或 `GOFLAGS=-race` 导致零用例时，门禁失败。
+`make test`、`cover`、`cover-gate` 仅运行竞态套件。
+大样本通过 `!race` 单独运行，小样本复用相同断言。
 
 ## 公共测试设施：`internal/testutil`
 

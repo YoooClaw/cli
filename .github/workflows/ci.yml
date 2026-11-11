@@ -34,7 +34,7 @@ jobs:
       # Keep real 100001-record / >64 MiB boundary checks mandatory, without
       # multiplying their cost through race and coverage instrumentation.
       - name: Transfer capacity regression
-        run: go test -count=1 -v ./internal/transfer -run '^TestTransferScale$'
+        run: scripts/test-transfer-scale.sh
 
       - name: Verify OSS publication uploader
         run: |

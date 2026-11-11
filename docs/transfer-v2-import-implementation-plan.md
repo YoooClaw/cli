@@ -285,7 +285,7 @@ CI 单独执行容量回归，失败时阻止测试发布。
 
 ```sh
 go test -race -coverprofile=coverage.out ./internal/transfer
-go test -count=1 -v ./internal/transfer -run '^TestTransferScale$'
+make test-scale
 ```
 
 容量用例输出独立耗时，便于定位回归。
