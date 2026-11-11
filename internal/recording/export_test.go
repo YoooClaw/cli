@@ -417,7 +417,7 @@ func TestExportRecoverInterrupted(t *testing.T) {
 	if _, err := storage.Ingest("rec_export", Metadata{Name: "x", CreatedAt: "2026-11-09T10:00:00+08:00"}, "phone-a"); err != nil {
 		t.Fatal(err)
 	}
-	_, record, _, err := storage.BeginExport("rec_export", "req-1", "local", "export-1", "2026-11-10T00:00:00Z")
+	_, record, _, err := storage.BeginExport("rec_export", "req-1", "local", "export-1", "2026-11-10T00:00:00Z", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,6 +461,84 @@ func TestExportStartReplaysBeforeSourceCheck(t *testing.T) {
 	}
 	if uploads, _ := cloud.counts(); uploads != 1 {
 		t.Fatalf("replay triggered another upload: %d", uploads)
+	}
+}
+
+func TestExportStartReportsSourceSize(t *testing.T) {
+	storage, service, cloud := newExportFixture(t)
+	info, err := os.Stat(storage.AudioFilePath("rec_export", "https://example.test/audio.m4a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := startExport(t, service, cloud, "rec_export", "req-size", "local")
+	if start.SizeBytes != info.Size() {
+		t.Fatalf("start size=%d, want %d", start.SizeBytes, info.Size())
+	}
+	status := waitExport(t, service, cloud, "rec_export", start.ExportID)
+	if status.State != ExportStateReady || status.Result == nil || status.Result.Transfer.SizeBytes != info.Size() {
+		t.Fatalf("ready status=%+v", status)
+	}
+	if status.SizeBytes != info.Size() {
+		t.Fatalf("status size=%d, want %d", status.SizeBytes, info.Size())
+	}
+
+	replay := startExport(t, service, cloud, "rec_export", "req-size", "local")
+	if replay.ExportID != start.ExportID || replay.SizeBytes != info.Size() {
+		t.Fatalf("replay=%+v", replay)
+	}
+}
+
+func TestExportStatusReportsSizeBeforeReady(t *testing.T) {
+	storage, service, cloud := newExportFixture(t)
+	info, err := os.Stat(storage.AudioFilePath("rec_export", "https://example.test/audio.m4a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// preparing 阶段：尚未启动上传，只靠受理时持久化的大小。
+	if _, _, _, err := storage.BeginExport("rec_export", "req-preparing", "local", "export-preparing", "2026-11-10T00:00:00Z", info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	preparing, err := service.Status(context.Background(), ExportStatusRequest{RecordingID: "rec_export", ExportID: "export-preparing", ScopeKey: "local"}, cloud)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparing.State != ExportStatePreparing || preparing.SizeBytes != info.Size() || preparing.Result != nil {
+		t.Fatalf("preparing status=%+v", preparing)
+	}
+	// 结束这条手工记录，避免它挡住下一条导出（BeginExport 拒绝并发导出）。
+	if _, _, err := storage.UpdateExport("rec_export", "export-preparing", "2026-11-10T00:00:01Z", func(record *ExportRecord) bool {
+		record.State = ExportStateFailed
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// uploading 阶段：上传被阻塞时查询，仍能拿到同一预估大小。
+	blocked := &fakeExportCloud{started: make(chan struct{}, 1), block: make(chan struct{})}
+	start := startExport(t, service, blocked, "rec_export", "req-uploading", "local")
+	<-blocked.started
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		uploading, err := service.Status(context.Background(), ExportStatusRequest{RecordingID: "rec_export", ExportID: start.ExportID, ScopeKey: "local"}, blocked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if uploading.State == ExportStateUploading {
+			if uploading.SizeBytes != info.Size() || uploading.Result != nil {
+				t.Fatalf("uploading status=%+v", uploading)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("export did not reach uploading: %+v", uploading)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(blocked.block)
+	if final := waitExport(t, service, blocked, "rec_export", start.ExportID); final.State != ExportStateReady {
+		t.Fatalf("final status=%+v", final)
 	}
 }
 

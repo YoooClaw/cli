@@ -97,9 +97,16 @@ func TestRecordingExportRoutesStartAndStatus(t *testing.T) {
 	if start["sourceType"] != recording.SourceMobileApp {
 		t.Fatalf("start sourceType=%v, want %s", start["sourceType"], recording.SourceMobileApp)
 	}
+	// start 在导出完成前给出源音频大小的预估，供客户端规划等待预算。
+	if start["sizeBytes"] != float64(len("audio-bytes-rec_export")) {
+		t.Fatalf("start sizeBytes=%v", start["sizeBytes"])
+	}
 	status := waitGatewayExport(t, ts.URL, "phone-a", "rec_export", exportID)
 	if status["state"] != "ready" {
 		t.Fatalf("status=%+v", status)
+	}
+	if status["sizeBytes"] != float64(len("audio-bytes-rec_export")) {
+		t.Fatalf("status sizeBytes=%v", status["sizeBytes"])
 	}
 	if status["sourceType"] != recording.SourceMobileApp {
 		t.Fatalf("status sourceType=%v, want %s", status["sourceType"], recording.SourceMobileApp)
@@ -123,6 +130,9 @@ func TestRecordingExportRoutesStartAndStatus(t *testing.T) {
 		`{"recordingId":"rec_export","requestId":"req-1"}`))
 	if asString(again["exportId"]) != exportID || cloud.uploads != 1 {
 		t.Fatalf("idempotent replay=%+v uploads=%d", again, cloud.uploads)
+	}
+	if again["sizeBytes"] != float64(len("audio-bytes-rec_export")) {
+		t.Fatalf("replay sizeBytes=%v", again["sizeBytes"])
 	}
 
 	// requestId 已属于另一条录音。

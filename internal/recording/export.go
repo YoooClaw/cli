@@ -45,6 +45,9 @@ type ExportStartResult struct {
 	ExportID    string `json:"exportId"`
 	State       string `json:"state"`
 	SourceType  string `json:"sourceType"`
+	// SizeBytes 是源音频当前大小的预估，供客户端规划轮询/下载预算；
+	// ready 后以 result.transfer.sizeBytes 为准，不能用于校验。
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
 }
 
 type ExportFailure struct {
@@ -70,13 +73,16 @@ type ExportResult struct {
 }
 
 type ExportStatus struct {
-	RecordingID string         `json:"recordingId"`
-	ExportID    string         `json:"exportId"`
-	State       string         `json:"state"`
-	UpdatedAt   string         `json:"updatedAt"`
-	SourceType  string         `json:"sourceType"`
-	Result      *ExportResult  `json:"result"`
-	Error       *ExportFailure `json:"error"`
+	RecordingID string `json:"recordingId"`
+	ExportID    string `json:"exportId"`
+	State       string `json:"state"`
+	UpdatedAt   string `json:"updatedAt"`
+	SourceType  string `json:"sourceType"`
+	// SizeBytes 与 ready 后的 result.transfer.sizeBytes 同值，preparing/
+	// uploading 阶段先给出预估，让客户端全流程读同一字段。
+	SizeBytes int64          `json:"sizeBytes,omitempty"`
+	Result    *ExportResult  `json:"result"`
+	Error     *ExportFailure `json:"error"`
 }
 
 // ExportUpload is what a file-service adapter reports after uploading.
@@ -163,7 +169,12 @@ func (s *ExportService) Start(ctx context.Context, req ExportStartRequest, cloud
 		if existingEntry.ID != recordingID {
 			return ExportStartResult{}, ErrExportRequestConflict
 		}
-		return ExportStartResult{RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State}, nil
+		sizeBytes := record.SizeBytes
+		if sizeBytes <= 0 {
+			// 旧记录在导出开始时尚未持久化大小，补一个当前预估。
+			sizeBytes = s.storage.ExportSourceSize(entry)
+		}
+		return ExportStartResult{RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State, SizeBytes: sizeBytes}, nil
 	}
 	if !s.storage.Exportable(entry) {
 		return ExportStartResult{}, ErrExportNotExportable
@@ -175,7 +186,10 @@ func (s *ExportService) Start(ctx context.Context, req ExportStartRequest, cloud
 	if err != nil {
 		return ExportStartResult{}, err
 	}
-	_, record, created, err := s.storage.BeginExport(recordingID, requestID, req.ScopeKey, exportID, s.stamp())
+	// 在受理时 stat 一次源音频，让 start 和 preparing/uploading 的 status
+	// 立刻有大小可读；导出就绪时会重新 stat 并以记录中的值为准。
+	sizeBytes := s.storage.ExportSourceSize(entry)
+	_, record, created, err := s.storage.BeginExport(recordingID, requestID, req.ScopeKey, exportID, s.stamp(), sizeBytes)
 	if err != nil {
 		return ExportStartResult{}, err
 	}
@@ -183,7 +197,7 @@ func (s *ExportService) Start(ctx context.Context, req ExportStartRequest, cloud
 		s.wg.Add(1)
 		go s.runExport(recordingID, exportID, cloud)
 	}
-	return ExportStartResult{RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State}, nil
+	return ExportStartResult{RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State, SizeBytes: record.SizeBytes}, nil
 }
 
 func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, cloud ExportCloud) (ExportStatus, error) {
@@ -255,7 +269,7 @@ func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, clo
 }
 
 func exportStatus(recordingID string, record ExportRecord) ExportStatus {
-	return ExportStatus{RecordingID: recordingID, ExportID: record.ExportID, State: record.State, UpdatedAt: record.UpdatedAt}
+	return ExportStatus{RecordingID: recordingID, ExportID: record.ExportID, State: record.State, UpdatedAt: record.UpdatedAt, SizeBytes: record.SizeBytes}
 }
 
 func (s *ExportService) failStatus(recordingID, exportID, code, message, scope string, retryable bool) ExportStatus {
