@@ -41,12 +41,6 @@ const (
 // Types 是全部支持的数据类型。
 var Types = []string{TypeNotifications, TypeRecordings, TypeWebPages, TypeImages}
 
-// Export record and package byte limits. Import does not cap business record count.
-const (
-	MaxRecords       = 100_000
-	MaxManifestBytes = 64 * 1024 * 1024
-)
-
 // Roots 是各类数据的存储根目录；缺失的类型视为不可用。
 type Roots map[string]string
 
@@ -762,16 +756,9 @@ func Export(roots Roots, output string, opts ExportOptions) (*Manifest, error) {
 		}
 	}
 	m.Records = dedupeRecords(m.Records)
-	// 导出端提前判上限，否则用户搬完整个目录才会在对端撞上拒绝。
-	if len(m.Records) > MaxRecords {
-		return nil, fail("PACKAGE_TOO_MANY_RECORDS")
-	}
 	serialized, err := marshalManifest(m)
 	if err != nil {
 		return nil, err
-	}
-	if len(serialized) > MaxManifestBytes {
-		return nil, fail("MANIFEST_TOO_LARGE")
 	}
 	if output != "" {
 		if err := os.WriteFile(filepath.Join(output, "manifest.json"), serialized, 0o600); err != nil {

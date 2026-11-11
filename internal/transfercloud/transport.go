@@ -41,8 +41,8 @@ func retry(ctx context.Context, fn func() error) error {
 // The task is created once; confirmation retries never start another upload.
 func (c *Client) Upload(ctx context.Context, path string) (*Receipt, error) {
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxBytes {
-		return nil, failure("CLOUD_FILE_INVALID", "迁移压缩包无效或超过 5 GiB")
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return nil, failure("CLOUD_FILE_INVALID", "迁移压缩包必须是非空普通文件")
 	}
 	if err = c.CheckAuth(); err != nil {
 		return nil, err
