@@ -6,17 +6,20 @@ Apply the parent `yoooclaw-context-query` rules.
 
 ```bash
 yoooclaw recording storage-path --format json
-yoooclaw recording list [--source all|capture_app|smart_hardware] \
+yoooclaw recording list [--source all|mobile_app|capture_app] \
   [--status <STATUS>] [--client <label>] \
   [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>] --format json
-yoooclaw recording +today [--source all|capture_app|smart_hardware] --format json
-yoooclaw recording +latest [--source all|capture_app|smart_hardware] --format json
+yoooclaw recording +today [--source all|mobile_app|capture_app] --format json
+yoooclaw recording +latest [--source all|mobile_app|capture_app] --format json
 ```
 
 The default source is `all`. Every item identifies its origin:
 
 - `capture_app` / `YoooClaw Capture`: meetings recorded by the desktop voice-input App.
-- `smart_hardware` / `YoooClaw 智能硬件`: recordings synchronized from YoooClaw hardware.
+- `mobile_app` / `YoooClaw 智能硬件`: recordings synchronized from the YoooClaw hardware that
+  the App connects to. When the user says "YoooClaw 硬件", "智能硬件", "硬件录音", or names a
+  hardware device, still use `mobile_app`. `smart_hardware` is only accepted as a legacy
+  `--source` input alias; `source_type` in output is always `mobile_app`.
 
 Mixed lists are sorted globally by actual occurrence time descending. `--from` is inclusive and
 `--to` is exclusive. `--client` identifies a hardware instance and therefore excludes Capture when
@@ -51,7 +54,7 @@ depend on the returned source:
   is present only when its declared artifact currently exists as a regular file. Read a Capture
   transcript by flattening `transcripts[].sentences[]` in `begin_time`, `end_time` order and retain
   `speaker_id`; its ASR `task_id` is not the recording ID.
-- `smart_hardware`: use the source root in `recording storage-path` and resolve the existing
+- `mobile_app`: use the source root in `recording storage-path` and resolve the existing
   `transcriptFile`, `summaryFile`, `srtFile`, or `audioFile` relative to that root.
 
 For a stored hardware summary, prefer `summaryFile` returned by status. If status omits the path,
@@ -79,8 +82,9 @@ Hardware status progression may include:
 
 `receiving → pending_oss_upload → uploading_oss → oss_uploaded → synced → transcribing → transcribed`
 
-Hardware failure states include `receiving_failed` and `transcribe_failed`. Only hardware exposes
-the daemon state event flow:
+Hardware failure states include `receiving_failed` and `transcribe_failed`. `recording events`
+merges the `mobile_app` and `capture_app` event streams, sorted by event time; each event carries
+`sourceType`, so use that field to attribute diagnosis to its source:
 
 ```bash
 yoooclaw recording events --id <recording_id> --format json
@@ -88,7 +92,8 @@ yoooclaw recording events --since 24h --limit 500 --format json
 ```
 
 YoooClaw Capture's `status` is producer metadata only. If a Capture artifact is missing, report the
-corresponding `has_*` and `missing_artifacts` facts rather than applying the hardware state model.
+corresponding `has_*` and `missing_artifacts` facts rather than applying the hardware state model,
+even when an event mentions the same recording.
 
 ## 5. Answer
 

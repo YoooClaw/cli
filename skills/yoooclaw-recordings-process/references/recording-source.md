@@ -21,15 +21,20 @@ entity branches also accept directly provided text.
 
 ```bash
 yoooclaw recording storage-path --format json
-yoooclaw recording list [--source all|capture_app|smart_hardware] \
+yoooclaw recording list [--source all|mobile_app|capture_app] \
   [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>] --format json
-yoooclaw recording +today [--source all|capture_app|smart_hardware] --format json
+yoooclaw recording +today [--source all|mobile_app|capture_app] --format json
 ```
 
 The default `all` covers both `YoooClaw Capture` and `YoooClaw 智能硬件`. Keep entries with
 `has_transcript = true`; do not filter on one shared status because Capture and hardware use
-different status vocabularies. Mixed results are already sorted by actual occurrence time
+Different status vocabularies. Mixed results are already sorted by actual occurrence time
 descending. Preserve `source_type` and `source_name` with every candidate.
+
+Capture recordings come from the gateway index, with the legacy `voice/recordings-jsonl/`
+index read only as a fallback for recordings not yet migrated. When both contain the same ID,
+the gateway entry wins. Legacy entries have no `clientLabel`, so they do not appear in
+`--client`-filtered queries.
 
 If no eligible recording exists, report that transcripts are not currently available and stop.
 
@@ -59,8 +64,11 @@ yoooclaw recording status <recording_id> --source <source_type> --format json
 - `capture_app`: read the returned absolute `transcript_path`. Flatten
   `transcripts[].sentences[]` by `begin_time`, `end_time`, preserving `speaker_id`. Do not treat
   transcript `task_id` as the recording ID.
-- `smart_hardware`: read `<smart_hardware.path>/<transcriptFile>`, using the smart-hardware root
-  returned by `recording storage-path`.
+- `mobile_app`: read the returned absolute `transcript_path`, or `<mobile_app.path>/<transcriptFile>`
+  using the root returned by `recording storage-path`. `mobile_app` is the App-to-hardware source:
+  requests about "YoooClaw 智能硬件", "硬件录音", or a named hardware device still use
+  `mobile_app`. `smart_hardware` is only a legacy `--source` input alias; output `source_type` is
+  always `mobile_app`.
 
 An item with `has_transcript = false`, a path in `missing_artifacts`, or an unreadable transcript is
 unavailable: stop for one selection; skip and report it in a batch. Do not use producer `status` to
@@ -73,9 +81,11 @@ Store for each `selectedSources` item:
 - absolute transcript path and content;
 - source kind (`recording`, `explicit-file`, or `provided-text`).
 
-When the user asks why a smart-hardware recording is unavailable, diagnose with
-`yoooclaw recording events --id <recording_id> --format json`. Capture has no hardware event stream;
-report its `missing_artifacts` without calling setup commands or modifying configuration.
+When the user asks why a mobile_app (smart-hardware) recording is unavailable, diagnose with
+`yoooclaw recording events --id <recording_id> --format json`. The event stream merges both sources
+and each event carries `sourceType`, so Capture events are returned too; Capture still reports its
+`missing_artifacts` rather than applying the hardware state model. Do not call setup commands or
+modify configuration.
 
 ## Integrity
 

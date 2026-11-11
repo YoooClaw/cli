@@ -44,6 +44,7 @@ type ExportStartResult struct {
 	RequestID   string `json:"requestId"`
 	ExportID    string `json:"exportId"`
 	State       string `json:"state"`
+	SourceType  string `json:"sourceType"`
 }
 
 type ExportFailure struct {
@@ -73,6 +74,7 @@ type ExportStatus struct {
 	ExportID    string         `json:"exportId"`
 	State       string         `json:"state"`
 	UpdatedAt   string         `json:"updatedAt"`
+	SourceType  string         `json:"sourceType"`
 	Result      *ExportResult  `json:"result"`
 	Error       *ExportFailure `json:"error"`
 }

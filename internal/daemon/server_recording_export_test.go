@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,12 +53,16 @@ func seedExportableRecording(t *testing.T, storage *recording.Storage, id, label
 	}
 }
 
-func waitGatewayExport(t *testing.T, url, label, recordingID, exportID string) map[string]any {
+func waitGatewayExport(t *testing.T, url, label, recordingID, exportID string, source ...string) map[string]any {
 	t.Helper()
+	body := `{"recordingId":"` + recordingID + `","exportId":"` + exportID + `"`
+	if len(source) > 0 && source[0] != "" {
+		body += `,"sourceType":"` + source[0] + `"`
+	}
+	body += `}`
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		resp := asClient(t, "POST", url+"/gateway/recordings.export.status", label,
-			`{"recordingId":"`+recordingID+`","exportId":"`+exportID+`"}`)
+		resp := asClient(t, "POST", url+"/gateway/recordings.export.status", label, body)
 		data := gatewayData(t, resp)
 		state, _ := data["state"].(string)
 		if state == "ready" || state == "failed" || state == "expired" {
@@ -89,9 +94,15 @@ func TestRecordingExportRoutesStartAndStatus(t *testing.T) {
 	if exportID == "" {
 		t.Fatalf("start=%+v", start)
 	}
+	if start["sourceType"] != recording.SourceMobileApp {
+		t.Fatalf("start sourceType=%v, want %s", start["sourceType"], recording.SourceMobileApp)
+	}
 	status := waitGatewayExport(t, ts.URL, "phone-a", "rec_export", exportID)
 	if status["state"] != "ready" {
 		t.Fatalf("status=%+v", status)
+	}
+	if status["sourceType"] != recording.SourceMobileApp {
+		t.Fatalf("status sourceType=%v, want %s", status["sourceType"], recording.SourceMobileApp)
 	}
 	result, _ := status["result"].(map[string]any)
 	payload, _ := result["writePayload"].(map[string]any)
@@ -132,6 +143,79 @@ func TestRecordingExportRoutesStartAndStatus(t *testing.T) {
 		if code := errorCode(asClient(t, "POST", ts.URL+"/gateway/"+remote.method, "phone-b", remote.body)); code != "NOT_FOUND" {
 			t.Fatalf("%s exposed to another client: %+v", remote.method, remote.body)
 		}
+	}
+}
+
+func TestCaptureRecordingExportRoutesStartAndStatus(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	withRecordings(t, srv)
+	capture := withCaptureRecordings(t, srv)
+	seedExportableRecording(t, srv.captureRecordingStorage, "cap_export", "phone-a")
+	cloud := &daemonFakeExportCloud{}
+	srv.exportCloudFn = func(label string) (recording.ExportCloud, error) {
+		if label != "phone-a" {
+			t.Fatalf("unexpected export label %q", label)
+		}
+		return cloud, nil
+	}
+
+	start := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"cap_export","requestId":"cap-req-1","sourceType":"capture_app"}`))
+	exportID := asString(start["exportId"])
+	if exportID == "" {
+		t.Fatalf("start=%+v", start)
+	}
+	if start["sourceType"] != recording.SourceCaptureApp {
+		t.Fatalf("start sourceType=%v, want %s", start["sourceType"], recording.SourceCaptureApp)
+	}
+	status := waitGatewayExport(t, ts.URL, "phone-a", "cap_export", exportID, recording.SourceCaptureApp)
+	if status["state"] != "ready" {
+		t.Fatalf("status=%+v", status)
+	}
+	if status["sourceType"] != recording.SourceCaptureApp {
+		t.Fatalf("status sourceType=%v, want %s", status["sourceType"], recording.SourceCaptureApp)
+	}
+	result, _ := status["result"].(map[string]any)
+	payload, _ := result["writePayload"].(map[string]any)
+	// 接收方必须能把导出文件写回 Capture 来源。
+	if payload["recordingId"] != "cap_export" || payload["sourceType"] != recording.SourceCaptureApp || payload["ossUrl"] == "" {
+		t.Fatalf("payload=%+v", payload)
+	}
+	transfer, _ := result["transfer"].(map[string]any)
+	if transfer["fileName"] != "cap_export.m4a" || transfer["sizeBytes"] != float64(len("audio-bytes-cap_export")) {
+		t.Fatalf("transfer=%+v", transfer)
+	}
+	// 导出记录保存在 Capture 索引中，不进移动端索引。
+	if records := recording.ReadIndex(capture); len(records) != 1 || len(records[0].Exports) != 1 {
+		t.Fatalf("capture index exports=%+v", records)
+	}
+	if entries := srv.recordingStorage.ListAll(); len(entries) != 0 {
+		t.Fatalf("capture export leaked to mobile index: %+v", entries)
+	}
+
+	// 同一 requestId 重放返回同一个 exportId，且不重复上传。
+	again := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"cap_export","requestId":"cap-req-1","sourceType":"capture_app"}`))
+	if asString(again["exportId"]) != exportID || cloud.uploads != 1 {
+		t.Fatalf("idempotent replay=%+v uploads=%d", again, cloud.uploads)
+	}
+
+	// 省略 sourceType 时仍是 mobile_app，看不到 Capture 录音及其导出。
+	for _, body := range []string{
+		`{"recordingId":"cap_export","requestId":"cap-req-2"}`,
+		`{"recordingId":"cap_export","exportId":"` + exportID + `"}`,
+	} {
+		method := "recordings.export.start"
+		if strings.Contains(body, "exportId") {
+			method = "recordings.export.status"
+		}
+		if code := errorCode(asClient(t, "POST", ts.URL+"/gateway/"+method, "phone-a", body)); code != "NOT_FOUND" {
+			t.Fatalf("%s without sourceType reached capture: %+v", method, body)
+		}
+	}
+	if code := errorCode(asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"cap_export","requestId":"cap-req-3","sourceType":"unknown"}`)); code != "INVALID_PARAMS" {
+		t.Fatalf("invalid sourceType code=%s", code)
 	}
 }
 

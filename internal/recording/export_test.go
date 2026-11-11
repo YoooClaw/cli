@@ -29,13 +29,17 @@ func (f *fakeExportCloud) UploadRecording(ctx context.Context, path string, onTa
 	f.mu.Lock()
 	f.uploads++
 	f.mu.Unlock()
+	// Stat before signalling started: tests mutate the source after receiving
+	// the signal and rely on the upload snapshot having been taken already,
+	// otherwise removing the audio can race with this stat and be reported as
+	// an upload failure instead of the post-upload source check.
+	info, statErr := os.Stat(path)
 	if f.started != nil {
 		select {
 		case f.started <- struct{}{}:
 		default:
 		}
 	}
-	info, statErr := os.Stat(path)
 	if onTask != nil {
 		if err := onTask("file-task-1", "users/audio/20261110/0123456789abcdef0123456789abcdef.m4a"); err != nil {
 			return ExportUpload{}, err
@@ -157,6 +161,9 @@ func TestExportReadyBuildsWritePayload(t *testing.T) {
 	result := status.Result
 	if result.WritePayload.RecordingID != "rec_export" || result.WritePayload.OssTaskID != "file-task-1" || result.WritePayload.OssURL == "" {
 		t.Fatalf("payload=%+v", result.WritePayload)
+	}
+	if result.WritePayload.SourceType != SourceMobileApp {
+		t.Fatalf("sourceType=%s", result.WritePayload.SourceType)
 	}
 	if result.WritePayload.DurationMillis == nil || *result.WritePayload.DurationMillis != 120000 {
 		t.Fatalf("durationMillis=%v", result.WritePayload.DurationMillis)

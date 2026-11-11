@@ -23,6 +23,7 @@ import (
 
 	"github.com/YoooClaw/cli/internal/assets"
 	"github.com/YoooClaw/cli/internal/calendar"
+	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/creds"
@@ -161,6 +162,11 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 		return err
 	}
 	recordingEventLog := recording.NewEventLog(ctx.Paths.Recordings)
+	captureRoot := capturerecording.RecordingsPath(ctx.Paths.Voice)
+	captureRecordingStorage := recording.NewCaptureStorage(captureRoot, logger)
+	if err := captureRecordingStorage.Init(); err != nil {
+		return err
+	}
 	ignored := map[string]bool{}
 	for _, a := range cfg.Notification.IgnoredApps {
 		ignored[a] = true
@@ -169,6 +175,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 	srv := &server{
 		ctx: ctx, cfg: cfg, logger: logger, st: st, storage: storage,
 		recordingStorage: recordingStorage, recordingEventLog: recordingEventLog,
+		captureRecordingStorage: captureRecordingStorage, captureRecordingEventLog: recording.NewEventLog(captureRoot),
 		locationStorage:   location.NewStorage(ctx.Paths.Locations),
 		calendarStorage:   calendar.NewStorage(ctx.Paths.Calendars),
 		reminderStorage:   reminders.NewStorage(ctx.Paths.Reminders),
@@ -189,7 +196,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			Recordings:    recordingStorage,
 		},
 	}
-	_ = srv.exportService()
+	srv.initRecordingExports()
 	if err := srv.startTransferImports(); err != nil {
 		srv.logger.Warn("[transfer] automatic import unavailable: invalid fulfillment configuration; check cloud host and report URL override")
 	}
@@ -256,10 +263,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			}
 		}
 	}
-	if count := recording.RecoverMissingResultAudio(recordingStorage, logger, recording.SyncOptions{
-		NotifyStatus: srv.notifyRecordingStatus,
-		URLRefresher: srv.recordingURLRefresher,
-	}); count > 0 {
+	if count := srv.recoverRecordingAudio(); count > 0 {
 		logger.Info(fmt.Sprintf("[recording-recovery] 已恢复 %d 个缺失音频任务", count))
 	}
 
@@ -288,9 +292,7 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			if sup := srv.supervisor(); sup != nil {
 				sup.StopAll(reason)
 			}
-			if srv.recordingExports != nil {
-				srv.recordingExports.Close()
-			}
+			srv.closeRecordingExports()
 			if srv.dataImports != nil {
 				srv.dataImports.Cancel()
 			}
@@ -324,38 +326,43 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 }
 
 type server struct {
-	lastRecordingActivity atomic.Int64
-	activeRecordingWrites atomic.Int64
-	activeRequests        atomic.Int64
-	ctx                   *clictx.Context
-	cfg                   config.Config
-	logger                *Logger
-	st                    *runtimeState
-	storage               *notif.Storage
-	recordingStorage      *recording.Storage
-	recordingEventLog     *recording.EventLog
-	recordingExports      *recording.ExportService
-	exportOnce            sync.Once
-	exportCloudFn         func(label string) (recording.ExportCloud, error)
-	transfer              *transfer.Service
-	transferImports       *transferjob.Service
-	ingressMode           string
-	token                 string
-	ignored               map[string]bool
-	bind                  string
-	port                  int
-	owner                 string
-	generation            string
-	executable            string
-	dataImports           *data.Imports
-	shutdown              func(string)
-	shutdownOnce          sync.Once
-	locationStorage       *location.Storage
-	calendarStorage       *calendar.Storage
-	reminderStorage       *reminders.Storage
-	healthDataStorage     *healthdata.Storage
-	assetReader           *assets.Service
-	assetOnce             sync.Once
+	lastRecordingActivity   atomic.Int64
+	activeRecordingWrites   atomic.Int64
+	activeRequests          atomic.Int64
+	ctx                     *clictx.Context
+	cfg                     config.Config
+	logger                  *Logger
+	st                      *runtimeState
+	storage                 *notif.Storage
+	recordingStorage        *recording.Storage
+	recordingEventLog       *recording.EventLog
+	recordingExports        *recording.ExportService
+	captureRecordingExports *recording.ExportService
+	exportOnce              sync.Once
+	exportCloudFn           func(label string) (recording.ExportCloud, error)
+	transfer                *transfer.Service
+	transferImports         *transferjob.Service
+	ingressMode             string
+	token                   string
+	ignored                 map[string]bool
+	bind                    string
+	port                    int
+	owner                   string
+	generation              string
+	executable              string
+	dataImports             *data.Imports
+	shutdown                func(string)
+	shutdownOnce            sync.Once
+	locationStorage         *location.Storage
+	calendarStorage         *calendar.Storage
+	reminderStorage         *reminders.Storage
+	healthDataStorage       *healthdata.Storage
+	assetReader             *assets.Service
+	assetOnce               sync.Once
+
+	captureRecordingStorage  *recording.Storage
+	captureRecordingEventLog *recording.EventLog
+	recordingResultMu        sync.Mutex
 
 	// shareMu 保护下面三个字段：/daemon/reload 会在请求 goroutine 里整体替换它们，
 	// 而每个并发请求都在读（鉴权、status、egress 推送）。
@@ -897,10 +904,7 @@ func defaultEntryLabel(set creds.CredentialSet) any {
 }
 
 func (s *server) activityPayload() map[string]any {
-	downloads := int64(0)
-	if s.recordingStorage != nil {
-		downloads = s.recordingStorage.ActiveDownloads()
-	}
+	downloads := s.activeRecordingDownloads()
 	importsBusy := s.dataImports != nil && s.dataImports.Busy()
 	requests := s.activeRequests.Load()
 	return map[string]any{"busy": downloads > 0 || requests > 0 || importsBusy, "dataImports": importsBusy, "activeRequests": requests, "recordingDownloads": downloads}
@@ -908,7 +912,7 @@ func (s *server) activityPayload() map[string]any {
 
 // 更新保护录音与 OSS 导入业务；普通请求计数仅用于状态展示。
 func (s *server) updateIdle(now time.Time) bool {
-	if (s.dataImports != nil && s.dataImports.Busy()) || s.activeRecordingWrites.Load() > 0 || (s.recordingStorage != nil && s.recordingStorage.ActiveDownloads() > 0) {
+	if (s.dataImports != nil && s.dataImports.Busy()) || s.activeRecordingWrites.Load() > 0 || s.activeRecordingDownloads() > 0 {
 		s.lastRecordingActivity.Store(now.UnixNano())
 		return false
 	}

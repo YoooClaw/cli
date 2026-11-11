@@ -75,6 +75,17 @@ func TestRecordingListExposesTypeAndExportable(t *testing.T) {
 	}
 }
 
+func TestRecordingListExposesSummaryFields(t *testing.T) {
+	item := recordingListItem(recording.Entry{ID: "rec", SummaryFile: "summaries/rec.md"}, true)
+	if item["has_summary"] != true || item["summaryFile"] != "summaries/rec.md" {
+		t.Fatalf("summary fields missing: %+v", item)
+	}
+	empty := recordingListItem(recording.Entry{ID: "empty"}, false)
+	if empty["has_summary"] != false || empty["summaryFile"] != nil {
+		t.Fatalf("empty summary must stay null: %+v", empty)
+	}
+}
+
 func TestRecordingListFailsOnCorruptIndexInsteadOfEmptyList(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	dir := t.TempDir()
@@ -109,19 +120,19 @@ func TestRecordingDegradedStorageRejectsDomainCalls(t *testing.T) {
 		t.Fatal("missing index with assets should degrade storage")
 	}
 
-	for method, want := range map[string]string{
-		"recordings.list":          "RECORDING_LIST_UNAVAILABLE",
-		"recordings.status":        "RECORDING_LIST_UNAVAILABLE",
-		"recordings.rename":        "RECORDING_STORAGE_UNAVAILABLE",
-		"recordings.export.start":  "RECORDING_LIST_UNAVAILABLE",
-		"recordings.export.status": "RECORDING_LIST_UNAVAILABLE",
+	for method, tc := range map[string]struct{ body, want string }{
+		"recordings.list":          {`{}`, "RECORDING_LIST_UNAVAILABLE"},
+		"recordings.status":        {`{"recordingId":"rec_a"}`, "RECORDING_LIST_UNAVAILABLE"},
+		"recordings.rename":        {`{"recordingId":"rec_a","name":"x"}`, "RECORDING_STORAGE_UNAVAILABLE"},
+		"recordings.export.start":  {`{"recordingId":"rec_a","requestId":"req"}`, "RECORDING_LIST_UNAVAILABLE"},
+		"recordings.export.status": {`{"recordingId":"rec_a","exportId":"exp"}`, "RECORDING_LIST_UNAVAILABLE"},
 	} {
-		resp := asClient(t, http.MethodPost, ts.URL+"/gateway/"+method, "phone-a", `{"recordingId":"rec_a","name":"x"}`)
+		resp := asClient(t, http.MethodPost, ts.URL+"/gateway/"+method, "phone-a", tc.body)
 		if resp["ok"] != false {
 			t.Fatalf("%s succeeded on degraded storage: %+v", method, resp)
 		}
 		errObj, _ := resp["error"].(map[string]any)
-		if errObj["code"] != want {
+		if errObj["code"] != tc.want {
 			t.Fatalf("%s error=%+v", method, errObj)
 		}
 	}

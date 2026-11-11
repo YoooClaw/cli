@@ -26,9 +26,9 @@ func newRecordingCmd() *cobra.Command {
 	list.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	list.Flags().String("from", "", "录音时间起点（含，ISO 8601 或 YYYY-MM-DD）")
 	list.Flags().String("to", "", "录音时间终点（不含，ISO 8601 或 YYYY-MM-DD）")
-	list.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	list.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 	status := &cobra.Command{Use: "status <id>", Short: "查看单条录音详情 🟢", Args: cobra.ExactArgs(1), RunE: run(recordingStatusCmd)}
-	status.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	status.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 	storagePath := &cobra.Command{Use: "storage-path", Short: "打印录音存储目录绝对路径 🟢", Args: cobra.NoArgs, RunE: run(recordingStoragePath)}
 
 	setupAsr := &cobra.Command{Use: "setup-asr", Short: "交互式配置 ASR 转写参数 🟢", Args: cobra.NoArgs, RunE: run(recordingSetupAsr)}
@@ -46,20 +46,20 @@ func newRecordingCmd() *cobra.Command {
 	events.Flags().String("limit", "200", "返回条数上限")
 
 	latest := &cobra.Command{Use: "+latest", Short: "展示最新一条录音详情", Args: cobra.NoArgs, RunE: run(recordingLatest)}
-	latest.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	latest.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 	today := &cobra.Command{Use: "+today", Short: "列出本地自然日内的今日录音", Args: cobra.NoArgs, RunE: run(recordingToday)}
 	today.Flags().String("status", "", "按录音来源状态过滤")
 	today.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
-	today.Flags().String("source", "all", "录音来源：all | capture_app | smart_hardware")
+	today.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 
 	c.AddCommand(list, status, storagePath, setupAsr, events, latest, today)
 	return c
 }
 
-func recToListItem(r recording.Entry) map[string]any {
+func recToListItem(r recording.Entry, sourceType string) map[string]any {
 	return map[string]any{
-		"id": r.ID, "source_type": recordingSourceSmartHardware,
-		"source_name": recordingSourceSmartHardwareName,
+		"id": r.ID, "source_type": sourceType,
+		"source_name": recordingSourceName(sourceType),
 		"clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
 		"title":        nilIfEmpty(r.Title),
 		"duration_ms":  int64(r.Metadata.DurationSec * 1000),
@@ -67,7 +67,8 @@ func recToListItem(r recording.Entry) map[string]any {
 		"status":            r.Status,
 		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
 		"audio_status":      r.AudioStatus,
-		"has_audio":         r.AudioFile != "", "has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
+		"has_audio":         r.AudioFile != "", "has_srt": r.SrtFile != "",
+		"has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
 		"missing_artifacts": []string{},
 		"created_at":        r.Metadata.CreatedAt, "updated_at": r.UpdatedAt, "error": nilIfEmpty(r.LastError),
 	}
@@ -75,9 +76,17 @@ func recToListItem(r recording.Entry) map[string]any {
 
 const (
 	recordingSourceAll               = "all"
-	recordingSourceSmartHardware     = "smart_hardware"
+	recordingSourceMobileApp         = "mobile_app"
+	recordingSourceSmartHardware     = "smart_hardware" // 兼容旧参数的别名，内部统一为 mobile_app
 	recordingSourceSmartHardwareName = "YoooClaw 智能硬件"
 )
+
+func recordingSourceName(sourceType string) string {
+	if sourceType == capturerecording.SourceType {
+		return capturerecording.SourceName
+	}
+	return recordingSourceSmartHardwareName
+}
 
 type recordingQueryItem struct {
 	id         string
@@ -94,37 +103,15 @@ func parseRecordingSource(raw string) (string, error) {
 		source = recordingSourceAll
 	}
 	switch source {
-	case recordingSourceAll, capturerecording.SourceType, recordingSourceSmartHardware:
+	case recordingSourceAll, recordingSourceMobileApp, capturerecording.SourceType:
 		return source, nil
+	case recordingSourceSmartHardware:
+		// 旧参数保留为别名，查询与输出统一使用网关枚举。
+		return recordingSourceMobileApp, nil
 	default:
 		return "", errs.Newf(errs.CodeInvalidArgument,
-			"--source 必须是 all、capture_app 或 smart_hardware（收到 %q）", raw)
+			"--source 必须是 all、mobile_app 或 capture_app（smart_hardware 为 mobile_app 别名，收到 %q）", raw)
 	}
-}
-
-func captureToListItem(item capturerecording.Item) map[string]any {
-	return map[string]any{
-		"id": item.ID, "source_type": capturerecording.SourceType,
-		"source_name": capturerecording.SourceName,
-		"clientLabel": nil, "name": item.Title, "title": item.Title,
-		"duration_ms": item.DurationMS, "duration_sec": float64(item.DurationMS) / 1000,
-		"duration_display": recording.FormatDurationDisplay(float64(item.DurationMS) / 1000),
-		"status":           item.Status, "file_size_display": "--", "audio_status": nil,
-		"has_audio": item.HasAudio, "has_transcript": item.HasTranscript, "has_summary": item.HasSummary,
-		"recorded_at": item.RecordedAt, "created_at": item.RecordedAt, "updated_at": nil, "error": nil,
-		"missing_artifacts": item.MissingArtifacts, "diagnostics": item.Diagnostics,
-	}
-}
-
-func captureDetail(item capturerecording.Item) map[string]any {
-	detail := captureToListItem(item)
-	detail["audioFile"] = stringPointerValue(item.AudioRelPath)
-	detail["transcriptFile"] = stringPointerValue(item.TranscriptRelPath)
-	detail["summaryFile"] = stringPointerValue(item.SummaryRelPath)
-	detail["audio_path"] = stringPointerValue(item.AudioPath)
-	detail["transcript_path"] = stringPointerValue(item.TranscriptPath)
-	detail["summary_path"] = stringPointerValue(item.SummaryPath)
-	return detail
 }
 
 func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
@@ -142,43 +129,116 @@ func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, er
 	return recordingListRange(cmd.Context(), ctx, flagStr(cmd, "status"), flagStr(cmd, "client"), flagStr(cmd, "source"), from, to)
 }
 
+// captureToListItem builds legacy Capture fallback entries through the same
+// schema as gateway-index entries, then adds the legacy-only extras.
+func captureToListItem(item capturerecording.Item) map[string]any {
+	entry := recording.Entry{
+		ID: item.ID,
+		Metadata: recording.Metadata{
+			Name: item.Title, CreatedAt: item.RecordedAt,
+			DurationSec: float64(item.DurationMS) / 1000,
+		},
+		Status:         item.Status,
+		AudioFile:      stringOrEmpty(item.AudioRelPath),
+		TranscriptFile: stringOrEmpty(item.TranscriptRelPath),
+		SummaryFile:    stringOrEmpty(item.SummaryRelPath),
+		Title:          item.Title,
+	}
+	list := recToListItem(entry, capturerecording.SourceType)
+	// Legacy items carry file facts rather than index paths; keep the actual
+	// presence flags instead of the rel-path approximation.
+	list["has_audio"], list["has_transcript"], list["has_summary"] = item.HasAudio, item.HasTranscript, item.HasSummary
+	list["missing_artifacts"] = nonNilStrings(item.MissingArtifacts)
+	list["recorded_at"] = item.RecordedAt
+	list["diagnostics"] = nonNilStrings(item.Diagnostics)
+	return list
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+func stringOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func captureDetail(item capturerecording.Item) map[string]any {
+	detail := captureToListItem(item)
+	// Fill the same detail schema as recordingDetail; legacy entries have no
+	// markers/SRT/ingest state, but consumers must not see missing keys.
+	detail["location"] = nil
+	detail["markers"] = []any{}
+	detail["srtFile"] = nil
+	detail["transcriptDataFile"] = nil
+	detail["ingestedAt"] = ""
+	detail["updatedAt"] = ""
+	detail["audioFile"] = stringPointerValue(item.AudioRelPath)
+	detail["transcriptFile"] = stringPointerValue(item.TranscriptRelPath)
+	detail["summaryFile"] = stringPointerValue(item.SummaryRelPath)
+	detail["audio_path"] = stringPointerValue(item.AudioPath)
+	detail["transcript_path"] = stringPointerValue(item.TranscriptPath)
+	detail["summary_path"] = stringPointerValue(item.SummaryPath)
+	return detail
+}
+
 func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, client, source string, from, to *time.Time) ([]recordingQueryItem, error) {
 	source, err := parseRecordingSource(source)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]recordingQueryItem, 0)
-	if source == recordingSourceAll || source == recordingSourceSmartHardware {
-		for _, r := range recording.ReadIndex(ctx.Paths.Recordings) {
-			if status != "" && r.Status != status {
+	appendEntries := func(entries []recording.Entry, sourceType string) {
+		for _, entry := range entries {
+			if status != "" && entry.Status != status ||
+				client != "" && client != "all" && labelOrLegacy2(entry.ClientLabel) != client {
 				continue
 			}
-			if client != "" && client != "all" && labelOrLegacy2(r.ClientLabel) != client {
+			occurredAt, hasTime := recording.EffectiveTime(entry)
+			if (from != nil || to != nil) && !hasTime ||
+				from != nil && occurredAt.Before(*from) || to != nil && !occurredAt.Before(*to) {
 				continue
 			}
-			occurredAt, hasTime := recording.EffectiveTime(r)
-			if (from != nil || to != nil) && !hasTime {
-				continue
-			}
-			if from != nil && occurredAt.Before(*from) || to != nil && !occurredAt.Before(*to) {
-				continue
+			list, detail := recToListItem(entry, sourceType), recordingDetail(entry, sourceType)
+			if sourceType == capturerecording.SourceType {
+				addCaptureUploadPaths(capturerecording.RecordingsPath(ctx.Paths.Voice), entry, list, detail)
 			}
 			items = append(items, recordingQueryItem{
-				id: r.ID, sourceType: recordingSourceSmartHardware,
-				occurredAt: occurredAt, hasTime: hasTime,
-				list: recToListItem(r), detail: recordingDetail(r),
+				id: entry.ID, sourceType: sourceType,
+				occurredAt: occurredAt, hasTime: hasTime, list: list, detail: detail,
 			})
 		}
 	}
-	if (source == recordingSourceAll || source == capturerecording.SourceType) &&
-		(client == "" || client == "all") {
-		captureItems, err := capturerecording.List(queryCtx, ctx.Paths.Voice, capturerecording.Query{
-			From: from, To: to, Status: status,
-		})
+	// The gateway index is authoritative for any ID it knows. The legacy daily
+	// index only fills in recordings that were never migrated, so an uploaded
+	// recording can never be overridden by stale local state.
+	uploadedCaptureIDs := map[string]bool{}
+	if source == recordingSourceAll || source == recordingSourceMobileApp {
+		appendEntries(recording.ReadIndex(ctx.Paths.Recordings), recordingSourceMobileApp)
+	}
+	if source == recordingSourceAll || source == capturerecording.SourceType {
+		entries := recording.ReadIndex(capturerecording.RecordingsPath(ctx.Paths.Voice))
+		for _, entry := range entries {
+			uploadedCaptureIDs[entry.ID] = true
+		}
+		appendEntries(entries, capturerecording.SourceType)
+	}
+	// Legacy Capture entries have no clientLabel, so they cannot satisfy a
+	// --client filter; skip the legacy source instead of returning mismatches.
+	if (source == recordingSourceAll || source == capturerecording.SourceType) && (client == "" || client == "all") {
+		legacy, err := capturerecording.List(queryCtx, ctx.Paths.Voice, capturerecording.Query{From: from, To: to, Status: status})
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range captureItems {
+		for _, item := range legacy {
+			if uploadedCaptureIDs[item.ID] {
+				continue
+			}
 			items = append(items, recordingQueryItem{
 				id: item.ID, sourceType: capturerecording.SourceType,
 				occurredAt: item.RecordedTime, hasTime: true,
@@ -229,14 +289,14 @@ func parseRecordingBoundary(raw, flagName string) (*time.Time, error) {
 	return &parsed, nil
 }
 
-func recordingDetail(r recording.Entry) map[string]any {
+func recordingDetail(r recording.Entry, sourceType string) map[string]any {
 	var markers any = r.Metadata.Markers
 	if markers == nil {
 		markers = []any{}
 	}
 	return map[string]any{
-		"id": r.ID, "source_type": recordingSourceSmartHardware,
-		"source_name": recordingSourceSmartHardwareName,
+		"id": r.ID, "source_type": sourceType,
+		"source_name": recordingSourceName(sourceType),
 		"clientLabel": labelOrLegacy2(r.ClientLabel), "name": r.Metadata.Name,
 		"recorded_at":       r.Metadata.CreatedAt,
 		"duration_ms":       int64(r.Metadata.DurationSec * 1000),
@@ -245,12 +305,13 @@ func recordingDetail(r recording.Entry) map[string]any {
 		"file_size_display": firstNonEmpty(r.Metadata.FileSizeDisplay, "--"),
 		"status":            r.Status, "created_at": r.Metadata.CreatedAt, "location": r.Metadata.Location,
 		"audio_status": r.AudioStatus,
-		"has_audio":    r.AudioFile != "", "has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
+		"has_audio":    r.AudioFile != "", "has_srt": r.SrtFile != "",
+		"has_transcript": r.TranscriptFile != "", "has_summary": r.SummaryFile != "",
 		"missing_artifacts": []string{},
 		"markers":           markers, "audioFile": nilIfEmpty(r.AudioFile), "srtFile": nilIfEmpty(r.SrtFile),
 		"transcriptDataFile": nilIfEmpty(r.TranscriptDataFile), "transcriptFile": nilIfEmpty(r.TranscriptFile),
 		"summaryFile": nilIfEmpty(r.SummaryFile), "title": nilIfEmpty(r.Title), "error": nilIfEmpty(r.LastError),
-		"ingestedAt": r.IngestedAt, "updatedAt": r.UpdatedAt,
+		"ingestedAt": r.IngestedAt, "updatedAt": r.UpdatedAt, "updated_at": r.UpdatedAt,
 	}
 }
 
@@ -287,11 +348,12 @@ func recordingStoragePath(ctx *clictx.Context, _ *cobra.Command, _ []string) (an
 	return map[string]any{
 		"ok": true, "path": ctx.Paths.Recordings,
 		"sources": map[string]any{
-			recordingSourceSmartHardware: map[string]any{
+			recordingSourceMobileApp: map[string]any{
 				"path": ctx.Paths.Recordings, "index": filepath.Join(ctx.Paths.Recordings, "index.json"),
 			},
 			capturerecording.SourceType: map[string]any{
 				"path":    capturerecording.RecordingsPath(ctx.Paths.Voice),
+				"index":   filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "index.json"),
 				"history": capturerecording.HistoryPath(ctx.Paths.Voice),
 			},
 		},
@@ -346,31 +408,58 @@ func parseSince(input string) (*time.Time, error) {
 }
 
 func recordingEvents(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	path := filepath.Join(ctx.Paths.Recordings, "state", "events.jsonl")
+	paths := map[string]string{
+		recordingSourceMobileApp:    filepath.Join(ctx.Paths.Recordings, "state", "events.jsonl"),
+		capturerecording.SourceType: filepath.Join(capturerecording.RecordingsPath(ctx.Paths.Voice), "state", "events.jsonl"),
+	}
 	limit := atoiDefault(flagStr(cmd, "limit"), 200)
 	since, err := parseSince(flagStr(cmd, "since"))
 	if err != nil {
 		return nil, err
 	}
 	id := flagStr(cmd, "id")
-	events := recording.ReadEvents(path)
-	filtered := make([]any, 0, len(events))
-	for _, e := range events {
-		if id != "" && e["recordingId"] != id {
-			continue
-		}
-		if since != nil {
-			tsStr, _ := e["ts"].(string)
-			if ts, ok := parseEventTime(tsStr); !ok || ts.Before(*since) {
+	type timedEvent struct {
+		event recording.Event
+		at    time.Time
+		valid bool
+	}
+	merged := make([]timedEvent, 0)
+	// 默认合并两个来源的事件流；每条事件自带 sourceType，合并后仍可区分来源。
+	for _, source := range []string{recordingSourceMobileApp, capturerecording.SourceType} {
+		for _, e := range recording.ReadEvents(paths[source]) {
+			if value, _ := e["sourceType"].(string); value == "" {
+				// 旧版本事件没有 sourceType，按所在文件补齐。
+				e["sourceType"] = source
+			}
+			if id != "" && e["recordingId"] != id {
 				continue
 			}
+			tsStr, _ := e["ts"].(string)
+			ts, ok := parseEventTime(tsStr)
+			if since != nil && (!ok || ts.Before(*since)) {
+				continue
+			}
+			merged = append(merged, timedEvent{event: e, at: ts, valid: ok})
 		}
-		filtered = append(filtered, e)
 	}
-	if len(filtered) > limit {
-		filtered = filtered[len(filtered)-limit:]
+	// 时间不可解析的事件按原始顺序排在最前，避免它们挤掉最近的事件。
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].valid != merged[j].valid {
+			return !merged[i].valid
+		}
+		if !merged[i].valid {
+			return false
+		}
+		return merged[i].at.Before(merged[j].at)
+	})
+	if len(merged) > limit {
+		merged = merged[len(merged)-limit:]
 	}
-	return map[string]any{"ok": true, "path": path, "total": len(filtered), "events": filtered}, nil
+	events := make([]any, 0, len(merged))
+	for _, item := range merged {
+		events = append(events, item.event)
+	}
+	return map[string]any{"ok": true, "paths": paths, "total": len(events), "events": events}, nil
 }
 
 func parseEventTime(s string) (time.Time, bool) {

@@ -13,15 +13,36 @@ import (
 	"github.com/YoooClaw/cli/internal/transfercloud"
 )
 
-func (s *server) exportService() *recording.ExportService {
+// exportServiceFor returns the export service bound to one recording source.
+// Each source owns a separate index, so export records must stay in the same
+// store as the recording they belong to.
+func (s *server) exportServiceFor(store *recording.Storage) *recording.ExportService {
 	s.exportOnce.Do(func() {
-		if s.recordingStorage == nil {
-			return
+		if s.recordingStorage != nil {
+			s.recordingExports = recording.NewExportService(s.recordingStorage, s.logger)
+			s.recordingExports.RecoverInterrupted()
 		}
-		s.recordingExports = recording.NewExportService(s.recordingStorage, s.logger)
-		s.recordingExports.RecoverInterrupted()
+		if s.captureRecordingStorage != nil {
+			s.captureRecordingExports = recording.NewExportService(s.captureRecordingStorage, s.logger)
+			s.captureRecordingExports.RecoverInterrupted()
+		}
 	})
+	if store != nil && store == s.captureRecordingStorage {
+		return s.captureRecordingExports
+	}
 	return s.recordingExports
+}
+
+func (s *server) initRecordingExports() {
+	_ = s.exportServiceFor(nil)
+}
+
+func (s *server) closeRecordingExports() {
+	for _, service := range []*recording.ExportService{s.recordingExports, s.captureRecordingExports} {
+		if service != nil {
+			service.Close()
+		}
+	}
 }
 
 func (s *server) recordingExportScope(auth authResult) string {
@@ -88,10 +109,11 @@ func (s *server) recordingExportCloud(label string) (recording.ExportCloud, erro
 	return &boundRecordingExportCloud{key: key, host: host, valid: valid}, nil
 }
 
-func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Request, auth authResult) {
+func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Request, auth authResult, method string) {
 	var body struct {
 		RecordingID string `json:"recordingId"`
 		RequestID   string `json:"requestId"`
+		SourceType  string `json:"sourceType"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -110,7 +132,16 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 		gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符")
 		return
 	}
-	entry, ok := s.recordingStorage.FindByID(recordingID)
+	store, ok := s.recordingStore(w, body.SourceType, method)
+	if !ok {
+		return
+	}
+	// 回显实际使用的来源，省略 sourceType 时明确返回默认的 mobile_app。
+	sourceType := recording.SourceMobileApp
+	if store == s.captureRecordingStorage {
+		sourceType = recording.SourceCaptureApp
+	}
+	entry, ok := store.FindByID(recordingID)
 	if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
 		gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 		return
@@ -118,17 +149,18 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 	scopeKey := s.recordingExportScope(auth)
 	// 幂等重放先于来源条件检查：首次受理回执丢失后，来源进入转写或变得
 	// 不可读时，同一 requestId 仍必须拿回原 exportId。
-	if existingEntry, record, found := s.recordingStorage.FindExportByRequest(scopeKey, requestID); found {
+	if existingEntry, record, found := store.FindExportByRequest(scopeKey, requestID); found {
 		if existingEntry.ID != recordingID {
 			gatewayErr(w, "REQUEST_CONFLICT", "requestId already belongs to another recording")
 			return
 		}
 		gatewayOK(w, recording.ExportStartResult{
 			RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State,
+			SourceType: sourceType,
 		})
 		return
 	}
-	if !s.recordingStorage.Exportable(entry) {
+	if !store.Exportable(entry) {
 		code := "SOURCE_UNREADABLE"
 		if entry.Status == recording.StatusTranscribing || entry.AudioStatus == recording.AudioStatusPending || entry.AudioStatus == recording.AudioStatusDownloading {
 			code = "SOURCE_BUSY"
@@ -141,20 +173,22 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 		gatewayErr(w, "EXPORT_UPLOAD_FAILED", err.Error())
 		return
 	}
-	result, err := s.exportService().Start(r.Context(), recording.ExportStartRequest{
+	result, err := s.exportServiceFor(store).Start(r.Context(), recording.ExportStartRequest{
 		RecordingID: recordingID, RequestID: requestID, ScopeKey: scopeKey,
 	}, cloud)
 	if err != nil {
 		writeRecordingExportError(w, err)
 		return
 	}
+	result.SourceType = sourceType
 	gatewayOK(w, result)
 }
 
-func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Request, auth authResult) {
+func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Request, auth authResult, method string) {
 	var body struct {
 		RecordingID string `json:"recordingId"`
 		ExportID    string `json:"exportId"`
+		SourceType  string `json:"sourceType"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -173,7 +207,16 @@ func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Requ
 		gatewayErr(w, "INVALID_PARAMS", "recordingId or exportId 含非法字符")
 		return
 	}
-	entry, ok := s.recordingStorage.FindByID(recordingID)
+	store, ok := s.recordingStore(w, body.SourceType, method)
+	if !ok {
+		return
+	}
+	// 回显实际使用的来源，省略 sourceType 时明确返回默认的 mobile_app。
+	sourceType := recording.SourceMobileApp
+	if store == s.captureRecordingStorage {
+		sourceType = recording.SourceCaptureApp
+	}
+	entry, ok := store.FindByID(recordingID)
 	if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
 		gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 		return
@@ -183,13 +226,14 @@ func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Requ
 		gatewayErr(w, "EXPORT_UPLOAD_FAILED", err.Error())
 		return
 	}
-	status, err := s.exportService().Status(r.Context(), recording.ExportStatusRequest{
+	status, err := s.exportServiceFor(store).Status(r.Context(), recording.ExportStatusRequest{
 		RecordingID: recordingID, ExportID: exportID, ScopeKey: s.recordingExportScope(auth),
 	}, cloud)
 	if err != nil {
 		writeRecordingExportError(w, err)
 		return
 	}
+	status.SourceType = sourceType
 	gatewayOK(w, status)
 }
 
