@@ -583,6 +583,37 @@ func TestExportUploadTimeSourceChange(t *testing.T) {
 	}
 }
 
+func TestSafeExportErrorKeepsServiceContext(t *testing.T) {
+	msg := `迁移服务返回 HTTP 429: POST openclaw-service.yoooclaw.com/api/device/file/plugin/create, Retry-After=3, body={"code":"RATE_LIMITED"}`
+	if got := safeExportError(errors.New(msg)); got != msg {
+		t.Fatalf("context dropped: %q", got)
+	}
+	got := safeExportError(errors.New(strings.Repeat("长", maxExportErrorMessage+50)))
+	if runes := []rune(got); len(runes) != maxExportErrorMessage+1 {
+		t.Fatalf("truncated length=%d", len(runes))
+	}
+}
+
+type diagnosticError struct {
+	msg    string
+	detail string
+}
+
+func (e diagnosticError) Error() string      { return e.msg }
+func (e diagnosticError) Diagnostic() string { return e.detail }
+
+func TestExportErrorLogKeepsLocalDetailOutOfRecord(t *testing.T) {
+	err := diagnosticError{msg: "迁移服务返回 HTTP 429", detail: `body={"code":"RATE_LIMITED"}`}
+	logged := exportErrorLog(err)
+	if !strings.Contains(logged, "HTTP 429") || !strings.Contains(logged, "RATE_LIMITED") {
+		t.Fatalf("log=%q", logged)
+	}
+	// 返回客户端并落盘的失败信息不能带响应体摘要。
+	if got := safeExportError(err); strings.Contains(got, "RATE_LIMITED") {
+		t.Fatalf("record message leaked detail: %q", got)
+	}
+}
+
 func TestExportUploadFailureMapping(t *testing.T) {
 	for name, tc := range map[string]struct {
 		err       error

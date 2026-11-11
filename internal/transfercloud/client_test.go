@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -201,6 +202,65 @@ func TestRecordingDownloadLinkReturnsExpiry(t *testing.T) {
 	}
 	if link.URL != signedURL || link.ExpiresAt.UnixMilli() != expiry {
 		t.Fatalf("link=%+v", link)
+	}
+}
+
+func TestHTTPErrorIncludesRequestContextAndLocalDetail(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, "{\"code\":\"RATE_LIMITED\",\n\"message\":\"too many requests\"}")
+	})
+	_, err := c.FileDownloadLink(context.Background(), "recording-task-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("error type %T", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{"HTTP 429", "POST", apiPath + "/download-url", "Retry-After=3"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message %q missing %q", msg, want)
+		}
+	}
+	if strings.ContainsAny(msg, "\r\n") {
+		t.Fatalf("message must stay on one line: %q", msg)
+	}
+	// 响应体只进本地诊断，不随错误文本返回客户端或写入导出记录。
+	if strings.Contains(msg, "RATE_LIMITED") {
+		t.Fatalf("response body leaked into error: %q", msg)
+	}
+	for _, want := range []string{"RATE_LIMITED", "too many requests"} {
+		if !strings.Contains(statusErr.Diagnostic(), want) {
+			t.Fatalf("diagnostic %q missing %q", statusErr.Diagnostic(), want)
+		}
+	}
+	if strings.ContainsAny(statusErr.Diagnostic(), "\r\n") {
+		t.Fatalf("diagnostic must stay on one line: %q", statusErr.Diagnostic())
+	}
+}
+
+func TestHTTPErrorDetailRedactsKeyAndIsBounded(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, `{"msg":"cli-key`+"\n"+strings.Repeat("x", maxHTTPErrorBody*2)+`"}`)
+	})
+	_, err := c.FileDownloadLink(context.Background(), "recording-task-1")
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("error type %T", err)
+	}
+	detail := statusErr.Diagnostic()
+	if strings.Contains(detail, "cli-key") {
+		t.Fatalf("api key leaked into diagnostic: %q", detail)
+	}
+	if strings.ContainsAny(detail, "\r\n") {
+		t.Fatalf("diagnostic must stay on one line: %q", detail)
+	}
+	if maxRunes := len([]rune(detail)); maxRunes > len("body=")+maxHTTPErrorRunes+1 {
+		t.Fatalf("diagnostic not truncated: %d runes", maxRunes)
 	}
 }
 
