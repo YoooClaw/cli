@@ -154,9 +154,14 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 			gatewayErr(w, "REQUEST_CONFLICT", "requestId already belongs to another recording")
 			return
 		}
+		sizeBytes := record.SizeBytes
+		if sizeBytes <= 0 {
+			// 旧记录在导出开始时尚未持久化大小，补一个当前预估。
+			sizeBytes = store.ExportSourceSize(entry)
+		}
 		gatewayOK(w, recording.ExportStartResult{
 			RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State,
-			SourceType: sourceType,
+			SourceType: sourceType, SizeBytes: sizeBytes,
 		})
 		return
 	}

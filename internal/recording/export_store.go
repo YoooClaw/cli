@@ -10,8 +10,10 @@ var (
 
 // BeginExport atomically checks requestId idempotency, rejects a concurrent
 // attempt on the same recording, persists a preparing record and appends it to
-// the bounded export history. Entry.UpdatedAt is not modified.
-func (s *Storage) BeginExport(recordingID, requestID, scopeKey, exportID, now string) (Entry, ExportRecord, bool, error) {
+// the bounded export history. sizeBytes is the current source-size estimate so
+// planning fields are available before the asynchronous export starts.
+// Entry.UpdatedAt is not modified.
+func (s *Storage) BeginExport(recordingID, requestID, scopeKey, exportID, now string, sizeBytes int64) (Entry, ExportRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureWritableLocked(); err != nil {
@@ -43,6 +45,7 @@ func (s *Storage) BeginExport(recordingID, requestID, scopeKey, exportID, now st
 	record := ExportRecord{
 		ExportID: exportID, RequestID: requestID, ScopeKey: scopeKey,
 		State: ExportStatePreparing, CreatedAt: now, UpdatedAt: now,
+		SizeBytes: sizeBytes,
 	}
 	previous := append([]ExportRecord(nil), entry.Exports...)
 	entry.Exports = append(entry.Exports, record)

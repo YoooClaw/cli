@@ -518,6 +518,31 @@ func (s *Storage) Exportable(entry Entry) bool {
 	return exportableWithRoot(root, entry)
 }
 
+// ExportSourceSize 返回源音频当前字节数，供 export.start 与 preparing/
+// uploading 状态的预估字段使用。它只做一次 stat，不计算 SHA-256；文件
+// 不可读或超过导出上限时返回 0，由异步导出给出最终状态。导出就绪后以
+// 记录中重新 stat 的 result.transfer.sizeBytes 为准。
+func (s *Storage) ExportSourceSize(entry Entry) int64 {
+	if entry.AudioFile == "" || entry.AudioStatus != AudioStatusDownloaded {
+		return 0
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return 0
+	}
+	defer root.Close()
+	f, err := root.Open(entry.AudioFile)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxAudioExportBytes {
+		return 0
+	}
+	return info.Size()
+}
+
 // ExportableEntries 计算整页列表的导出条件，只打开一次录音根目录。
 func (s *Storage) ExportableEntries(entries []Entry) map[string]bool {
 	out := make(map[string]bool, len(entries))
