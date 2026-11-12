@@ -44,6 +44,7 @@ jobs:
         run: go -C tools/oss-upload test -run '^TestOSSUploadSmoke$' -count=1 -v -timeout 5m
 
   verify:
+    name: ${{ inputs.verify_oss_upload && 'verify (probe-only)' || 'verify' }}
     if: inputs.verify_oss_upload != true
     runs-on: ubuntu-latest
     steps:
@@ -118,6 +119,7 @@ jobs:
           echo "::notice::Feishu 构建通知已送达"
 
   windows-installer:
+    name: ${{ inputs.verify_oss_upload && 'windows-installer (probe-only)' || 'windows-installer' }}
     if: inputs.verify_oss_upload != true
     runs-on: windows-latest
     steps:

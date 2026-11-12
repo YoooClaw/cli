@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# release.sh —— 开 release 分支 / 在 release 分支上 bump 版本并打 tag
+# release.sh —— 开 release 分支 / 创建版本 PR / 在已合入版本上打 tag
 #
 # 发布流程：
 #   1. 开分支：在 master（或任意非 release 分支）上运行，基于当前 HEAD 创建
 #      release/<版本>。之后往这个分支 push 的每个提交，CI 通过后都会自动发布到
 #      测试环境（版本号 <版本>-test.<run>）。
-#   2. 发布：在 release/<版本> 分支上运行，改 package.json 版本、提交并打 tag；
-#      tag 推送后由 release-cli.yml 发布到生产（beta 或正式版）。
+#   2. 发布：版本号需要变化时先创建版本 PR；合入 release 后再运行一次打 tag。
+#      仅已同步远端 release 的 HEAD 可以打 tag；tag 推送触发生产发布。
 #   3. 归档：把 release 分支合回 master，仅为代码归档，不触发任何发布。
 #
 # 用法：
@@ -20,7 +20,7 @@
 #   在 release/<版本> 分支上（打 tag 发生产）：
 #     ./release.sh                 # 发布分支名对应的正式版（release/1.2.3 → 1.2.3）
 #     ./release.sh 1.2.3-beta.0    # 发布 beta（npm beta tag，不动 live 安装脚本）
-#     ./release.sh 1.2.3 --push    # 顺带 push 分支 + tag（触发生产发布）
+#     ./release.sh 1.2.3 --push    # 版本不同时创建版本 PR；合入后重跑，仅推送目标 tag
 #
 # 提交信息 / tag 按包名自动选：
 #   @yoooclaw/cli → 提交 "cli-<版本>"、tag "cli-v<版本>"（触发 release-cli.yml）
@@ -125,24 +125,48 @@ if [ "${next%%-*}" != "${branch_version%%-*}" ]; then
   echo "⚠ 版本 $next 与分支 $base 的版本号不一致，确认无误后继续"
 fi
 ensure_up_to_date "$base"
+if ! git show-ref --verify --quiet "refs/remotes/origin/$base" \
+  || [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$base")" ]; then
+  echo "✗ 必须在与 origin/$base 完全一致的提交上准备发布；本地改动请先通过 PR 合入"
+  exit 1
+fi
+if [ -n "$(git status --porcelain)" ]; then
+  echo "✗ 工作区不干净，请先提交或暂存改动"
+  exit 1
+fi
 
-echo "→ ${pkgname}：${current} → ${next}（在 ${base} 上打 tag ${tag}）"
+echo "→ ${pkgname}：${current} → ${next}（目标 ${base}，tag ${tag}）"
 
-# 改版本（仅替换首个 "version" 行，保证 1 行 diff）+ 只提交 package.json；版本已一致则直接在 HEAD 打 tag
+# release 分支必须经 PR 更新，版本提交也不例外。
 if [ "$current" != "$next" ]; then
+  version_branch="codex/release-${next}-version"
+  if [ "$do_push" = "yes" ]; then
+    command -v gh >/dev/null 2>&1 || { echo "✗ --push 创建版本 PR 需要 gh"; exit 1; }
+  fi
+  git checkout -b "$version_branch"
   perl -i -pe 'if (!$d && /"version"\s*:/) { s/("version"\s*:\s*")[^"]*(")/${1}'"$next"'${2}/; $d = 1 }' package.json
   git add package.json
   git commit -m "$msg"
+  if [ "$do_push" = "yes" ]; then
+    git push -u origin "$version_branch"
+    gh pr create --base "$base" --head "$version_branch" --title "$msg" \
+      --body "将 package.json 版本更新为 ${next}。合入后在 ${base} 上重新运行 release.sh，仅推送 ${tag}。"
+  else
+    echo "下一步：推送 $version_branch 并向 $base 创建版本 PR"
+  fi
+  echo "✓ 版本提交已准备；尚未创建或推送 tag"
+  echo "PR 合入后：git checkout $base && git pull --ff-only && ./release.sh $next --push"
+  exit 0
 fi
 git tag -a "$tag" -m "$next"
 
 echo "✓ 已打 tag：$tag @ $base"
 
 if [ "$do_push" = "yes" ]; then
-  # --follow-tags：连同 reachable 的 annotated tag 一起推；tag 一推即触发生产发布
-  git push --follow-tags -u origin "$base"
-  echo "✓ 已 push origin/$base + tag $tag → 生产发布 workflow 将自动触发"
+  # 精确推送本次 tag，不直接写受保护 release 分支，也不连带其他本地 tag。
+  git push origin "refs/tags/$tag"
+  echo "✓ 已 push tag $tag → 生产发布 workflow 将自动触发"
 else
-  echo "下一步：git push --follow-tags -u origin $base   # 推分支 + tag $tag，触发生产发布"
+  echo "下一步：git push origin refs/tags/$tag   # 仅推送本次 tag，触发生产发布"
 fi
 echo "归档（发布完成后）：gh pr create --base master --head $base --title \"$msg\""

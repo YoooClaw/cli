@@ -75,12 +75,17 @@ Shell 安装脚本通过 bash 语法检查。
 
 ## 发布上传配置
 
-上传默认使用 OSS_REGION 对应的区域端点。需要全球传输加速时，在仓库 Actions variable
-`OSS_ENDPOINT` 配置 `https://oss-accelerate.aliyuncs.com`，三处常规发布入口共同读取该配置；
-同名 environment / repository secret 优先，可用于单独覆盖测试或生产环境。
-留空或移除两处配置即可恢复区域端点，代码不要求桶必须开启加速。
-启用前须确认对应桶已开启传输加速，并验证普通 PUT、分片上传及完成请求；只读探测不能替代写入验证。
-若关闭桶的加速，应先清除或改写该配置。显式配置的端点失败会报错，不会自动切换端点。
+上传端点通过 `secrets.OSS_ENDPOINT || vars.OSS_ENDPOINT` 解析，未配置则使用 OSS_REGION 对应的区域端点。
+当前只在 production environment variable 配置了 OSS_ENDPOINT=https://oss-accelerate.aliyuncs.com，
+因此仅引用 production 环境的生产发布与生产探针会读到该加速配置；test 环境和仓库级均未配置。
+同名 environment secret 优先于 repository secret；secret 表达式整体优先于 variable。
+variable 支持 environment、repository、organization 作用域，环境级配置优先于同名仓库级配置。
+环境级配置要在 job 进入指定 environment 后才可用；本仓库在上传步骤的 env 中读取，不提前提升到 workflow 级。
+需要启用测试区加速时，应在 test 环境验证通过后配置该环境的 OSS_ENDPOINT variable。
+作用域与可用时机参见 [GitHub Variables reference](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)。
+清空当前环境的配置前也要检查是否还有仓库级配置，否则会回落到仓库值而非地域端点。
+启用加速前须确认对应桶已开启加速，并验证普通 PUT、分片上传及完成请求；只读探测不能替代写入验证。
+关闭桶加速时应先清除或改写会被解析到的端点配置。显式端点失败会报错，不会自动切换端点。
 
 制品上传默认并发 4，可通过 OSS_UPLOAD_CONCURRENCY 配为 1–8；单文件分片并发保持 3。
 仅上传安装器或 dry-run 不读取该并发配置。
@@ -119,7 +124,8 @@ OSS_ENDPOINT secret / variable 表达式，未配置则验证地域端点，不�
 [Actions 43178778892](https://github.com/YoooClaw/cli/actions/runs/43178778892)
 生产 job 已通过，确认该环境 CI 身份可经加速端点执行普通 PUT、文件分片上传、回读和 Abort，临时对象已删除。
 production environment variable OSS_ENDPOINT 已设为 https://oss-accelerate.aliyuncs.com，合入后发布流程读取。
-测试 job 被 environment 部署分支规则拒绝，未接触测试桶；未改保护规则，也未为测试区或仓库配置加速变量。
+测试 job 当时被 environment 部署分支规则拒绝，未接触测试桶；当时未改保护规则。
+随后已为 production 增加与 test 相同的 branch policy；测试区和仓库级加速变量仍未配置。
 合入允许的 release 分支后，以 verify_oss_upload=true 补跑，再决定启用测试区加速。
 
 
@@ -142,3 +148,22 @@ production environment 使用与 test 相同的 deployment branch policy：
 允许 release/* 分支及 cli-v* tag，拒绝 codex/* 等其他引用领取环境凭据。
 保留 tag 规则是因为正式发布与 macOS 签名都在 cli-v* tag 上运行。
 这限制允许的引用范围，不替代代码审查或对这些分支/tag 本身的保护。
+
+
+### release 分支与 tag 保护
+
+release/* 分支必须通过 PR 更新，不强制审批人数；必须通过 GitHub Actions 的 verify 和
+windows-installer 检查，并与目标分支保持最新。禁止删除、强推，管理员也没有这组更新规则的 bypass。
+新建 release/* 分支和 cli-v* tag 仅允许仓库管理员；已有 cli-v* tag 禁止改写与删除。
+创建权限与不可改写规则分开，管理员创建 tag 的授权不会同时豁免 tag 改写规则。
+规则定义保存在 docs/ops/cli-release-rulesets.json，现有 master ruleset 保持不变。
+这些规则限制直接写入，不强制额外人员审批；有合并权限的用户仍可在 CI 通过后合并自己的 PR。
+
+版本号变更也须通过 PR。运行 ./release.sh <版本> --push 时：
+- package.json 版本不同时，创建 codex/release-<版本>-version 分支及版本 PR，不打 tag。
+- 版本 PR 合入后切回 release 分支并 git pull --ff-only，再运行同一命令。
+- 版本已一致且本地 HEAD 与远端 release 完全一致时，仅创建、推送本次 tag，不直接推 release 分支。
+管理员仍可新建 release 分支和发布新 tag；旧 tag 不能复用，纠正版本应创建新版本 tag。
+
+手动探针模式中跳过的 verify/windows-installer 使用不同的 (probe-only) 检查名，
+不会替代正常 PR CI 的必需检查。保护规则配置后，探针仍须在允许的 release/tag 引用上运行。
