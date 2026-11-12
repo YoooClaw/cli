@@ -39,6 +39,7 @@ func findRecordingItem(t *testing.T, resp map[string]any, id string) map[string]
 func TestRecordingListExposesTypeAndExportable(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	storage := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
 	if _, err := storage.Ingest("rec_call", recording.Metadata{Name: "通话", RecordingType: recordingTypePtr(recording.RecordingTypeCall)}, "phone-a"); err != nil {
 		t.Fatal(err)
 	}

@@ -12,9 +12,11 @@
 
 不改变 App 的录音同步协议形态：`recordings.result.write` 异步受理，使用原 `recording.status` 事件及 `recordings.status` 查询确认完成，不新增事件名或 HTTP 录音入口。
 
-`recordings.result.write`、`recordings.list`、`recordings.status`、`recordings.rename`、`recordings.retranscribe`、`recordings.delete` 和 `recordings.export.start` / `recordings.export.status` 的请求体可选 `sourceType`。省略时选择 `mobile_app`，沿用 profile 的 `recordings/`；`recordings.list` 例外，省略时返回 `mobile_app` 与 `capture_app` 的合并列表，并按实际时间倒序排列。显式传入 `capture_app` 时选择 `voice/recordings/`，CLI 用该目录的 `index.json` 维护上报录音的全量索引与状态。旧版 Capture 应用写入的 `voice/recordings-jsonl/` 只作为未迁移历史录音的只读兜底，同一 ID 以网关索引为准。
+`recordings.result.write`、`recordings.list`、`recordings.status`、`recordings.rename`、`recordings.retranscribe`、`recordings.delete` 和 `recordings.export.start` / `recordings.export.status` 的请求体可选 `sourceType`。省略时选择 `mobile_app`，沿用 profile 的 `recordings/`；`recordings.list`、`recordings.status` 及 `recordings.export.start/status` 例外。`recordings.list` 省略时返回 `mobile_app` 与 `capture_app` 的合并列表，并按实际时间倒序排列。显式传入 `capture_app` 时选择 `voice/recordings/`，CLI 用该目录的 `index.json` 维护上报录音的全量索引与状态。旧版 Capture 应用写入的 `voice/recordings-jsonl/` 只作为未迁移历史录音的只读兜底，同一 ID 以网关索引为准。
 
 合并列表必须保持完整清单语义：任一侧索引降级或读取失败时整体返回 `RECORDING_LIST_UNAVAILABLE`，不得返回部分集合或成功空列表，避免 App 按差集误判。显式指定 `sourceType` 时仍保持单来源语义，该来源不可用即返回错误；显式查询健康来源可正常返回，以此实现来源间隔离。
+
+`recordings.status` 省略 `sourceType`（或传空白）时按 UUID 查询两个来源，并在客户端可见范围内返回匹配记录及其实际 `sourceType`；两个来源均有可见的同 UUID 记录时返回 `SOURCE_CONFLICT`，要求显式指定来源。显式传来源仅查询该来源。若健康来源已命中则返回该记录；未命中且任一来源降级时返回 `RECORDING_LIST_UNAVAILABLE`，不能把无法读取误报为 `NOT_FOUND`；全部可用且无可见匹配时返回 `NOT_FOUND`。写入、重命名、重新转写、删除方法的默认来源仍为 `mobile_app`。
 
 调用方使用同一个 `recordingId` 和 `sourceType` 对账。音频和索引均写入后，CLI 通过原 `recording.status` 通知目标客户端，事件中的 `audio_status` 为 `downloaded` 且 `audioFile` 非空。客户端可向同一来源查询状态后清理临时 OSS 文件。导出接口按来源查找索引，导出载荷 `writePayload` 同样携带 `sourceType`，接收方据此把录音写回对应来源。
 
@@ -155,3 +157,14 @@ transfercloud ──┘
 - taskId 持久化、结果/事件/查询回显、仅文本更新保留、旧 App 新 URL 清空、已有音频复用，以及凭据/环境切换保护测试通过。
 - 使用临时隔离目录启动编译后的 daemon，分别发送旧 App（无 ossTaskId）和新 App（带 ossTaskId）请求；各下载 18,700,000 字节并注入断流，均观察到非零偏移续传、最终 downloaded 和非空 audioFile，文件 SHA-256 与源文件相同。测试结束后已停止该 daemon，不替换现有安装。
 - 部署上传工具未修改。真实 App 创建的 RECORDING taskId 是否可调用服务端 `/download-url`，以及真实 VPN/OSS 网络环境，仍需联调；本地模拟不替代这两项验收。
+
+来源不可用包括 store 尚未初始化。显式指定不可用来源的 list/status 返回 `RECORDING_LIST_UNAVAILABLE`；status 默认查询时允许返回健康来源的可见命中，否则不能把不可用来源误报为不存在。导出省略来源的规则见下文。
+
+
+### 导出自动来源与幂等
+
+- `recordings.export.start` 省略 `sourceType` 或传空白时，在两个来源的客户端可见记录中按 UUID 查找，返回实际 `sourceType`。首次请求命中两个可见来源时返回 `SOURCE_CONFLICT`；显式指定来源只访问对应来源。
+- 同一客户端作用域内，先查已有 `requestId`。命中时沿用原来源与 `exportId`，即使后来另一来源出现相同 UUID，也不重新导出。该请求键已属于另一录音时返回 `REQUEST_CONFLICT`；两个来源都有该键时要求指定来源。显式来源保留原有按来源隔离的幂等键语义。
+- `recordings.export.status` 省略来源时用 `recordingId + exportId + 客户端作用域` 查找原任务，返回原任务的来源；仍要求传 `exportId`，不会擅自选择最近一次任务。
+- 任一候选来源不可用且没有找到原任务时返回 `RECORDING_LIST_UNAVAILABLE`，避免误判旧任务不存在或重复创建。已有原任务在健康来源中命中则可以继续查询／重放。
+- 新任务来源解析及受理在 daemon 内串行，防止并发请求在两个来源各自创建同一个自动查找请求键。后台上传仍异步执行。原有权限、上传流程和写入来源规则保持不变。

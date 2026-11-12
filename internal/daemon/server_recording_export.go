@@ -109,6 +109,77 @@ func (s *server) recordingExportCloud(label string) (recording.ExportCloud, erro
 	return &boundRecordingExportCloud{key: key, host: host, valid: valid}, nil
 }
 
+// resolveRecordingExport prefers a retained task over UUID lookup so retries
+// remain bound to their original source even if a duplicate UUID appears later.
+func (s *server) resolveRecordingExport(w http.ResponseWriter, auth authResult, source, id, requestID, exportID string) (*recording.Storage, recording.Entry, string, bool) {
+	sources, ok := s.recordingReadSources(w, source)
+	if !ok {
+		return nil, recording.Entry{}, "", false
+	}
+	var matched, task *recordingListSource
+	var matchedEntry, taskEntry recording.Entry
+	unavailable, duplicate := false, false
+	for _, candidate := range sources {
+		entry, found, err := candidate.store.LookupByID(id)
+		if err != nil {
+			unavailable = true
+			continue
+		}
+		if found && clientlabel.Visible(entry.ClientLabel, auth.scope()) {
+			if matched != nil {
+				duplicate = true
+			}
+			copy := candidate
+			matched = &copy
+			matchedEntry = entry
+		}
+		var existing recording.Entry
+		var record recording.ExportRecord
+		var retained bool
+		if requestID != "" {
+			existing, record, retained = candidate.store.FindExportByRequest(s.recordingExportScope(auth), requestID)
+		} else {
+			existing, record, retained = candidate.store.FindExport(id, exportID)
+		}
+		if !retained || record.ScopeKey != s.recordingExportScope(auth) || !clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+			continue
+		}
+		if existing.ID != id {
+			gatewayErr(w, "REQUEST_CONFLICT", "requestId already belongs to another recording")
+			return nil, recording.Entry{}, "", false
+		}
+		if task != nil {
+			gatewayErr(w, "SOURCE_CONFLICT", "export exists in multiple sources; specify sourceType")
+			return nil, recording.Entry{}, "", false
+		}
+		copy := candidate
+		task = &copy
+		taskEntry = existing
+	}
+	if task != nil {
+		return task.store, taskEntry, task.source, true
+	}
+	// Creating a new export requires proving the request key is unused in every
+	// selected source. A status miss also cannot be established on an unreadable store.
+	if unavailable {
+		gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
+		return nil, recording.Entry{}, "", false
+	}
+	if matched == nil {
+		gatewayErr(w, "NOT_FOUND", "Recording not found: "+id)
+		return nil, recording.Entry{}, "", false
+	}
+	if exportID != "" {
+		gatewayErr(w, "EXPORT_NOT_FOUND", "export not found")
+		return nil, recording.Entry{}, "", false
+	}
+	if duplicate {
+		gatewayErr(w, "SOURCE_CONFLICT", "recordingId exists in multiple sources; specify sourceType")
+		return nil, recording.Entry{}, "", false
+	}
+	return matched.store, matchedEntry, matched.source, true
+}
+
 func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Request, auth authResult, method string) {
 	var body struct {
 		RecordingID string `json:"recordingId"`
@@ -132,20 +203,14 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 		gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符")
 		return
 	}
-	store, ok := s.recordingStore(w, body.SourceType, method)
+	// Serialize source resolution and task creation across both stores.
+	s.recordingExportStartMu.Lock()
+	defer s.recordingExportStartMu.Unlock()
+	store, entry, sourceType, ok := s.resolveRecordingExport(w, auth, body.SourceType, recordingID, requestID, "")
 	if !ok {
 		return
 	}
-	// 回显实际使用的来源，省略 sourceType 时明确返回默认的 mobile_app。
-	sourceType := recording.SourceMobileApp
-	if store == s.captureRecordingStorage {
-		sourceType = recording.SourceCaptureApp
-	}
-	entry, ok := store.FindByID(recordingID)
-	if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
-		gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
-		return
-	}
+
 	scopeKey := s.recordingExportScope(auth)
 	// 幂等重放先于来源条件检查：首次受理回执丢失后，来源进入转写或变得
 	// 不可读时，同一 requestId 仍必须拿回原 exportId。
@@ -212,20 +277,11 @@ func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Requ
 		gatewayErr(w, "INVALID_PARAMS", "recordingId or exportId 含非法字符")
 		return
 	}
-	store, ok := s.recordingStore(w, body.SourceType, method)
+	store, entry, sourceType, ok := s.resolveRecordingExport(w, auth, body.SourceType, recordingID, "", exportID)
 	if !ok {
 		return
 	}
-	// 回显实际使用的来源，省略 sourceType 时明确返回默认的 mobile_app。
-	sourceType := recording.SourceMobileApp
-	if store == s.captureRecordingStorage {
-		sourceType = recording.SourceCaptureApp
-	}
-	entry, ok := store.FindByID(recordingID)
-	if !ok || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
-		gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
-		return
-	}
+
 	cloud, err := s.recordingExportCloud(entry.ClientLabel)
 	if err != nil {
 		gatewayErr(w, "EXPORT_UPLOAD_FAILED", err.Error())

@@ -486,16 +486,26 @@ func (s *Storage) removeRelativeLocked(rel string) {
 
 // FindByID 查询单条录音，返回副本。
 func (s *Storage) FindByID(id string) (Entry, bool) {
+	entry, found, _ := s.LookupByID(id)
+	return entry, found
+}
+
+// LookupByID checks availability and searches under the same lock.
+// A missing or degraded store is not an empty, healthy index.
+func (s *Storage) LookupByID(id string) (Entry, bool, error) {
+	if s == nil {
+		return Entry{}, false, ErrStorageUnavailable
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
-		return Entry{}, false
+		return Entry{}, false, ErrStorageUnavailable
 	}
 	idx := s.findIndexLocked(id)
 	if idx < 0 {
-		return Entry{}, false
+		return Entry{}, false, nil
 	}
-	return s.index.Recordings[idx], true
+	return s.index.Recordings[idx], true, nil
 }
 
 func (s *Storage) findIndexLocked(id string) int {

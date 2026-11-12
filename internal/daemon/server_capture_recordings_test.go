@@ -127,7 +127,7 @@ func TestCaptureRecordingGatewayPersistsBeforeNotifying(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ method, label, body, code string }{
-		{"status", label, `{"recordingId":"meeting"}`, "NOT_FOUND"},
+		{"status", label, `{"recordingId":"meeting","sourceType":"mobile_app"}`, "NOT_FOUND"},
 		{"status", "wuying-b", captureStatus, "NOT_FOUND"},
 		{"list", label, `{"sourceType":"unknown"}`, "INVALID_PARAMS"},
 		{"result.write", label, `{"recordingId":"meeting","summary":{"markdown":"wrong store"}}`, "SOURCE_CONFLICT"},

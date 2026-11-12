@@ -339,6 +339,7 @@ type server struct {
 	recordingExports        *recording.ExportService
 	captureRecordingExports *recording.ExportService
 	exportOnce              sync.Once
+	recordingExportStartMu  sync.Mutex
 	exportCloudFn           func(label string) (recording.ExportCloud, error)
 	transfer                *transfer.Service
 	transferImports         *transferjob.Service

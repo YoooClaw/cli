@@ -78,6 +78,7 @@ func waitGatewayExport(t *testing.T, url, label, recordingID, exportID string, s
 func TestRecordingExportRoutesStartAndStatus(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	storage := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
 	seedExportableRecording(t, storage, "rec_export", "phone-a")
 	seedExportableRecording(t, storage, "rec_other", "phone-a")
 	cloud := &daemonFakeExportCloud{}
@@ -210,17 +211,18 @@ func TestCaptureRecordingExportRoutesStartAndStatus(t *testing.T) {
 		t.Fatalf("idempotent replay=%+v uploads=%d", again, cloud.uploads)
 	}
 
-	// 省略 sourceType 时仍是 mobile_app，看不到 Capture 录音及其导出。
+	// 省略 sourceType 时自动找到 Capture 录音并沿用原导出。
 	for _, body := range []string{
-		`{"recordingId":"cap_export","requestId":"cap-req-2"}`,
+		`{"recordingId":"cap_export","requestId":"cap-req-1"}`,
 		`{"recordingId":"cap_export","exportId":"` + exportID + `"}`,
 	} {
 		method := "recordings.export.start"
 		if strings.Contains(body, "exportId") {
 			method = "recordings.export.status"
 		}
-		if code := errorCode(asClient(t, "POST", ts.URL+"/gateway/"+method, "phone-a", body)); code != "NOT_FOUND" {
-			t.Fatalf("%s without sourceType reached capture: %+v", method, body)
+		data := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/"+method, "phone-a", body))
+		if data["sourceType"] != recording.SourceCaptureApp || data["exportId"] != exportID {
+			t.Fatal(data)
 		}
 	}
 	if code := errorCode(asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
@@ -232,6 +234,7 @@ func TestCaptureRecordingExportRoutesStartAndStatus(t *testing.T) {
 func TestRecordingExportStartReplaysAfterSourceBecomesUnreadable(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	storage := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
 	seedExportableRecording(t, storage, "rec_export", "phone-a")
 	cloud := &daemonFakeExportCloud{}
 	srv.exportCloudFn = func(string) (recording.ExportCloud, error) { return cloud, nil }
@@ -267,6 +270,7 @@ func TestRecordingExportStartReplaysAfterSourceBecomesUnreadable(t *testing.T) {
 func TestRecordingExportRoutesValidation(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	storage := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
 	if _, err := storage.Ingest("rec_plain", recording.Metadata{Name: "无音频"}, "phone-a"); err != nil {
 		t.Fatal(err)
 	}
@@ -326,4 +330,56 @@ func TestGatewayHealthListsRecordingExportMethods(t *testing.T) {
 func errorCode(resp map[string]any) string {
 	errObj, _ := resp["error"].(map[string]any)
 	return asString(errObj["code"])
+}
+
+func TestRecordingExportAutomaticSourceAndReplay(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	mobile := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
+	t.Cleanup(srv.closeRecordingExports)
+	capture := srv.captureRecordingStorage
+	seedExportableRecording(t, capture, "same", "phone-a")
+	cloud := &daemonFakeExportCloud{}
+	srv.exportCloudFn = func(string) (recording.ExportCloud, error) { return cloud, nil }
+	start := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"request-auto","sourceType":"  "}`))
+	id := asString(start["exportId"])
+	if start["sourceType"] != "capture_app" {
+		t.Fatal(start)
+	}
+	waitGatewayExport(t, ts.URL, "phone-a", "same", id)
+	// A later duplicate UUID must not redirect a retained request or task.
+	seedExportableRecording(t, mobile, "same", "phone-a")
+	for _, body := range []string{`{"recordingId":"same","requestId":"request-auto"}`, `{"recordingId":"same","exportId":"` + id + `"}`} {
+		method := "start"
+		if strings.Contains(body, "exportId") {
+			method = "status"
+		}
+		result := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export."+method, "phone-a", body))
+		if result["exportId"] != id || result["sourceType"] != "capture_app" {
+			t.Fatal(result)
+		}
+	}
+	duplicate := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"new-request"}`)
+	if errorCode(duplicate) != "SOURCE_CONFLICT" {
+		t.Fatal(duplicate)
+	}
+	seedExportableRecording(t, mobile, "other", "phone-a")
+	conflict := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"other","requestId":"request-auto"}`)
+	if errorCode(conflict) != "REQUEST_CONFLICT" {
+		t.Fatal(conflict)
+	}
+	if cloud.uploads != 1 {
+		t.Fatalf("uploads=%d", cloud.uploads)
+	}
+	// Unavailable sources prevent establishing that a new key is unused, but
+	// do not hide a retained task in a healthy source.
+	srv.recordingStorage = nil
+	result := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"request-auto"}`))
+	if result["exportId"] != id {
+		t.Fatal(result)
+	}
+	missing := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"another"}`)
+	if errorCode(missing) != "RECORDING_LIST_UNAVAILABLE" {
+		t.Fatal(missing)
+	}
 }
