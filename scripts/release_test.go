@@ -42,17 +42,50 @@ func newReleaseFixture(t *testing.T, version string) *releaseFixture {
 			t.Fatal(err)
 		}
 	}
-	fake := []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_TEST_LOG\"\n")
+	fake := []byte(`#!/bin/sh
+printf '%s\n' "$@" >> "$GH_TEST_LOG"
+printf '%s\n' '--next-call--' >> "$GH_TEST_LOG"
+case "$1 $2" in
+ 'pr create') printf '%s\n' 'https://example.invalid/pull/1' ;;
+ 'pr checks')
+  case " $* " in
+   *' --json '*) printf '2\n' ;;
+   *) [ "${GH_TEST_CHECKS_FAIL:-0}" != 1 ] ;;
+  esac ;;
+ 'pr merge')
+  [ "${GH_TEST_MERGE_FAIL:-0}" != 1 ] || exit 1
+  if [ -n "$(git --git-dir "$GH_TEST_REMOTE" for-each-ref refs/tags/cli-v*)" ]; then
+   echo 'tag created before CI and merge' >&2
+   exit 1
+  fi
+  tree=$(git --git-dir "$GH_TEST_REMOTE" rev-parse refs/heads/codex/release-0.2.0-version^{tree})
+  parent=$(git --git-dir "$GH_TEST_REMOTE" rev-parse refs/heads/release/0.2.0)
+  merged=$(printf 'cli-0.2.0\n\nfixture squash commit\n' | git --git-dir "$GH_TEST_REMOTE" commit-tree "$tree" -p "$parent") || exit 1
+  git --git-dir "$GH_TEST_REMOTE" update-ref refs/heads/release/0.2.0 "$merged" || exit 1
+  printf '%s\n' "$merged" > "$GH_TEST_MERGED_HEAD"
+  if [ "${GH_TEST_BASE_ADVANCES:-0}" = 1 ]; then
+   advanced=$(printf 'another approved change\n' | git --git-dir "$GH_TEST_REMOTE" commit-tree "$tree" -p "$merged") || exit 1
+   git --git-dir "$GH_TEST_REMOTE" update-ref refs/heads/release/0.2.0 "$advanced" || exit 1
+  fi ;;
+ 'pr view') cat "$GH_TEST_MERGED_HEAD" ;;
+ *) echo 'unexpected gh invocation' >&2; exit 1 ;;
+esac
+`)
+
 	if err := os.WriteFile(filepath.Join(bin, "gh"), fake, 0700); err != nil {
 		t.Fatal(err)
 	}
 	f.env = os.Environ()
 	f.setEnv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	f.setEnv("GH_TEST_LOG", f.ghLog)
+	f.setEnv("GH_TEST_REMOTE", f.remote)
+	f.setEnv("GH_TEST_MERGED_HEAD", filepath.Join(root, "merged-head"))
 	f.setEnv("GIT_CONFIG_NOSYSTEM", "1")
 	f.setEnv("GIT_CONFIG_GLOBAL", filepath.Join(root, "no-global"))
 	f.setEnv("GIT_TERMINAL_PROMPT", "0")
 	f.git("init", "--bare", f.remote)
+	f.git("--git-dir", f.remote, "config", "user.email", "release-test@example.invalid")
+	f.git("--git-dir", f.remote, "config", "user.name", "Release test")
 	f.git("init", "--initial-branch=master")
 	f.git("config", "user.email", "release-test@example.invalid")
 	f.git("config", "user.name", "Release test")
@@ -103,44 +136,66 @@ func (f *releaseFixture) git(args ...string) string {
 	}
 	return strings.TrimSpace(out)
 }
-func TestReleaseVersionBumpUsesPRThenPushesOnlyMergedTag(t *testing.T) {
+func TestReleaseVersionBumpAutomaticallyMergesAndPushesOnlyMergedTag(t *testing.T) {
 	f := newReleaseFixture(t, "0.1.0")
+	f.git("tag", "-a", "unrelated-local-tag", "-m", "must stay local")
 	if out, err := f.command("bash", "release.sh", "--push"); err != nil {
-		t.Fatalf("release bump: %v\n%s", err, out)
+		t.Fatalf("single-command release: %v\n%s", err, out)
 	}
-	if got := f.git("branch", "--show-current"); got != "codex/release-0.2.0-version" {
+	if got := f.git("branch", "--show-current"); got != "release/0.2.0" {
 		t.Fatal(got)
 	}
 	raw, err := os.ReadFile(f.ghLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "pr\ncreate\n--base\nrelease/0.2.0\n--head\ncodex/release-0.2.0-version") {
-		t.Fatalf("wrong PR args: %s", raw)
-	}
-	if refs := f.git("ls-remote", "--tags", "origin"); refs != "" {
-		t.Fatalf("tag created before version PR merge: %s", refs)
-	}
-	if version := f.git("--git-dir", f.remote, "show", "refs/heads/release/0.2.0:package.json"); !strings.Contains(version, "0.1.0") {
-		t.Fatalf("release branch changed directly: %s", version)
-	}
-	// Simulate a server-side PR merge. Direct pushes to release remain rejected by the hook.
-	f.git("--git-dir", f.remote, "update-ref", "refs/heads/release/0.2.0", f.git("rev-parse", "HEAD"))
-	f.git("checkout", "release/0.2.0")
-	f.git("fetch", "origin")
-	f.git("merge", "--ff-only", "origin/release/0.2.0")
-	f.git("tag", "-a", "unrelated-local-tag", "-m", "must stay local")
-	if out, err := f.command("bash", "release.sh", "--push"); err != nil {
-		t.Fatalf("release merged version: %v\n%s", err, out)
+	calls := string(raw)
+	if !strings.Contains(calls, "pr\ncreate\n--base\nrelease/0.2.0\n--head\ncodex/release-0.2.0-version") ||
+		!strings.Contains(calls, "--required\n--watch\n--fail-fast") || !strings.Contains(calls, "--squash\n--subject\ncli-0.2.0\n--match-head-commit\n"+f.git("rev-parse", "codex/release-0.2.0-version")) || strings.Contains(calls, "--admin") {
+		t.Fatalf("wrong automatic PR flow: %s", raw)
 	}
 	refs := f.git("ls-remote", "--tags", "origin")
 	if !strings.Contains(refs, "refs/tags/cli-v0.2.0") || strings.Contains(refs, "unrelated-local-tag") {
 		t.Fatalf("wrong published tags: %s", refs)
 	}
-	if got := f.git("rev-parse", "cli-v0.2.0^{}"); got != f.git("rev-parse", "origin/release/0.2.0") {
+	merged := f.git("rev-parse", "origin/release/0.2.0")
+	if got := f.git("rev-parse", "cli-v0.2.0^{}"); got != merged {
 		t.Fatal("tag does not point to merged release")
 	}
+	if merged == f.git("rev-parse", "codex/release-0.2.0-version") {
+		t.Fatal("fixture must simulate a distinct squash commit")
+	}
 }
+
+func TestReleaseAutomaticPRFailureDoesNotPublishTag(t *testing.T) {
+	for _, setting := range []string{"GH_TEST_CHECKS_FAIL", "GH_TEST_MERGE_FAIL"} {
+		t.Run(setting, func(t *testing.T) {
+			f := newReleaseFixture(t, "0.1.0")
+			original := f.git("rev-parse", "origin/release/0.2.0")
+			f.setEnv(setting, "1")
+			if out, err := f.command("bash", "release.sh", "--push"); err == nil {
+				t.Fatalf("accepted failed PR flow: %s", out)
+			}
+			if refs := f.git("ls-remote", "--tags", "origin"); refs != "" {
+				t.Fatalf("tag published after failed PR flow: %s", refs)
+			}
+			if f.git("tag", "--list") != "" {
+				t.Fatal("local tag created after failed PR flow")
+			}
+			if f.git("--git-dir", f.remote, "rev-parse", "refs/heads/release/0.2.0") != original {
+				t.Fatal("release branch changed after failed PR flow")
+			}
+			calls, err := os.ReadFile(f.ghLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if setting == "GH_TEST_CHECKS_FAIL" && strings.Contains(string(calls), "pr\nmerge\n") {
+				t.Fatal("merge attempted after failed CI")
+			}
+		})
+	}
+}
+
 func TestReleaseRejectsUnmergedLocalCommitBeforeTagging(t *testing.T) {
 	f := newReleaseFixture(t, "0.2.0")
 	f.git("commit", "--allow-empty", "-m", "not reviewed")
@@ -283,5 +338,20 @@ done
 	}
 	if f.git("tag", "--list") != "cli-v0.2.0" {
 		t.Fatal("retry removed local tag")
+	}
+}
+
+func TestReleaseStopsIfBaseAdvancesAfterAutomaticMerge(t *testing.T) {
+	f := newReleaseFixture(t, "0.1.0")
+	f.setEnv("GH_TEST_BASE_ADVANCES", "1")
+	output, err := f.command("bash", "release.sh", "--push")
+	if err == nil || !strings.Contains(output, "版本 PR 合入后已有其他更新") {
+		t.Fatalf("accepted unexpected release head: %v\n%s", err, output)
+	}
+	if refs := f.git("ls-remote", "--tags", "origin"); refs != "" {
+		t.Fatalf("tag published on unexpected head: %s", refs)
+	}
+	if f.git("tag", "--list") != "" {
+		t.Fatal("created local tag on unexpected head")
 	}
 }

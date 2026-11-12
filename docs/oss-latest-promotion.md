@@ -161,19 +161,21 @@ require_extra_approval_for_unattributed_changes=false，显式关闭 GitHub 对�
 规则定义保存在 docs/ops/cli-release-rulesets.json，现有 master ruleset 保持不变。
 这些规则限制直接写入，不强制额外人员审批；有合并权限的用户仍可在 CI 通过后合并自己的 PR。
 
-版本号变更也须通过 PR。运行 ./release.sh <版本> --push 时：
-- package.json 版本不同时，创建 codex/release-<版本>-version 分支及版本 PR，不打 tag。
-- 版本 PR 合入后切回 release 分支并 git pull --ff-only，再运行同一命令。
-- 版本已一致且本地 HEAD 与远端 release 完全一致时，仅创建、推送本次 tag，不直接推 release 分支。
+正常发版仍只需在 release 分支运行一次 ./release.sh <版本> --push，不需要手工合版本 PR：
+- package.json 版本不同时，脚本自动创建版本分支及 PR，等待必需 CI，通过后以精确 head SHA squash 合入。
+- 脚本自动同步 release，确认其 HEAD 就是该 PR 的合并提交，随后创建并仅推送本次 tag。
+- 版本已一致且本地 HEAD 与远端 release 完全一致时，直接创建、推送目标 tag。
+脚本使用已登录的 gh，等待期间无需人工操作；CI 失败、PR 被改写、合并失败或 release 又有新提交时停止，不打 tag。
+不使用 --admin 绕过任何规则。未传 --push 时仅准备本地改动，不执行远端发版流程。
 管理员仍可新建 release 分支和发布新 tag；旧 tag 不能复用，纠正版本应创建新版本 tag。
 
 手动探针模式中跳过的 verify/windows-installer 使用不同的 (probe-only) 检查名，
 不会替代正常 PR CI 的必需检查。保护规则配置后，探针仍须在允许的 release/tag 引用上运行。
 
 
-版本 PR 建议使用 squash 合并，并保留标题 cli-<版本>；rebase 合并保留该标题也可。
-当前 deploy-test 按 push 的 head_commit.message 是否以 cli- 开头决定跳过版本提交。
-因此 squash/rebase 合并版本 PR 会跳过测试发布；merge commit 标题通常为 Merge pull request，
-会额外发布一次 alpha 测试版本并发送通知。三种合并方式均保留，生产仍由单独 tag 触发。
+脚本自动 squash 版本 PR，并显式保留 cli-<版本> 标题，使 deploy-test 跳过纯版本提交。
+若绕过脚本手工合并版本 PR，squash/rebase 且保留该标题也会跳过测试发布；
+普通 merge commit 标题通常为 Merge pull request，会额外发布一次 alpha 并通知。
+仓库仍允许三种合并方式，生产始终由单独 tag 触发。
 创建版本 PR 失败后重试前，应先查看 codex/release-<版本>-version 分支及已有 PR；
 脚本会对本地或远端同名版本分支明确拒绝，不自动覆盖或删除已有分支。
