@@ -72,3 +72,16 @@ CLI 与平台的双写路径已从本分支移除。
 Shell 安装脚本通过 bash 语法检查。
 测试不连接 OSS，不修改任何线上指针。
 本机未安装 PowerShell，Windows 执行验收待 CI。
+
+## 发布上传配置
+
+上传默认使用 OSS_REGION 对应的区域端点。需要全球传输加速时，在仓库 Actions variable
+`OSS_ENDPOINT` 配置 `https://oss-accelerate.aliyuncs.com`，三处常规发布入口共同读取该配置；
+同名 environment / repository secret 优先，可用于单独覆盖测试或生产环境。
+留空或移除两处配置即可恢复区域端点，代码不要求桶必须开启加速。
+启用前须确认对应桶已开启传输加速，并验证普通 PUT、分片上传及完成请求；只读探测不能替代写入验证。
+若关闭桶的加速，应先清除或改写该配置。显式配置的端点失败会报错，不会自动切换端点。
+
+制品上传默认并发 4，可通过 OSS_UPLOAD_CONCURRENCY 配为 1–8；单文件分片并发保持 3。
+仅上传安装器或 dry-run 不读取该并发配置。
+任一制品失败会停止派发、取消在途请求，并等待 SDK 清理结束；汇总所有已启动任务的错误后退出，不写 manifest。

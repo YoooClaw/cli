@@ -41,9 +41,11 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -363,10 +365,15 @@ func validateTestTarget(bucket, publicURL string) error {
 	return nil
 }
 
-// uploadArtifacts waits for active uploads on failure before the caller can publish a manifest.
-func uploadArtifacts(artifacts []artifact, limit int, upload func(artifact) error) error {
+// uploadArtifacts cancels peers on failure and waits for their cleanup before returning.
+func uploadArtifacts(artifacts []artifact, limit int, upload func(context.Context, artifact) error) error {
+	if limit < 1 {
+		return fmt.Errorf("upload concurrency must be positive, got %d", limit)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var mu sync.Mutex
-	var firstErr error
+	var failures []error
 	next := 0
 	var wg sync.WaitGroup
 	for worker := 0; worker < limit && worker < len(artifacts); worker++ {
@@ -375,18 +382,17 @@ func uploadArtifacts(artifacts []artifact, limit int, upload func(artifact) erro
 			defer wg.Done()
 			for {
 				mu.Lock()
-				if firstErr != nil || next >= len(artifacts) {
+				if ctx.Err() != nil || next >= len(artifacts) {
 					mu.Unlock()
 					return
 				}
 				a := artifacts[next]
 				next++
 				mu.Unlock()
-				if err := upload(a); err != nil {
+				if err := upload(ctx, a); err != nil {
 					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
+					failures = append(failures, fmt.Errorf("%s: %w", a.Filename, err))
+					cancel()
 					mu.Unlock()
 					return
 				}
@@ -394,7 +400,19 @@ func uploadArtifacts(artifacts []artifact, limit int, upload func(artifact) erro
 		}()
 	}
 	wg.Wait()
-	return firstErr
+	return errors.Join(failures...)
+}
+
+func uploadConcurrency(only string, dryRun bool) (int, error) {
+	if only == "install" || dryRun {
+		return 1, nil
+	}
+	raw := envOr("OSS_UPLOAD_CONCURRENCY", "4")
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 8 {
+		return 0, fmt.Errorf("OSS_UPLOAD_CONCURRENCY must be an integer between 1 and 8, got %q", raw)
+	}
+	return limit, nil
 }
 
 func main() {
@@ -410,9 +428,9 @@ func main() {
 
 	root := findRepoRoot()
 	loadDotEnv(root)
-	concurrency, err := strconv.Atoi(envOr("OSS_UPLOAD_CONCURRENCY", "4"))
-	if err != nil || concurrency < 1 || concurrency > 8 {
-		fatalf("OSS_UPLOAD_CONCURRENCY must be an integer between 1 and 8")
+	concurrency, err := uploadConcurrency(*only, *dryRun)
+	if err != nil {
+		fatalf("%v", err)
 	}
 
 	version := *versionFlag
@@ -499,12 +517,12 @@ func main() {
 
 	if *only == "" || *only == "artifacts" {
 		artifacts := collectArtifacts(distDir, prefix, publicURL, version)
-		if err := uploadArtifacts(artifacts, concurrency, func(a artifact) error {
+		if err := uploadArtifacts(artifacts, concurrency, func(ctx context.Context, a artifact) error {
 			if u.dryRun {
 				logf("would upload %s -> %s", a.Filename, a.Key)
 				return nil
 			}
-			if err := u.upload(a.Key, nil, a.localPath, a.ContentType, a.Filename); err != nil {
+			if err := u.uploadContext(ctx, a.Key, nil, a.localPath, a.ContentType, a.Filename); err != nil {
 				return err
 			}
 			okf("done: %s", a.URL)

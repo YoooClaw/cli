@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -126,5 +130,28 @@ func TestUploadRetryLimitAndCancellation(t *testing.T) {
 				t.Fatalf("err=%v calls=%d", err, f.puts)
 			}
 		})
+	}
+}
+
+func TestUploadContextPreservesParentCancellation(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("ETag", "fixture")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	cfg := oss.LoadDefaultConfig().WithRegion("cn-hangzhou").WithEndpoint(server.URL).
+		WithUsePathStyle(true).WithRetryMaxAttempts(1).
+		WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test-key", "test-secret"))
+	u := &uploader{client: oss.NewClient(cfg), bucket: "test-bucket"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := u.uploadContext(ctx, "key", []byte("fixture"), "", "text/plain", "fixture")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("sent %d requests after cancellation", requests.Load())
 	}
 }

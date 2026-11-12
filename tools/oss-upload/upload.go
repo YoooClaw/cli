@@ -15,7 +15,11 @@ import (
 const uploadPartSize = 1024 * 1024
 
 func (u *uploader) upload(key string, body []byte, file, contentType, label string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), putTimeout)
+	return u.uploadContext(context.Background(), key, body, file, contentType, label)
+}
+
+func (u *uploader) uploadContext(parent context.Context, key string, body []byte, file, contentType, label string) error {
+	ctx, cancel := context.WithTimeout(parent, putTimeout)
 	defer cancel()
 	req := &oss.PutObjectRequest{Bucket: oss.Ptr(u.bucket), Key: oss.Ptr(key), ContentType: oss.Ptr(contentType), CacheControl: oss.Ptr(u.cacheControl)}
 	if u.acl != "" {
