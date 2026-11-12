@@ -154,10 +154,11 @@ production environment 使用与 test 相同的 deployment branch policy：
 
 普通业务 PR 合入 release/* 后，CI 通过即自动发布测试包并通知，不需要执行命令。
 正式/预发布仍在 release 分支执行 ./release.sh <版本> --push：直接更新版本、提交、打 tag 并推送。
-release.sh 已恢复为此 PR 基线的原始内容；不创建版本 PR，也不为版本号变更新增一轮 CI。
+发版不创建额外的版本 PR，也不增加等待版本 PR 检查的步骤。
 纯版本号提交仍按原有 cli-<版本> 消息规则跳过测试包，cli-v* tag 触发正式发布工作流。
 
-本轮临时新增的四组 release/tag ruleset 已停用，撤回强制 PR/CI、管理员创建权限和 tag 不可改写限制；
+为上传优化临时添加的四组 release/tag ruleset 已从仓库设置中删除，
+撤回强制 PR/CI、管理员创建权限和 tag 不可改写限制；
 现有 master ruleset 未修改。生产 environment 的 release/*、cli-v* 引用范围限制保留，
 它不会阻止原有 release 分支推送或 tag 发布，也不会要求额外版本 PR。
 上传并发、加速配置、取消与分片清理，以及生产桶已生效的 7 天分片兜底规则均保留。
