@@ -14,6 +14,7 @@
 //	OSS_PUBLIC_URL        默认 https://artifact.yoooclaw.com
 //	OSS_PREFIX            默认 cli
 //	OSS_ENDPOINT          可选 endpoint 覆盖
+//	OSS_UPLOAD_CONCURRENCY 制品上传并发数，1–8，默认 4
 //	OSS_OBJECT_ACL        可选对象 ACL
 //	OSS_CACHE_CONTROL     默认 no-cache, no-store, max-age=0, must-revalidate
 //	DIST_DIR              默认 <repo>/dist-native
@@ -40,15 +41,19 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
@@ -360,6 +365,56 @@ func validateTestTarget(bucket, publicURL string) error {
 	return nil
 }
 
+// uploadArtifacts cancels peers on failure and waits for their cleanup before returning.
+func uploadArtifacts(artifacts []artifact, limit int, upload func(context.Context, artifact) error) error {
+	if limit < 1 {
+		return fmt.Errorf("upload concurrency must be positive, got %d", limit)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var failures []error
+	next := 0
+	var wg sync.WaitGroup
+	for worker := 0; worker < limit && worker < len(artifacts); worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				if ctx.Err() != nil || next >= len(artifacts) {
+					mu.Unlock()
+					return
+				}
+				a := artifacts[next]
+				next++
+				mu.Unlock()
+				if err := upload(ctx, a); err != nil {
+					mu.Lock()
+					failures = append(failures, fmt.Errorf("%s: %w", a.Filename, err))
+					cancel()
+					mu.Unlock()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(failures...)
+}
+
+func uploadConcurrency(only string, dryRun bool) (int, error) {
+	if only == "install" || dryRun {
+		return 1, nil
+	}
+	raw := envOr("OSS_UPLOAD_CONCURRENCY", "4")
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 8 {
+		return 0, fmt.Errorf("OSS_UPLOAD_CONCURRENCY must be an integer between 1 and 8, got %q", raw)
+	}
+	return limit, nil
+}
+
 func main() {
 	versionFlag := flag.String("version", "", "发布版本（默认读 package.json）")
 	only := flag.String("only", "", "只上传某类内容: install | artifacts")
@@ -373,6 +428,10 @@ func main() {
 
 	root := findRepoRoot()
 	loadDotEnv(root)
+	concurrency, err := uploadConcurrency(*only, *dryRun)
+	if err != nil {
+		fatalf("%v", err)
+	}
 
 	version := *versionFlag
 	if version == "" {
@@ -458,15 +517,18 @@ func main() {
 
 	if *only == "" || *only == "artifacts" {
 		artifacts := collectArtifacts(distDir, prefix, publicURL, version)
-		for _, a := range artifacts {
+		if err := uploadArtifacts(artifacts, concurrency, func(ctx context.Context, a artifact) error {
 			if u.dryRun {
 				logf("would upload %s -> %s", a.Filename, a.Key)
-				continue
+				return nil
 			}
-			if err := u.upload(a.Key, nil, a.localPath, a.ContentType, a.Filename); err != nil {
-				fatalf("%v", err)
+			if err := u.uploadContext(ctx, a.Key, nil, a.localPath, a.ContentType, a.Filename); err != nil {
+				return err
 			}
 			okf("done: %s", a.URL)
+			return nil
+		}); err != nil {
+			fatalf("%v", err)
 		}
 
 		var checksumsURL string

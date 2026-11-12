@@ -1,17 +1,50 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      verify_oss_upload:
+        description: '仅在两区随机临时前缀验证普通端点上传及 Abort，不发布版本'
+        type: boolean
+        default: false
   pull_request:
     branches: [master, 'release/**']
   push:
     branches: [master, 'release/**']
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ inputs.verify_oss_upload && 'cli-oss-upload-probe' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ !inputs.verify_oss_upload }}
 
 jobs:
+  verify-oss-upload:
+    if: inputs.verify_oss_upload == true
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [test, production]
+    environment: ${{ matrix.environment }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/oss-upload/go.mod
+          cache-dependency-path: tools/oss-upload/go.sum
+      - name: Verify configured OSS endpoint uploads and Abort permission
+        env:
+          OSS_UPLOAD_SMOKE_TEST: '1'
+          OSS_SMOKE_ENVIRONMENT: ${{ matrix.environment }}
+          OSS_REGION: ${{ secrets.OSS_REGION || 'oss-cn-hangzhou' }}
+          OSS_BUCKET: ${{ matrix.environment == 'production' && 'yoooclaw-artifacts' || secrets.OSS_BUCKET }}
+          OSS_ENDPOINT: https://oss-cn-hangzhou.aliyuncs.com
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: go -C tools/oss-upload test -run '^TestOSSUploadSmoke$' -count=1 -v -timeout 5m
+
   verify:
+    if: inputs.verify_oss_upload != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +118,7 @@ jobs:
           echo "::notice::Feishu 构建通知已送达"
 
   windows-installer:
+    if: inputs.verify_oss_upload != true
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

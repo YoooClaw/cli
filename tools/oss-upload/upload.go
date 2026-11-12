@@ -15,7 +15,11 @@ import (
 const uploadPartSize = 1024 * 1024
 
 func (u *uploader) upload(key string, body []byte, file, contentType, label string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), putTimeout)
+	return u.uploadContext(context.Background(), key, body, file, contentType, label)
+}
+
+func (u *uploader) uploadContext(parent context.Context, key string, body []byte, file, contentType, label string) error {
+	ctx, cancel := context.WithTimeout(parent, putTimeout)
 	defer cancel()
 	req := &oss.PutObjectRequest{Bucket: oss.Ptr(u.bucket), Key: oss.Ptr(key), ContentType: oss.Ptr(contentType), CacheControl: oss.Ptr(u.cacheControl)}
 	if u.acl != "" {
@@ -25,7 +29,7 @@ func (u *uploader) upload(key string, body []byte, file, contentType, label stri
 }
 
 // Use the SDK's file checkpoint and multipart scheduler; never rebuild parts ourselves.
-func uploadWithProgress(ctx context.Context, client oss.UploadAPIClient, req *oss.PutObjectRequest, body []byte, file, label string, log func(string, ...any)) error {
+func uploadWithProgress(ctx context.Context, client oss.UploadAPIClient, req *oss.PutObjectRequest, body []byte, file, label string, log func(string, ...any)) (resultErr error) {
 	size := int64(len(body))
 	if file != "" {
 		info, err := os.Stat(file)
@@ -39,7 +43,9 @@ func uploadWithProgress(ctx context.Context, client oss.UploadAPIClient, req *os
 		return err
 	}
 	defer os.RemoveAll(checkpoint)
-	sdk := oss.NewUploader(client, func(o *oss.UploaderOptions) {
+	tracked := &trackedUploadClient{UploadAPIClient: client, pending: map[string]bool{}}
+	defer func() { resultErr = errors.Join(resultErr, tracked.cleanup(req, label, log)) }()
+	sdk := oss.NewUploader(tracked, func(o *oss.UploaderOptions) {
 		o.PartSize = uploadPartSize
 		o.ParallelNum = 3
 		o.EnableCheckpoint = true
