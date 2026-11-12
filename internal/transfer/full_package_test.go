@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -782,5 +783,66 @@ func TestFullPackageKeepsLongAndCarriageReturnNotificationIDs(t *testing.T) {
 		if !found {
 			t.Fatalf("ID not preserved (bytes=%d)", len(id))
 		}
+	}
+}
+
+func TestFullManifestOrderDoesNotChangeImport(t *testing.T) {
+	pkg := fullFixture(t)
+	raw, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := readFullPackage(pkg, raw, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest Manifest
+	if err = json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for left, right := 0, len(manifest.Files)-1; left < right; left, right = left+1, right-1 {
+		manifest.Files[left], manifest.Files[right] = manifest.Files[right], manifest.Files[left]
+	}
+	shuffledRaw, _ := json.Marshal(manifest)
+	shuffled, err := readFullPackage(pkg, shuffledRaw, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filesA, _ := json.Marshal(baseline.Files)
+	filesB, _ := json.Marshal(shuffled.Files)
+	if string(filesA) != string(filesB) {
+		t.Fatal("manifest order changed normalized files")
+	}
+	recordSet := func(m *Manifest) string {
+		rows := []string{}
+		for _, r := range m.Records {
+			b, _ := json.Marshal(r)
+			rows = append(rows, string(b))
+		}
+		sort.Strings(rows)
+		return strings.Join(rows, "\n")
+	}
+	if recordSet(baseline) != recordSet(shuffled) {
+		t.Fatal("manifest order changed business records")
+	}
+	dst := newEnv(t)
+	dst.svc.Home = t.TempDir()
+	planA, err := dst.svc.workspacePlan(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planB, err := dst.svc.workspacePlan(shuffled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := json.Marshal(planA)
+	b, _ := json.Marshal(planB)
+	if string(a) != string(b) {
+		t.Fatal("manifest order changed destinations")
+	}
+	writeJSON(t, filepath.Join(pkg, "manifest.json"), manifest)
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, pkg))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
 	}
 }
