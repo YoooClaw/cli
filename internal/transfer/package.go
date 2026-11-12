@@ -385,15 +385,10 @@ func parseTime(raw string) (time.Time, bool) {
 // safeFile 把包/存储里的相对路径解析成绝对路径，拒绝绝对路径、..、符号链接、
 // 多硬链接文件和非普通文件（对齐插件 safeFile）。
 func safeFile(root, name string) (string, error) {
-	if name == "" || filepath.IsAbs(name) || strings.HasPrefix(name, "/") || strings.Contains(name, `\`) {
+	if !validRelative(name) {
 		return "", fail("UNSAFE_PATH")
 	}
 	parts := strings.Split(name, "/")
-	for _, p := range parts {
-		if p == "" || p == "." || p == ".." {
-			return "", fail("UNSAFE_PATH")
-		}
-	}
 	current, err := filepath.Abs(root)
 	if err != nil {
 		return "", fail("UNSAFE_PATH")

@@ -109,6 +109,8 @@ jobs:
           New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
 
           # Run the Windows-only syscall coverage on a real Windows runner.
+          go test ./internal/transfer -run '^(TestRelativePathPlatforms|TestWindowsUnsupportedFileDoesNotBlockPackage|TestWindowsUnsupportedPathImport|TestWindowsAssetReferenceToSkippedFile)$'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows transfer path tests failed' }
           go test ./internal/cli -run '^(TestWindows|TestRemoveWindows|TestRemoveEmptyWindows)'
           go test ./internal/autostart ./internal/daemon -run '^TestWindows'
           if ($LASTEXITCODE -ne 0) { throw 'Windows daemon tests failed' }
