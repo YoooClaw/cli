@@ -96,8 +96,9 @@ Shell 安装脚本通过 bash 语法检查。
 CI 身份需具备相应前缀的 oss:AbortMultipartUpload 权限。
 
 桶仍应配置 AbortMultipartUpload 生命周期规则，兜底 runner 强制退出、初始化响应丢失或清理无权限等情况。
-本 PR 不修改桶生命周期规则。2026-11-12 生产探针只读查询后未找到覆盖 cli/ 的无条件 Abort 规则；
-测试区因当前 PR 分支不满足 environment 部署规则，尚未验证，不能假定两区已有生命周期兜底。
+2026-11-12 已按用户要求为生产桶追加 cli-abort-incomplete-multipart-7d：
+仅对 cli/ 前缀的未完成分片上传设置 AbortMultipartUpload Days=7，保留原有规则；回读已确认启用。
+测试区因当前 PR 分支不满足 environment 部署规则，仍未验证，不应假定测试桶已有生命周期兜底。
 context canceled 的并发错误仍保留，用于标明哪些制品受到首个失败影响。
 
 
@@ -116,3 +117,18 @@ CI workflow 的 verify_oss_upload=true 输入只运行测试/生产两区隔离�
 production environment variable OSS_ENDPOINT 已设为 https://oss-accelerate.aliyuncs.com，合入后发布流程读取。
 测试 job 被 environment 部署分支规则拒绝，未接触测试桶；未改保护规则，也未为测试区或仓库配置加速变量。
 合入允许的 release 分支后，以 verify_oss_upload=true 补跑，再决定启用测试区加速。
+
+
+### 生产分片生命周期维护
+
+CI workflow 的 production_lifecycle=inspect 只读备份现有完整 XML 并生成拟追加配置；
+production_lifecycle=apply 追加固定的 cli/、7 天 Abort 规则，写入前二次读取以检查并发更新，写入后回读验证。
+维护只访问生产桶 yoooclaw-artifacts，拒绝已存在的同名规则或重叠 Abort 规则；
+保留全部原始 XML 字段，不修改完整文件过期、历史版本清理等原有设置。
+两种模式都会将配置备份保存在 Actions artifact，保留 30 天。
+
+2026-11-12 操作记录：
+- [只读检查与备份](https://github.com/YoooClaw/cli/actions/runs/43181209188)
+- [追加与回读验证](https://github.com/YoooClaw/cli/actions/runs/43181380186)
+
+生产规则已生效，无需等待代码合并；生命周期执行由 OSS 周期调度，不是即时批量清理。
