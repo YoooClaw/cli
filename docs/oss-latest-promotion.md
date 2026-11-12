@@ -98,3 +98,12 @@ CI 身份需具备相应前缀的 oss:AbortMultipartUpload 权限。
 桶仍应配置 AbortMultipartUpload 生命周期规则，兜底 runner 强制退出、初始化响应丢失或清理无权限等情况。
 本 PR 不修改桶生命周期规则，也未读取确认现有规则，不能据此假定两区已有兜底。
 context canceled 的并发错误仍保留，用于标明哪些制品受到首个失败影响。
+
+
+### 手动验证两区加速与 Abort 权限
+
+CI workflow 的 verify_oss_upload=true 输入只运行测试/生产两区隔离探针。
+探针使用各环境的 CI 身份，在 cli/runs/oss-upload-smoke/<随机值> 下执行普通 PUT、
+文件分片上传和回读校验；另创建一个未完成上传，使用发布器的 cleanup 验证 Abort 权限。
+临时对象会删除，不会发布版本、登记草稿或写任何版本指针。
+探针也尝试只读查询生命周期规则；没有读取权限时明确标为未确认，不会修改规则。
