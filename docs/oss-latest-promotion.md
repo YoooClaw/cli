@@ -153,7 +153,9 @@ production environment 使用与 test 相同的 deployment branch policy：
 ### release 分支与 tag 保护
 
 release/* 分支必须通过 PR 更新，不强制审批人数；必须通过 GitHub Actions 的 verify 和
-windows-installer 检查，并与目标分支保持最新。禁止删除、强推，管理员也没有这组更新规则的 bypass。
+windows-installer 检查，并与目标分支保持最新。required_approving_review_count=0，
+require_extra_approval_for_unattributed_changes=false，显式关闭 GitHub 对特定 Copilot PR 的额外审批选项。
+禁止删除、强推，管理员也没有这组更新规则的 bypass。
 新建 release/* 分支和 cli-v* tag 仅允许仓库管理员；已有 cli-v* tag 禁止改写与删除。
 创建权限与不可改写规则分开，管理员创建 tag 的授权不会同时豁免 tag 改写规则。
 规则定义保存在 docs/ops/cli-release-rulesets.json，现有 master ruleset 保持不变。
@@ -167,3 +169,11 @@ windows-installer 检查，并与目标分支保持最新。禁止删除、强�
 
 手动探针模式中跳过的 verify/windows-installer 使用不同的 (probe-only) 检查名，
 不会替代正常 PR CI 的必需检查。保护规则配置后，探针仍须在允许的 release/tag 引用上运行。
+
+
+版本 PR 建议使用 squash 合并，并保留标题 cli-<版本>；rebase 合并保留该标题也可。
+当前 deploy-test 按 push 的 head_commit.message 是否以 cli- 开头决定跳过版本提交。
+因此 squash/rebase 合并版本 PR 会跳过测试发布；merge commit 标题通常为 Merge pull request，
+会额外发布一次 alpha 测试版本并发送通知。三种合并方式均保留，生产仍由单独 tag 触发。
+创建版本 PR 失败后重试前，应先查看 codex/release-<版本>-version 分支及已有 PR；
+脚本会对本地或远端同名版本分支明确拒绝，不自动覆盖或删除已有分支。

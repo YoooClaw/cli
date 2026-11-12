@@ -136,3 +136,105 @@ func TestReleaseRejectsUnmergedLocalCommitBeforeTagging(t *testing.T) {
 		t.Fatalf("created tag before rejecting local commit: %s", tags)
 	}
 }
+
+func (f *releaseFixture) expectRejectedWithoutMutation(args []string, want string) {
+	f.t.Helper()
+	head := f.git("rev-parse", "HEAD")
+	branch := f.git("branch", "--show-current")
+	refs := f.git("ls-remote", "origin")
+	localRefs := f.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags")
+	packageBefore, err := os.ReadFile(filepath.Join(f.work, "package.json"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	output, err := f.command("bash", append([]string{"release.sh"}, args...)...)
+	if err == nil || !strings.Contains(output, want) {
+		f.t.Fatalf("expected rejection containing %q, got err=%v\n%s", want, err, output)
+	}
+	packageAfter, err := os.ReadFile(filepath.Join(f.work, "package.json"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if f.git("rev-parse", "HEAD") != head || f.git("branch", "--show-current") != branch || f.git("ls-remote", "origin") != refs || f.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags") != localRefs || string(packageBefore) != string(packageAfter) {
+		f.t.Fatal("rejected release changed commit, branch, remote refs, or package version")
+	}
+	if _, err := os.Stat(f.ghLog); !os.IsNotExist(err) {
+		f.t.Fatalf("PR creation unexpectedly attempted: %v", err)
+	}
+}
+
+func TestReleaseRejectsMissingGHBeforeCreatingVersionBranch(t *testing.T) {
+	f := newReleaseFixture(t, "0.1.0")
+	// Use the real prerequisite executables but no gh, independently of the host PATH.
+	bin := t.TempDir()
+	for _, name := range []string{"git", "node", "dirname", "perl"} {
+		source, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(source, filepath.Join(bin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.env = append(f.env, "PATH="+bin)
+	f.expectRejectedWithoutMutation([]string{"--push"}, "创建版本 PR 需要 gh")
+	if _, err := f.command("git", "show-ref", "--verify", "refs/heads/codex/release-0.2.0-version"); err == nil {
+		t.Fatal("created version branch without gh")
+	}
+}
+
+func TestReleaseRejectsDirtyWorktreeBeforeCreatingVersionBranch(t *testing.T) {
+	f := newReleaseFixture(t, "0.1.0")
+	path := filepath.Join(f.work, "pending.txt")
+	if err := os.WriteFile(path, []byte("preserve pending work"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.expectRejectedWithoutMutation([]string{"--push"}, "工作区不干净")
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "preserve pending work" {
+		t.Fatal("changed pending work")
+	}
+}
+
+func TestReleaseRejectsExistingVersionBranch(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		name := "local"
+		if remote {
+			name = "remote"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newReleaseFixture(t, "0.1.0")
+			versionBranch := "codex/release-0.2.0-version"
+			if remote {
+				f.git("--git-dir", f.remote, "update-ref", "refs/heads/"+versionBranch, f.git("rev-parse", "HEAD"))
+			} else {
+				f.git("branch", versionBranch)
+			}
+			f.expectRejectedWithoutMutation([]string{"--push"}, "版本分支 "+versionBranch+" 已存在")
+		})
+	}
+}
+
+func TestReleaseRejectsExistingTag(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		name := "local"
+		if remote {
+			name = "remote"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newReleaseFixture(t, "0.2.0")
+			f.git("tag", "-a", "cli-v0.2.0", "-m", "existing release")
+			if remote {
+				f.git("push", "origin", "refs/tags/cli-v0.2.0")
+				f.git("tag", "-d", "cli-v0.2.0")
+			}
+			f.expectRejectedWithoutMutation([]string{"--push"}, "tag cli-v0.2.0 已存在")
+		})
+	}
+}
+
+func TestReleaseRejectsExistingReleaseBranch(t *testing.T) {
+	f := newReleaseFixture(t, "0.1.0")
+	f.git("checkout", "master")
+	f.expectRejectedWithoutMutation([]string{"0.2.0", "--push"}, "分支 release/0.2.0 已存在")
+}

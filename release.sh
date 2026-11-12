@@ -140,6 +140,12 @@ echo "→ ${pkgname}：${current} → ${next}（目标 ${base}，tag ${tag}）"
 # release 分支必须经 PR 更新，版本提交也不例外。
 if [ "$current" != "$next" ]; then
   version_branch="codex/release-${next}-version"
+  if git show-ref --verify --quiet "refs/heads/$version_branch" \
+    || git ls-remote --exit-code --heads origin "refs/heads/$version_branch" >/dev/null 2>&1; then
+    echo "✗ 版本分支 $version_branch 已存在；本次未修改版本或创建 tag"
+    echo "请先查看该分支或已有 PR，合入后切回 $base、同步远端再运行 release.sh；不要覆盖现有分支"
+    exit 1
+  fi
   if [ "$do_push" = "yes" ]; then
     command -v gh >/dev/null 2>&1 || { echo "✗ --push 创建版本 PR 需要 gh"; exit 1; }
   fi

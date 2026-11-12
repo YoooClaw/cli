@@ -295,8 +295,8 @@ jobs:
   # Environment `test` 的 secrets 里（日志自动打码），workflow 里不写任何测试环境值。
   deploy-test:
     needs: [verify, windows-installer]
-    # release.sh 的 bump 提交（"cli-<版本>"）只改版本号，紧随其后的 tag 会走生产
-    # 发布，这里跳过，避免同一份代码再发一遍测试环境。
+    # 版本 PR 建议 squash/rebase 且保留 "cli-<版本>" 标题：只改版本号时跳过测试发布。
+    # 普通 merge commit 不以 cli- 开头，会额外发一次 alpha 测试包；生产仍只由 tag 触发。
     if: >-
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/heads/release/') &&
