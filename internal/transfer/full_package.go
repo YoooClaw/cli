@@ -33,20 +33,7 @@ type SeenIndex struct {
 }
 
 func logicalKey(f FullFile) string { return f.Category + ":" + f.Scope + ":" + f.Path }
-func validRelative(p string) bool {
-	if filepath.Separator == '\\' && (strings.ContainsAny(p, "\\:\r\n\t") || filepath.IsAbs(p)) {
-		return false
-	}
-	if p == "" || len(p) > 4096 || strings.ContainsRune(p, 0) || strings.HasPrefix(p, "/") {
-		return false
-	}
-	for _, c := range strings.Split(p, "/") {
-		if c == "" || c == "." || c == ".." {
-			return false
-		}
-	}
-	return true
-}
+func validRelative(p string) bool  { return compatibleRelative(p, filepath.Separator == '\\') }
 func fullBlob(root string, f FullFile) ([]byte, error) {
 	p, e := safeFile(root, "blobs/"+f.Hash)
 	if e != nil {
@@ -55,6 +42,10 @@ func fullBlob(root string, f FullFile) ([]byte, error) {
 	return os.ReadFile(p)
 }
 func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, error) {
+	return readFullPackageForPlatform(root, raw, opts, filepath.Separator == '\\')
+}
+
+func readFullPackageForPlatform(root string, raw []byte, opts ReadOptions, windows bool) (*Manifest, error) {
 	var m Manifest
 	if json.Unmarshal(raw, &m) != nil || !uuidRE.MatchString(m.PackageID) || m.Files == nil || m.OriginalBytes < 0 {
 		return nil, fail("INVALID_FULL_MANIFEST")
@@ -66,10 +57,16 @@ func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, erro
 	consumed := map[string]bool{}
 	files := map[string]FullFile{}
 	hashes := map[string]int64{}
+	accepted := make([]FullFile, 0, len(m.Files))
 	for _, f := range m.Files {
-		if !contains(fullCategories, f.Category) || !scopeRE.MatchString(f.Scope) || !validRelative(f.Path) || !hashRE.MatchString(f.Hash) || f.Bytes < 0 {
+		if !contains(fullCategories, f.Category) || !scopeRE.MatchString(f.Scope) || !portableRelative(f.Path) || !hashRE.MatchString(f.Hash) || f.Bytes < 0 {
 			return nil, fail("INVALID_FULL_FILE")
 		}
+		if !compatibleRelative(f.Path, windows) {
+			m.Warnings = append(m.Warnings, fmt.Sprintf("UNSUPPORTED_TARGET_PATH: %q (skipped)", f.Path))
+			continue
+		}
+		accepted = append(accepted, f)
 		if _, ok := files[logicalKey(f)]; ok {
 			return nil, fail("DUPLICATE_FILE")
 		}
@@ -99,6 +96,7 @@ func readFullPackage(root string, raw []byte, opts ReadOptions) (*Manifest, erro
 		}
 		hashes[f.Hash] = f.Bytes
 	}
+	m.Files = accepted
 	// Cron definitions are reference files for the destination Agent, not executable input.
 	warn := func(f FullFile, location, code string) {
 		m.Warnings = append(m.Warnings, fmt.Sprintf("%s:%s: %s (skipped; original retained as reference)", logicalKey(f), location, code))
