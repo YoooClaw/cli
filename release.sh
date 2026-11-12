@@ -119,7 +119,10 @@ esac
 
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null \
   || git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-  echo "✗ tag $tag 已存在"; exit 1
+  echo "✗ tag $tag 已存在"
+  echo "若上次推送失败，先用 git ls-remote --tags origin refs/tags/$tag 核对远端"
+  echo "确认该 tag 仅在本地且未发布后，可 git tag -d $tag 再重跑；不要删除或重建已发布的 tag"
+  exit 1
 fi
 if [ "${next%%-*}" != "${branch_version%%-*}" ]; then
   echo "⚠ 版本 $next 与分支 $base 的版本号不一致，确认无误后继续"
@@ -170,7 +173,12 @@ echo "✓ 已打 tag：$tag @ $base"
 
 if [ "$do_push" = "yes" ]; then
   # 精确推送本次 tag，不直接写受保护 release 分支，也不连带其他本地 tag。
-  git push origin "refs/tags/$tag"
+  if ! git push origin "refs/tags/$tag"; then
+    echo "✗ tag 推送失败，本地 tag $tag 已保留"
+    echo "请先核对远端状态及发布权限；确认可发布后，可直接重试 git push origin refs/tags/$tag"
+    echo "如需重跑脚本，先确认远端没有该 tag 且未发布，再 git tag -d $tag；不要改写已发布的 tag"
+    exit 1
+  fi
   echo "✓ 已 push tag $tag → 生产发布 workflow 将自动触发"
 else
   echo "下一步：git push origin refs/tags/$tag   # 仅推送本次 tag，触发生产发布"

@@ -16,6 +16,16 @@ type releaseFixture struct {
 	env                 []string
 }
 
+func (f *releaseFixture) setEnv(key, value string) {
+	filtered := make([]string, 0, len(f.env)+1)
+	for _, entry := range f.env {
+		if !strings.HasPrefix(entry, key+"=") {
+			filtered = append(filtered, entry)
+		}
+	}
+	f.env = append(filtered, key+"="+value)
+}
+
 func newReleaseFixture(t *testing.T, version string) *releaseFixture {
 	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
@@ -36,7 +46,12 @@ func newReleaseFixture(t *testing.T, version string) *releaseFixture {
 	if err := os.WriteFile(filepath.Join(bin, "gh"), fake, 0700); err != nil {
 		t.Fatal(err)
 	}
-	f.env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_TEST_LOG="+f.ghLog, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+filepath.Join(root, "no-global"), "GIT_TERMINAL_PROMPT=0")
+	f.env = os.Environ()
+	f.setEnv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	f.setEnv("GH_TEST_LOG", f.ghLog)
+	f.setEnv("GIT_CONFIG_NOSYSTEM", "1")
+	f.setEnv("GIT_CONFIG_GLOBAL", filepath.Join(root, "no-global"))
+	f.setEnv("GIT_TERMINAL_PROMPT", "0")
 	f.git("init", "--bare", f.remote)
 	f.git("init", "--initial-branch=master")
 	f.git("config", "user.email", "release-test@example.invalid")
@@ -176,7 +191,7 @@ func TestReleaseRejectsMissingGHBeforeCreatingVersionBranch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f.env = append(f.env, "PATH="+bin)
+	f.setEnv("PATH", bin)
 	f.expectRejectedWithoutMutation([]string{"--push"}, "创建版本 PR 需要 gh")
 	if _, err := f.command("git", "show-ref", "--verify", "refs/heads/codex/release-0.2.0-version"); err == nil {
 		t.Fatal("created version branch without gh")
@@ -237,4 +252,36 @@ func TestReleaseRejectsExistingReleaseBranch(t *testing.T) {
 	f := newReleaseFixture(t, "0.1.0")
 	f.git("checkout", "master")
 	f.expectRejectedWithoutMutation([]string{"0.2.0", "--push"}, "分支 release/0.2.0 已存在")
+}
+
+func TestReleaseTagPushFailurePreservesTagAndExplainsRetry(t *testing.T) {
+	f := newReleaseFixture(t, "0.2.0")
+	hook := `#!/bin/bash
+while read -r old new ref; do
+ if [[ "$ref" == refs/tags/* ]]; then
+  echo "tag creation requires administrator" >&2
+  exit 1
+ fi
+done
+`
+	if err := os.WriteFile(filepath.Join(f.remote, "hooks", "pre-receive"), []byte(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := f.command("bash", "release.sh", "--push")
+	if err == nil || !strings.Contains(output, "本地 tag cli-v0.2.0 已保留") || !strings.Contains(output, "可直接重试 git push origin refs/tags/cli-v0.2.0") {
+		t.Fatalf("missing retry guidance: error=%v\n%s", err, output)
+	}
+	if f.git("tag", "--list") != "cli-v0.2.0" {
+		t.Fatal("local tag not preserved")
+	}
+	if refs := f.git("ls-remote", "--tags", "origin"); refs != "" {
+		t.Fatalf("rejected tag was published: %s", refs)
+	}
+	output, err = f.command("bash", "release.sh", "--push")
+	if err == nil || !strings.Contains(output, "确认该 tag 仅在本地且未发布后，可 git tag -d cli-v0.2.0 再重跑") {
+		t.Fatalf("missing existing-tag guidance: error=%v\n%s", err, output)
+	}
+	if f.git("tag", "--list") != "cli-v0.2.0" {
+		t.Fatal("retry removed local tag")
+	}
 }
