@@ -34,7 +34,7 @@ func compatibleRelative(p string, windows bool) bool {
 		}
 		base := strings.ToUpper(strings.TrimRight(strings.SplitN(part, ".", 2)[0], " "))
 		switch base {
-		case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
+		case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$":
 			return false
 		}
 		if len(base) >= 4 && len([]rune(base[3:])) == 1 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && strings.Contains("123456789¹²³", base[3:]) {

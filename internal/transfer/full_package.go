@@ -63,7 +63,7 @@ func readFullPackageForPlatform(root string, raw []byte, opts ReadOptions, windo
 			return nil, fail("INVALID_FULL_FILE")
 		}
 		if !compatibleRelative(f.Path, windows) {
-			m.Warnings = append(m.Warnings, fmt.Sprintf("UNSUPPORTED_TARGET_PATH: %q (skipped)", f.Path))
+			m.Warnings = append(m.Warnings, fmt.Sprintf("UNSUPPORTED_TARGET_PATH category=%q scope=%q path=%q (skipped)", f.Category, f.Scope, f.Path))
 			continue
 		}
 		accepted = append(accepted, f)
@@ -214,7 +214,7 @@ func readFullPackageForPlatform(root string, raw []byte, opts ReadOptions, windo
 						}
 						rel = found
 					}
-					if !validRelative(rel) {
+					if !portableRelative(rel) {
 						return fail("UNSAFE_PATH")
 					}
 					a, ok := files[f.Category+":"+f.Scope+":"+rel]

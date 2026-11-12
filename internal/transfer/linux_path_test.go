@@ -5,6 +5,7 @@ import (
 	"github.com/YoooClaw/cli/internal/testutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -69,7 +70,7 @@ func TestRelativePathPlatforms(t *testing.T) {
 			}
 		}
 	}
-	for _, p := range []string{`a\b`, "CON", "con.txt", "PRN", "AUX", "NUL", "COM1", "LPT9.txt", "COM¹", "CONIN$", "foo.", "foo ", "a:b", "a<b", "a>b", `a"b`, "a|b", "a?b", "a*b"} {
+	for _, p := range []string{`a\b`, "CON", "con.txt", "PRN", "AUX", "NUL", "COM1", "LPT9.txt", "COM¹", "CONIN$", "CLOCK$", "foo.", "foo ", "a:b", "a<b", "a>b", `a"b`, "a|b", "a?b", "a*b"} {
 		if compatibleRelative(p, true) {
 			t.Errorf("Windows accepted %q", p)
 		}
@@ -172,5 +173,56 @@ func TestLinuxPathImportDestinations(t *testing.T) {
 				t.Fatalf("%q %v destination=%s", data, err, dest)
 			}
 		})
+	}
+}
+
+func TestWindowsAssetReferenceToSkippedFile(t *testing.T) {
+	for _, windows := range []bool{false, true} {
+		root := t.TempDir()
+		m := Manifest{SchemaVersion: 2, PackageID: newUUID(), Files: []FullFile{}}
+		add := func(name string, content []byte) {
+			h := sha(string(content))
+			testutil.WriteFile(t, filepath.Join(root, "blobs", h), content)
+			m.Files = append(m.Files, FullFile{Category: TypeRecordings, Scope: "main", Path: name, Hash: h, Bytes: int64(len(content))})
+			m.OriginalBytes += int64(len(content))
+		}
+		index, _ := json.Marshal(map[string]any{"recordings": []map[string]any{{"id": "bad", "metadata": map[string]any{"name": "bad", "created_at": "2026-11-12T00:00:00Z"}, "audioFile": `report\draft.m4a`}, {"id": "good", "metadata": map[string]any{"name": "good", "created_at": "2026-11-12T00:00:00Z"}, "audioFile": "good.m4a"}}})
+		add("index.json", index)
+		add(`report\draft.m4a`, []byte("bad-audio"))
+		add("good.m4a", []byte("good-audio"))
+		raw, _ := json.Marshal(m)
+		result, err := readFullPackageForPlatform(root, raw, ReadOptions{}, windows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 2
+		if windows {
+			want = 1
+		}
+		if len(result.Records) != want {
+			t.Fatalf("windows=%v records=%+v warnings=%v", windows, result.Records, result.Warnings)
+		}
+		if windows {
+			if result.Records[0].RecordID != "good" {
+				t.Fatal(result.Records)
+			}
+			warnings := strings.Join(result.Warnings, "\n")
+			for _, expected := range []string{"REFERENCED_FILE_MISSING", `category="recordings"`, `scope="main"`} {
+				if !strings.Contains(warnings, expected) {
+					t.Fatalf("missing %s in %s", expected, warnings)
+				}
+			}
+		}
+		// A genuinely unsafe reference remains a structural error, not a platform skip.
+		index = []byte(`{"recordings":[{"id":"unsafe","metadata":{"name":"unsafe","created_at":"2026-11-12T00:00:00Z"},"audioFile":"../outside.m4a"}]}`)
+		add("new-index", index)
+		m.Files[0].Hash = sha(string(index))
+		m.Files[0].Bytes = int64(len(index))
+		m.Files = m.Files[:len(m.Files)-1]
+		raw, _ = json.Marshal(m)
+		_, err = readFullPackageForPlatform(root, raw, ReadOptions{}, windows)
+		if ErrorCode(err) != "UNSAFE_PATH" {
+			t.Fatalf("unsafe reference: %v", err)
+		}
 	}
 }
