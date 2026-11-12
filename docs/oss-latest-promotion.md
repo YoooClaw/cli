@@ -150,32 +150,14 @@ production environment 使用与 test 相同的 deployment branch policy：
 这限制允许的引用范围，不替代代码审查或对这些分支/tag 本身的保护。
 
 
-### release 分支与 tag 保护
+### 发版操作保持原流程
 
-release/* 分支必须通过 PR 更新，不强制审批人数；必须通过 GitHub Actions 的 verify 和
-windows-installer 检查，并与目标分支保持最新。required_approving_review_count=0，
-require_extra_approval_for_unattributed_changes=false，显式关闭 GitHub 对特定 Copilot PR 的额外审批选项。
-禁止删除、强推，管理员也没有这组更新规则的 bypass。
-新建 release/* 分支和 cli-v* tag 仅允许仓库管理员；已有 cli-v* tag 禁止改写与删除。
-创建权限与不可改写规则分开，管理员创建 tag 的授权不会同时豁免 tag 改写规则。
-规则定义保存在 docs/ops/cli-release-rulesets.json，现有 master ruleset 保持不变。
-这些规则限制直接写入，不强制额外人员审批；有合并权限的用户仍可在 CI 通过后合并自己的 PR。
+普通业务 PR 合入 release/* 后，CI 通过即自动发布测试包并通知，不需要执行命令。
+正式/预发布仍在 release 分支执行 ./release.sh <版本> --push：直接更新版本、提交、打 tag 并推送。
+release.sh 已恢复为此 PR 基线的原始内容；不创建版本 PR，也不为版本号变更新增一轮 CI。
+纯版本号提交仍按原有 cli-<版本> 消息规则跳过测试包，cli-v* tag 触发正式发布工作流。
 
-正常发版仍只需在 release 分支运行一次 ./release.sh <版本> --push，不需要手工合版本 PR：
-- package.json 版本不同时，脚本自动创建版本分支及 PR，等待必需 CI，通过后以精确 head SHA squash 合入。
-- 脚本自动同步 release，确认其 HEAD 就是该 PR 的合并提交，随后创建并仅推送本次 tag。
-- 版本已一致且本地 HEAD 与远端 release 完全一致时，直接创建、推送目标 tag。
-脚本使用已登录的 gh，等待期间无需人工操作；CI 失败、PR 被改写、合并失败或 release 又有新提交时停止，不打 tag。
-不使用 --admin 绕过任何规则。未传 --push 时仅准备本地改动，不执行远端发版流程。
-管理员仍可新建 release 分支和发布新 tag；旧 tag 不能复用，纠正版本应创建新版本 tag。
-
-手动探针模式中跳过的 verify/windows-installer 使用不同的 (probe-only) 检查名，
-不会替代正常 PR CI 的必需检查。保护规则配置后，探针仍须在允许的 release/tag 引用上运行。
-
-
-脚本自动 squash 版本 PR，并显式保留 cli-<版本> 标题，使 deploy-test 跳过纯版本提交。
-若绕过脚本手工合并版本 PR，squash/rebase 且保留该标题也会跳过测试发布；
-普通 merge commit 标题通常为 Merge pull request，会额外发布一次 alpha 并通知。
-仓库仍允许三种合并方式，生产始终由单独 tag 触发。
-创建版本 PR 失败后重试前，应先查看 codex/release-<版本>-version 分支及已有 PR；
-脚本会对本地或远端同名版本分支明确拒绝，不自动覆盖或删除已有分支。
+本轮临时新增的四组 release/tag ruleset 已停用，撤回强制 PR/CI、管理员创建权限和 tag 不可改写限制；
+现有 master ruleset 未修改。生产 environment 的 release/*、cli-v* 引用范围限制保留，
+它不会阻止原有 release 分支推送或 tag 发布，也不会要求额外版本 PR。
+上传并发、加速配置、取消与分片清理，以及生产桶已生效的 7 天分片兜底规则均保留。
