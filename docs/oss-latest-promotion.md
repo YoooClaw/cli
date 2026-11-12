@@ -85,3 +85,16 @@ Shell 安装脚本通过 bash 语法检查。
 制品上传默认并发 4，可通过 OSS_UPLOAD_CONCURRENCY 配为 1–8；单文件分片并发保持 3。
 仅上传安装器或 dry-run 不读取该并发配置。
 任一制品失败会停止派发、取消在途请求，并等待 SDK 清理结束；汇总所有已启动任务的错误后退出，不写 manifest。
+
+
+### 分片取消与清理
+
+重试期间保留 LeavePartsOnError 与 checkpoint，以便复用已完成分片。
+最终失败或取消后，上传器主动 Abort 本次调用已知的未完成 upload ID；清理使用独立 context，
+总超时 20 秒，清理失败会在最终错误与日志中明确提示，不输出签名请求。
+成功完成的 upload ID 不会被 Abort，也不会清理其他任务或历史分片。
+CI 身份需具备相应前缀的 oss:AbortMultipartUpload 权限。
+
+桶仍应配置 AbortMultipartUpload 生命周期规则，兜底 runner 强制退出、初始化响应丢失或清理无权限等情况。
+本 PR 不修改桶生命周期规则，也未读取确认现有规则，不能据此假定两区已有兜底。
+context canceled 的并发错误仍保留，用于标明哪些制品受到首个失败影响。
