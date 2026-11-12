@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,8 +24,8 @@ func TestOSSUploadSmoke(t *testing.T) {
 		t.Skip("real OSS probe is opt-in")
 	}
 	bucket := os.Getenv("OSS_BUCKET")
-	if bucket != "yoooclaw-artifacts-test" && bucket != defaultBucket {
-		t.Fatal("unexpected smoke test bucket")
+	if err := validateSmokeTarget(os.Getenv("OSS_SMOKE_ENVIRONMENT"), bucket); err != nil {
+		t.Fatal(err)
 	}
 	for _, name := range []string{"OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET"} {
 		if os.Getenv(name) == "" {
@@ -36,10 +37,26 @@ func TestOSSUploadSmoke(t *testing.T) {
 		t.Fatal("random prefix generation failed")
 	}
 	prefix := fmt.Sprintf("cli/runs/oss-upload-smoke/%x", suffix)
-	client := oss.NewClient(oss.LoadDefaultConfig().WithRegion("cn-hangzhou").
-		WithEndpoint("https://oss-accelerate.aliyuncs.com").WithRetryMaxAttempts(1).
+	region := strings.TrimPrefix(strings.TrimSpace(os.Getenv("OSS_REGION")), "oss-")
+	if region == "" {
+		t.Fatal("missing OSS_REGION")
+	}
+	cfg := oss.LoadDefaultConfig().WithRegion(region).WithRetryMaxAttempts(1).
 		WithConnectTimeout(10 * time.Second).WithReadWriteTimeout(30 * time.Second).
-		WithCredentialsProvider(credentials.NewEnvironmentVariableCredentialsProvider()))
+		WithCredentialsProvider(credentials.NewEnvironmentVariableCredentialsProvider())
+	endpoint := strings.TrimSpace(os.Getenv("OSS_ENDPOINT"))
+	if endpoint != "" {
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			t.Fatal("invalid OSS_ENDPOINT")
+		}
+		cfg = cfg.WithEndpoint(endpoint)
+		// Show the resolved destination without URL credentials, paths, or query parameters.
+		t.Logf("configured endpoint: %s://%s", parsed.Scheme, parsed.Host)
+	} else {
+		t.Logf("configured endpoint: regional, derived from OSS_REGION=%s", region)
+	}
+	client := oss.NewClient(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	check := func(stage string, err error) {
@@ -53,7 +70,7 @@ func TestOSSUploadSmoke(t *testing.T) {
 			t.Fatalf("%s failed: %s", stage, reason)
 		}
 	}
-	t.Logf("isolated accelerated probe: %s/%s", bucket, prefix)
+	t.Logf("isolated configured-endpoint probe: %s/%s", bucket, prefix)
 	var keys []string
 	t.Cleanup(func() {
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 20*time.Second)
@@ -76,7 +93,7 @@ func TestOSSUploadSmoke(t *testing.T) {
 			file = filepath.Join(t.TempDir(), "multipart.bin")
 			check("fixture write", os.WriteFile(file, body, 0600))
 		}
-		check("accelerated upload", u.uploadContext(ctx, key, body, file, "application/octet-stream", fmt.Sprint(size)))
+		check("configured-endpoint upload", u.uploadContext(ctx, key, body, file, "application/octet-stream", fmt.Sprint(size)))
 		got, err := client.GetObject(ctx, &oss.GetObjectRequest{Bucket: oss.Ptr(bucket), Key: oss.Ptr(key)})
 		check("readback", err)
 		data, readErr := io.ReadAll(got.Body)
@@ -126,4 +143,34 @@ func TestOSSUploadSmoke(t *testing.T) {
 		}
 	}
 	t.Logf("enabled unfiltered AbortMultipartUpload rules covering cli/: %d", count)
+}
+
+func validateSmokeTarget(environment, bucket string) error {
+	switch environment {
+	case "production":
+		if bucket != defaultBucket {
+			return fmt.Errorf("production probe must use the production bucket")
+		}
+	case "test":
+		if strings.TrimSpace(bucket) == "" || bucket == defaultBucket {
+			return fmt.Errorf("test probe requires a configured test bucket distinct from production")
+		}
+	default:
+		return fmt.Errorf("unexpected smoke test environment")
+	}
+	return nil
+}
+
+func TestSmokeTargetConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		environment, bucket string
+		valid               bool
+	}{
+		{"test", "rotated-test-bucket", true}, {"production", defaultBucket, true},
+		{"test", "", false}, {"test", defaultBucket, false}, {"production", "rotated-test-bucket", false}, {"", defaultBucket, false},
+	} {
+		if err := validateSmokeTarget(tc.environment, tc.bucket); (err == nil) != tc.valid {
+			t.Errorf("environment=%q bucket=%q error=%v", tc.environment, tc.bucket, err)
+		}
+	}
 }

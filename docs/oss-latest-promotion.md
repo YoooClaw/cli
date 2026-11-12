@@ -105,13 +105,17 @@ context canceled 的并发错误仍保留，用于标明哪些制品受到首个
 ### 手动验证两区加速与 Abort 权限
 
 CI workflow 的 verify_oss_upload=true 输入只运行测试/生产两区隔离探针。
+探针共用独立并发组，串行运行且不被普通 push 取消；强制停止仍可能中断清理。
+测试桶从 test environment 的 OSS_BUCKET secret 读取；端点使用与发布相同的
+OSS_ENDPOINT secret / variable 表达式，未配置则验证地域端点，不强制加速端点。
+日志只显示解析后的主机及协议，不输出 URL 凭据或查询参数。
 探针使用各环境的 CI 身份，在 cli/runs/oss-upload-smoke/<随机值> 下执行普通 PUT、
 文件分片上传和回读校验；另创建一个未完成上传，使用发布器的 cleanup 验证 Abort 权限。
 临时对象会删除，不会发布版本、登记草稿或写任何版本指针。
 探针也尝试只读查询生命周期规则；没有读取权限时明确标为未确认，不会修改规则。
 
 
-验证记录（2026-11-12）：
+验证记录（2026-11-12，整体失败：仅生产 job 通过）：
 [Actions 43178778892](https://github.com/YoooClaw/cli/actions/runs/43178778892)
 生产 job 已通过，确认该环境 CI 身份可经加速端点执行普通 PUT、文件分片上传、回读和 Abort，临时对象已删除。
 production environment variable OSS_ENDPOINT 已设为 https://oss-accelerate.aliyuncs.com，合入后发布流程读取。
@@ -119,16 +123,22 @@ production environment variable OSS_ENDPOINT 已设为 https://oss-accelerate.al
 合入允许的 release 分支后，以 verify_oss_upload=true 补跑，再决定启用测试区加速。
 
 
-### 生产分片生命周期维护
+### 生产分片生命周期操作记录
 
-CI workflow 的 production_lifecycle=inspect 只读备份现有完整 XML 并生成拟追加配置；
-production_lifecycle=apply 追加固定的 cli/、7 天 Abort 规则，写入前二次读取以检查并发更新，写入后回读验证。
-维护只访问生产桶 yoooclaw-artifacts，拒绝已存在的同名规则或重叠 Abort 规则；
-保留全部原始 XML 字段，不修改完整文件过期、历史版本清理等原有设置。
-两种模式都会将配置备份保存在 Actions artifact，保留 30 天。
+一次性维护已完成，production_lifecycle 输入、执行 job 和联网维护代码已从 PR 移除。
+原始配置、拟追加配置与回读配置保存在下列 Actions artifact（保留 30 天），本地亦已留存备份。
+后续生命周期变更须通过单独维护操作处理，常规 CI 与探针没有生命周期配置写入步骤。
 
 2026-11-12 操作记录：
 - [只读检查与备份](https://github.com/YoooClaw/cli/actions/runs/43181209188)
 - [追加与回读验证](https://github.com/YoooClaw/cli/actions/runs/43181380186)
 
 生产规则已生效，无需等待代码合并；生命周期执行由 OSS 周期调度，不是即时批量清理。
+
+
+### 生产环境引用限制
+
+production environment 使用与 test 相同的 deployment branch policy：
+允许 release/* 分支及 cli-v* tag，拒绝 codex/* 等其他引用领取环境凭据。
+保留 tag 规则是因为正式发布与 macOS 签名都在 cli-v* tag 上运行。
+这限制允许的引用范围，不替代代码审查或对这些分支/tag 本身的保护。

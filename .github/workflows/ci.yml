@@ -3,11 +3,6 @@ name: CI
 on:
   workflow_dispatch:
     inputs:
-      production_lifecycle:
-        description: '生产 cli/ 分片生命周期维护；apply 会追加 7 天 Abort 规则'
-        type: choice
-        options: [none, inspect, apply]
-        default: none
       verify_oss_upload:
         description: '仅在两区随机临时前缀验证加速上传及 Abort，不发布版本'
         type: boolean
@@ -18,36 +13,10 @@ on:
     branches: [master, 'release/**']
 
 concurrency:
-  group: ${{ inputs.production_lifecycle != '' && inputs.production_lifecycle != 'none' && 'cli-production-lifecycle' || format('ci-{0}', github.ref) }}
-  cancel-in-progress: ${{ inputs.production_lifecycle == '' || inputs.production_lifecycle == 'none' }}
+  group: ${{ inputs.verify_oss_upload && 'cli-oss-upload-probe' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ !inputs.verify_oss_upload }}
 
 jobs:
-  production-lifecycle:
-    if: inputs.production_lifecycle == 'inspect' || inputs.production_lifecycle == 'apply'
-    runs-on: ubuntu-latest
-    environment: production
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/oss-upload/go.mod
-          cache-dependency-path: tools/oss-upload/go.sum
-      - name: Inspect or apply scoped production lifecycle rule
-        env:
-          OSS_LIFECYCLE_ACTION: ${{ inputs.production_lifecycle }}
-          OSS_LIFECYCLE_BACKUP_DIR: ${{ github.workspace }}/lifecycle-backup
-          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-        run: go -C tools/oss-upload test -run '^TestProductionLifecycleMaintenance$' -count=1 -v -timeout 3m
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: production-cli-lifecycle-backup
-          path: lifecycle-backup/
-          if-no-files-found: ignore
-          retention-days: 30
-
   verify-oss-upload:
     if: inputs.verify_oss_upload == true
     runs-on: ubuntu-latest
@@ -63,16 +32,19 @@ jobs:
         with:
           go-version-file: tools/oss-upload/go.mod
           cache-dependency-path: tools/oss-upload/go.sum
-      - name: Verify isolated accelerated uploads and Abort permission
+      - name: Verify configured OSS endpoint uploads and Abort permission
         env:
           OSS_UPLOAD_SMOKE_TEST: '1'
-          OSS_BUCKET: ${{ matrix.environment == 'production' && 'yoooclaw-artifacts' || 'yoooclaw-artifacts-test' }}
+          OSS_SMOKE_ENVIRONMENT: ${{ matrix.environment }}
+          OSS_REGION: ${{ secrets.OSS_REGION || 'oss-cn-hangzhou' }}
+          OSS_BUCKET: ${{ matrix.environment == 'production' && 'yoooclaw-artifacts' || secrets.OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT || vars.OSS_ENDPOINT }}
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: go -C tools/oss-upload test -run '^TestOSSUploadSmoke$' -count=1 -v -timeout 5m
 
   verify:
-    if: inputs.verify_oss_upload != true && (inputs.production_lifecycle == '' || inputs.production_lifecycle == 'none')
+    if: inputs.verify_oss_upload != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -146,7 +118,7 @@ jobs:
           echo "::notice::Feishu 构建通知已送达"
 
   windows-installer:
-    if: inputs.verify_oss_upload != true && (inputs.production_lifecycle == '' || inputs.production_lifecycle == 'none')
+    if: inputs.verify_oss_upload != true
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
