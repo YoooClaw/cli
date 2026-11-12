@@ -75,17 +75,10 @@ Shell 安装脚本通过 bash 语法检查。
 
 ## 发布上传配置
 
-上传端点通过 `secrets.OSS_ENDPOINT || vars.OSS_ENDPOINT` 解析，未配置则使用 OSS_REGION 对应的区域端点。
-当前只在 production environment variable 配置了 OSS_ENDPOINT=https://oss-accelerate.aliyuncs.com，
-因此仅引用 production 环境的生产发布与生产探针会读到该加速配置；test 环境和仓库级均未配置。
-同名 environment secret 优先于 repository secret；secret 表达式整体优先于 variable。
-variable 支持 environment、repository、organization 作用域，环境级配置优先于同名仓库级配置。
-环境级配置要在 job 进入指定 environment 后才可用；本仓库在上传步骤的 env 中读取，不提前提升到 workflow 级。
-需要启用测试区加速时，应在 test 环境验证通过后配置该环境的 OSS_ENDPOINT variable。
-作用域与可用时机参见 [GitHub Variables reference](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)。
-清空当前环境的配置前也要检查是否还有仓库级配置，否则会回落到仓库值而非地域端点。
-启用加速前须确认对应桶已开启加速，并验证普通 PUT、分片上传及完成请求；只读探测不能替代写入验证。
-关闭桶加速时应先清除或改写会被解析到的端点配置。显式端点失败会报错，不会自动切换端点。
+CI 发布与探针固定使用当前杭州桶的普通端点 https://oss-cn-hangzhou.aliyuncs.com，不启用 OSS 全球传输加速。
+三个相关仓库的 OSS_ENDPOINT secret 已同步为该普通端点，用于覆盖旧 workflow 的默认值；
+CLI production environment 原加速 variable 已移除。CI 中的显式端点不再依赖加速配置。
+本地 .env 示例也使用普通端点。发版触发、版本提交、tag 和灰度平台指针管理保持原流程。
 
 制品上传默认并发 4，可通过 OSS_UPLOAD_CONCURRENCY 配为 1–8；单文件分片并发保持 3。
 仅上传安装器或 dry-run 不读取该并发配置。
@@ -111,8 +104,7 @@ context canceled 的并发错误仍保留，用于标明哪些制品受到首个
 
 CI workflow 的 verify_oss_upload=true 输入只运行测试/生产两区隔离探针。
 探针共用独立并发组，串行运行且不被普通 push 取消；强制停止仍可能中断清理。
-测试桶从 test environment 的 OSS_BUCKET secret 读取；端点使用与发布相同的
-OSS_ENDPOINT secret / variable 表达式，未配置则验证地域端点，不强制加速端点。
+测试桶从 test environment 的 OSS_BUCKET secret 读取；端点与发布一致，固定为普通地域端点。
 日志只显示解析后的主机及协议，不输出 URL 凭据或查询参数。
 探针使用各环境的 CI 身份，在 cli/runs/oss-upload-smoke/<随机值> 下执行普通 PUT、
 文件分片上传和回读校验；另创建一个未完成上传，使用发布器的 cleanup 验证 Abort 权限。
@@ -123,10 +115,10 @@ OSS_ENDPOINT secret / variable 表达式，未配置则验证地域端点，不�
 验证记录（2026-11-12，整体失败：仅生产 job 通过）：
 [Actions 43178778892](https://github.com/YoooClaw/cli/actions/runs/43178778892)
 生产 job 已通过，确认该环境 CI 身份可经加速端点执行普通 PUT、文件分片上传、回读和 Abort，临时对象已删除。
-production environment variable OSS_ENDPOINT 已设为 https://oss-accelerate.aliyuncs.com，合入后发布流程读取。
+上述验证当时使用加速端点；随后按成本要求关闭了加速访问，生产加速 variable 已移除。
 测试 job 当时被 environment 部署分支规则拒绝，未接触测试桶；当时未改保护规则。
-随后已为 production 增加与 test 相同的 branch policy；测试区和仓库级加速变量仍未配置。
-合入允许的 release 分支后，以 verify_oss_upload=true 补跑，再决定启用测试区加速。
+随后已为 production 增加与 test 相同的 branch policy；两区现均使用普通端点配置。
+合入允许的 release 分支后，以 verify_oss_upload=true 补跑普通端点验证。
 
 
 ### 生产分片生命周期操作记录
