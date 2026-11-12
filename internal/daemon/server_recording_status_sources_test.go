@@ -6,13 +6,23 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestRecordingStatusSourceLookup(t *testing.T) {
 	for _, tc := range []struct {
-		name, mobileLabel, captureLabel, source, broken, wantSource, wantCode string
+		name, mobileLabel, captureLabel, source, broken, missing, wantSource, wantCode string
 	}{
+		{name: "blank source", captureLabel: "phone-a", source: "  ", wantSource: "capture_app"},
+		{name: "explicit empty source", captureLabel: "phone-a", source: "<empty>", wantSource: "capture_app"},
+		{name: "both degraded", broken: "mobile_app,capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+		{name: "explicit degraded mobile", broken: "mobile_app", source: "mobile_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+		{name: "missing capture", missing: "capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+		{name: "both missing", missing: "both", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+		{name: "healthy hit missing capture", mobileLabel: "phone-a", missing: "capture_app", wantSource: "mobile_app"},
+		{name: "explicit missing capture", source: "capture_app", missing: "capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+
 		{name: "legacy mobile", mobileLabel: "phone-a", wantSource: "mobile_app"},
 		{name: "capture without source", captureLabel: "phone-a", wantSource: "capture_app"},
 		{name: "explicit capture", captureLabel: "phone-a", source: "capture_app", wantSource: "capture_app"},
@@ -44,16 +54,19 @@ func TestRecordingStatusSourceLookup(t *testing.T) {
 					}
 				}
 			}
-			if tc.broken != "" {
+			for _, brokenSource := range strings.Split(tc.broken, ",") {
+				if brokenSource == "" {
+					continue
+				}
 				root := captureRoot
-				if tc.broken == "mobile_app" {
+				if brokenSource == "mobile_app" {
 					root = filepath.Dir(mobile.AudioDir())
 				}
 				if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				var broken *recording.Storage
-				if tc.broken == "mobile_app" {
+				if brokenSource == "mobile_app" {
 					broken = recording.NewStorage(root, srv.logger)
 					srv.recordingStorage = broken
 				} else {
@@ -67,9 +80,19 @@ func TestRecordingStatusSourceLookup(t *testing.T) {
 					t.Fatal("expected degraded storage")
 				}
 			}
+			if tc.missing == "capture_app" || tc.missing == "both" {
+				srv.captureRecordingStorage = nil
+			}
+			if tc.missing == "both" {
+				srv.recordingStorage = nil
+			}
 			body := `{"recordingId":"same-id"}`
 			if tc.source != "" {
-				body = fmt.Sprintf(`{"recordingId":"same-id","sourceType":%q}`, tc.source)
+				source := tc.source
+				if source == "<empty>" {
+					source = ""
+				}
+				body = fmt.Sprintf(`{"recordingId":"same-id","sourceType":%q}`, source)
 			}
 			resp := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.status", "phone-a", body)
 			if tc.wantCode != "" {
@@ -84,4 +107,15 @@ func TestRecordingStatusSourceLookup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecordingListMissingSourceIsUnavailable(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	withRecordings(t, srv)
+	resp := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "phone-a", `{}`)
+	if errorCode(resp) != "RECORDING_LIST_UNAVAILABLE" {
+		t.Fatal(resp)
+	}
+	resp = asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "phone-a", `{"sourceType":"mobile_app"}`)
+	gatewayData(t, resp)
 }

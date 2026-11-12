@@ -73,33 +73,21 @@ type recordingListSource struct {
 	store  *recording.Storage
 }
 
-// recordingListSources resolves the stores for recordings.list. An empty
-// sourceType means both sources; an explicit value keeps the single-source
-// behavior, including its degradation error.
-func (s *server) recordingListSources(w http.ResponseWriter, source, method string) ([]recordingListSource, bool) {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		sources := make([]recordingListSource, 0, 2)
-		if s.recordingStorage != nil {
-			sources = append(sources, recordingListSource{source: recording.SourceMobileApp, store: s.recordingStorage})
-		}
-		if s.captureRecordingStorage != nil {
-			sources = append(sources, recordingListSource{source: recording.SourceCaptureApp, store: s.captureRecordingStorage})
-		}
-		if len(sources) == 0 {
-			gatewayErr(w, "INTERNAL_ERROR", "recording storage unavailable")
-			return nil, false
-		}
-		return sources, true
-	}
-	store, ok := s.recordingStore(w, source, method)
-	if !ok {
+// recordingReadSources preserves missing stores so callers can distinguish
+// unavailable sources from empty indexes. List requires every source; status
+// may return a visible match from a healthy source.
+func (s *server) recordingReadSources(w http.ResponseWriter, source string) ([]recordingListSource, bool) {
+	switch strings.TrimSpace(source) {
+	case "":
+		return []recordingListSource{{recording.SourceMobileApp, s.recordingStorage}, {recording.SourceCaptureApp, s.captureRecordingStorage}}, true
+	case recording.SourceMobileApp:
+		return []recordingListSource{{recording.SourceMobileApp, s.recordingStorage}}, true
+	case recording.SourceCaptureApp:
+		return []recordingListSource{{recording.SourceCaptureApp, s.captureRecordingStorage}}, true
+	default:
+		gatewayErr(w, "INVALID_PARAMS", "sourceType must be mobile_app or capture_app")
 		return nil, false
 	}
-	if source == recording.SourceCaptureApp {
-		return []recordingListSource{{source: recording.SourceCaptureApp, store: store}}, true
-	}
-	return []recordingListSource{{source: recording.SourceMobileApp, store: store}}, true
 }
 
 func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, auth authResult, path string) {
@@ -265,7 +253,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "invalid recording status: "+status)
 			return
 		}
-		sources, ok := s.recordingListSources(w, body.SourceType, method)
+		sources, ok := s.recordingReadSources(w, body.SourceType)
 		if !ok {
 			return
 		}
@@ -276,6 +264,10 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			// 合并列表必须保持“完整清单”语义：任一侧索引降级或读取失败时
 			// 整体返回不可用，不能返回部分集合让 App 按差集误判。来源隔离
 			// 通过显式 sourceType 查询健康来源实现。
+			if source.store == nil {
+				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
+				return
+			}
 			if err := source.store.LoadError(); err != nil {
 				s.logger.Warn("[recording-list] " + source.source + " 索引不可用: " + err.Error())
 				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
@@ -319,18 +311,18 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		}
 		// Like list, an omitted source searches both stores. Filter by client
 		// visibility before detecting ambiguity so hidden records are not exposed.
-		sources, ok := s.recordingListSources(w, body.SourceType, method)
+		sources, ok := s.recordingReadSources(w, body.SourceType)
 		if !ok {
 			return
 		}
 		var match *recording.Entry
 		unavailable := false
 		for _, source := range sources {
-			if source.store.LoadError() != nil {
+			entry, found, err := source.store.LookupByID(recordingID)
+			if err != nil {
 				unavailable = true
 				continue
 			}
-			entry, found := source.store.FindByID(recordingID)
 			if !found || !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
 				continue
 			}
