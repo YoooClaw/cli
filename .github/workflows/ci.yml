@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       verify_oss_upload:
-        description: '仅在两区随机临时前缀验证加速上传及 Abort，不发布版本'
+        description: '仅在两区随机临时前缀验证普通端点上传及 Abort，不发布版本'
         type: boolean
         default: false
   pull_request:

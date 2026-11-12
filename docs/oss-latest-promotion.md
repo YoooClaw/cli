@@ -100,7 +100,7 @@ CI 身份需具备相应前缀的 oss:AbortMultipartUpload 权限。
 context canceled 的并发错误仍保留，用于标明哪些制品受到首个失败影响。
 
 
-### 手动验证两区加速与 Abort 权限
+### 手动验证两区上传与 Abort 权限
 
 CI workflow 的 verify_oss_upload=true 输入只运行测试/生产两区隔离探针。
 探针共用独立并发组，串行运行且不被普通 push 取消；强制停止仍可能中断清理。
@@ -153,4 +153,4 @@ production environment 使用与 test 相同的 deployment branch policy：
 撤回强制 PR/CI、管理员创建权限和 tag 不可改写限制；
 现有 master ruleset 未修改。生产 environment 的 release/*、cli-v* 引用范围限制保留，
 它不会阻止原有 release 分支推送或 tag 发布，也不会要求额外版本 PR。
-上传并发、加速配置、取消与分片清理，以及生产桶已生效的 7 天分片兜底规则均保留。
+上传并发、普通地域端点配置、取消与分片清理，以及生产桶已生效的 7 天分片兜底规则均保留。
