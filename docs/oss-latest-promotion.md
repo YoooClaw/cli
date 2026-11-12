@@ -96,7 +96,8 @@ Shell 安装脚本通过 bash 语法检查。
 CI 身份需具备相应前缀的 oss:AbortMultipartUpload 权限。
 
 桶仍应配置 AbortMultipartUpload 生命周期规则，兜底 runner 强制退出、初始化响应丢失或清理无权限等情况。
-本 PR 不修改桶生命周期规则，也未读取确认现有规则，不能据此假定两区已有兜底。
+本 PR 不修改桶生命周期规则。2026-11-12 生产探针只读查询后未找到覆盖 cli/ 的无条件 Abort 规则；
+测试区因当前 PR 分支不满足 environment 部署规则，尚未验证，不能假定两区已有生命周期兜底。
 context canceled 的并发错误仍保留，用于标明哪些制品受到首个失败影响。
 
 
@@ -107,3 +108,11 @@ CI workflow 的 verify_oss_upload=true 输入只运行测试/生产两区隔离�
 文件分片上传和回读校验；另创建一个未完成上传，使用发布器的 cleanup 验证 Abort 权限。
 临时对象会删除，不会发布版本、登记草稿或写任何版本指针。
 探针也尝试只读查询生命周期规则；没有读取权限时明确标为未确认，不会修改规则。
+
+
+验证记录（2026-11-12）：
+[Actions 43178778892](https://github.com/YoooClaw/cli/actions/runs/43178778892)
+生产 job 已通过，确认该环境 CI 身份可经加速端点执行普通 PUT、文件分片上传、回读和 Abort，临时对象已删除。
+production environment variable OSS_ENDPOINT 已设为 https://oss-accelerate.aliyuncs.com，合入后发布流程读取。
+测试 job 被 environment 部署分支规则拒绝，未接触测试桶；未改保护规则，也未为测试区或仓库配置加速变量。
+合入允许的 release 分支后，以 verify_oss_upload=true 补跑，再决定启用测试区加速。
