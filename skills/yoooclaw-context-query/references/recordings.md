@@ -103,4 +103,29 @@ even when an event mentions the same recording.
 - Multiple recordings: group by recording name/ID and source.
 - Missing transcript: report the file facts and any source-specific error; do not guess.
 
-This branch is read-only. Recording transformations use `yoooclaw-recordings-process`.
+## 6. Deletion
+
+Deleting is the only recording mutation available to this Skill, and it must go through the CLI
+so the daemon updates `recordings/index.json` and the files together:
+
+```bash
+yoooclaw recording delete <recording_id> --source <source_type> --yes --format json
+yoooclaw recording delete <recording_id> --source mobile_app --local-only --yes --format json
+```
+
+- Default: delete the index entry and all local artifacts (`--source` defaults to `mobile_app`).
+- `--local-only`: clear local artifacts but keep the entry pending re-download. Use only when the
+  user asked to clean up local files rather than delete the recording.
+- `--yes` is required in non-interactive runs; without it the command asks for confirmation.
+- Confirm the target first with `recording status`/`recording list`, and require a unique match.
+  Never delete several recordings because a filter matched; list them and let the user choose.
+
+Never edit `recordings/index.json` directly and never `rm`/trash files under the recordings root
+(`audio/`, `transcripts/`, `transcript-data/`, `summaries/`). The daemon keeps the index in memory
+and rewrites the whole file on its next change, so a direct edit appears to work and then reverts.
+Only the command above reaches the daemon's write path.
+
+## Boundary
+
+Query steps in this branch are read-only. Recording transformations use
+`yoooclaw-recordings-process`.
