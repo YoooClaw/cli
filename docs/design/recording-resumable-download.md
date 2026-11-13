@@ -170,3 +170,4 @@ transfercloud ──┘
 - `recordings.export.status` 省略来源时用 `recordingId + exportId + 客户端作用域` 在 `mobile_app` 中查找原任务；传 `capture_app` 只查 Capture，传 `all` 时在两个来源中查找。仍要求传 `exportId`，不会擅自选择最近一次任务。
 - 所选来源不可用且没有找到原任务时返回 `RECORDING_LIST_UNAVAILABLE`，避免误判旧任务不存在或重复创建。已有原任务在健康来源中命中则可以继续查询／重放。
 - 新任务来源解析及受理在 daemon 内串行，防止并发请求重复创建同一个请求键。后台上传仍异步执行。原有权限、上传流程和写入来源规则保持不变。
+- 同一录音已有其他 `requestId` 的导出处于 `preparing`/`uploading` 时，新的 start 返回 `EXPORT_BUSY`。忙碌任务属于当前客户端作用域时，错误体的 `details` 附带 `{exportId, state, sourceType, updatedAt, sizeBytes, retryable: true}`，App 可直接用该 `exportId` 调用 `recordings.export.status` 继续轮询，无需等待或更换 `requestId`。跨作用域的忙碌任务不返回 `details`：status 同样按作用域隔离，客户端本就不能续查，也不应借此推断其他客户端的状态。

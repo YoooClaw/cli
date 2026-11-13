@@ -247,6 +247,22 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 		RecordingID: recordingID, RequestID: requestID, ScopeKey: scopeKey,
 	}, cloud)
 	if err != nil {
+		// 忙时把同 scope 已在进行中的导出交还给客户端：App 可以直接用它
+		// 的 exportId 转去轮询，而不是拿着一个无法续查的 BUSY 干等或换
+		// requestId 反复重试。跨 scope 的尝试不暴露（也不可见）。
+		if errors.Is(err, recording.ErrExportBusy) {
+			if active, ok := store.ActiveExport(recordingID, scopeKey); ok {
+				gatewayErrDetails(w, "EXPORT_BUSY", "another export is in progress for this recording", map[string]any{
+					"retryable":  true,
+					"sourceType": sourceType,
+					"exportId":   active.ExportID,
+					"state":      active.State,
+					"updatedAt":  active.UpdatedAt,
+					"sizeBytes":  active.SizeBytes,
+				})
+				return
+			}
+		}
 		writeRecordingExportError(w, err)
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -484,5 +485,95 @@ func TestRecordingExportExplicitSourceAndReplay(t *testing.T) {
 		`{"recordingId":"same","requestId":"request-capture","sourceType":"capture_app"}`))
 	if result["exportId"] != id {
 		t.Fatal(result)
+	}
+}
+
+type blockingDaemonExportCloud struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingDaemonExportCloud) UploadRecording(ctx context.Context, path string, onTask func(string, string) error) (recording.ExportUpload, error) {
+	c.once.Do(func() { close(c.started) })
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+		return recording.ExportUpload{}, ctx.Err()
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return recording.ExportUpload{}, err
+	}
+	if onTask != nil {
+		if err := onTask("export-task-1", "users/audio/20261110/busy.m4a"); err != nil {
+			return recording.ExportUpload{}, err
+		}
+	}
+	return recording.ExportUpload{
+		TaskID: "export-task-1", ObjectKey: "users/audio/20261110/busy.m4a",
+		SizeBytes: info.Size(), SignedURL: "https://bucket.example/a.m4a?signature=s",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, nil
+}
+
+func (c *blockingDaemonExportCloud) RecordingDownloadLink(ctx context.Context, taskID string) (recording.DownloadLink, error) {
+	return recording.DownloadLink{URL: "https://bucket.example/a.m4a?signature=r", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+// 忙时要把同 scope 正在进行的导出摘要交还给客户端，让 App 能直接轮询现有
+// exportId；跨 scope 的任务不可见，不能借此泄露。
+func TestRecordingExportBusyReturnsInflightExport(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	storage := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
+	// 空 label 对所有客户端可见，phone-b 才能走到"录音可见但导出忙"的分支。
+	seedExportableRecording(t, storage, "rec_export", "")
+	cloud := &blockingDaemonExportCloud{started: make(chan struct{}), release: make(chan struct{})}
+	srv.exportCloudFn = func(string) (recording.ExportCloud, error) { return cloud, nil }
+
+	first := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"rec_export","requestId":"req-1"}`))
+	<-cloud.started
+
+	busy := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"rec_export","requestId":"req-2"}`)
+	if code := errorCode(busy); code != "EXPORT_BUSY" {
+		t.Fatalf("busy code=%q resp=%+v", code, busy)
+	}
+	errObj, _ := busy["error"].(map[string]any)
+	details, _ := errObj["details"].(map[string]any)
+	if details["exportId"] != first["exportId"] {
+		t.Fatalf("busy details=%+v, want exportId=%v", details, first["exportId"])
+	}
+	if details["state"] != recording.ExportStatePreparing {
+		t.Fatalf("busy state=%v", details["state"])
+	}
+	if details["sourceType"] != recording.SourceMobileApp || details["retryable"] != true {
+		t.Fatalf("busy details=%+v", details)
+	}
+
+	// 另一客户端作用域拿不到别人的 exportId。
+	crossScope := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-b",
+		`{"recordingId":"rec_export","requestId":"req-3"}`)
+	if code := errorCode(crossScope); code != "EXPORT_BUSY" {
+		t.Fatalf("cross-scope code=%q resp=%+v", code, crossScope)
+	}
+	crossErr, _ := crossScope["error"].(map[string]any)
+	if leaked, ok := crossErr["details"].(map[string]any); ok {
+		t.Fatalf("cross-scope busy leaked details: %+v", leaked)
+	}
+
+	// 同一 requestId 的重放仍然幂等，不会变成 BUSY。
+	replay := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"rec_export","requestId":"req-1"}`))
+	if replay["exportId"] != first["exportId"] {
+		t.Fatalf("replay=%+v", replay)
+	}
+
+	close(cloud.release)
+	status := waitGatewayExport(t, ts.URL, "phone-a", "rec_export", asString(first["exportId"]))
+	if status["state"] != "ready" {
+		t.Fatalf("status=%+v", status)
 	}
 }
