@@ -6,6 +6,15 @@ import (
 	"syscall"
 )
 
+// StorageFullMessage 是结构化空间不足错误统一的对外文案。客户端必须按
+// error.code=STORAGE_FULL 处理，不要匹配这段文本。
+const StorageFullMessage = "Not enough disk space"
+
+// IsStorageFull 报告 err 是否为明确的本地空间不足（Unix ENOSPC/EDQUOT 及
+// 平台等价错误）。权限、网络、OSS 容量和一般 I/O 错误都不算，避免把其它
+// 故障误报成空间不足。
+func IsStorageFull(err error) bool { return isStorageFullError(err) }
+
 // storageErrorCode 只把明确的本地空间不足映射为 STORAGE_FULL；权限、网络和
 // OSS 错误保持未分类，避免错误提示被误导。
 func storageErrorCode(err error) string {

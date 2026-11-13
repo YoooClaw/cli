@@ -21,13 +21,26 @@ func TestStorageFullClassification(t *testing.T) {
 			if got := storageErrorCode(err); got != "STORAGE_FULL" {
 				t.Fatalf("storageErrorCode(%v)=%q", err, got)
 			}
+			// 对外导出的判定必须与内部错误码一致，daemon 用它映射 STORAGE_FULL。
+			if !IsStorageFull(err) {
+				t.Fatalf("IsStorageFull(%v)=false", err)
+			}
 		})
 	}
-	if got := storageErrorCode(os.ErrPermission); got != "" {
-		t.Fatalf("permission misclassified: %q", got)
-	}
-	if got := storageErrorCode(errors.New("disc full")); got != "" {
-		t.Fatalf("unrelated error misclassified: %q", got)
+	for name, err := range map[string]error{
+		"permission": os.ErrPermission,
+		"network":    errors.New("dial tcp: connection refused"),
+		"unrelated":  errors.New("disc full"),
+		"nil":        nil,
+	} {
+		t.Run("negative/"+name, func(t *testing.T) {
+			if got := storageErrorCode(err); got != "" {
+				t.Fatalf("storageErrorCode(%v)=%q", err, got)
+			}
+			if IsStorageFull(err) {
+				t.Fatalf("IsStorageFull(%v)=true", err)
+			}
+		})
 	}
 }
 
