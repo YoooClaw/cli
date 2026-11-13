@@ -7,7 +7,7 @@
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/bin
 #
 # 选项：
-#   --version <v>   指定版本（默认最新正式版；预发布版只能由此显式指定）
+#   --version <v>   指定版本；macOS 默认及 latest 暂固定 0.16.2
 #   --dir <path>    安装目录（默认优先 ~/.local/bin，其次为可写的 /usr/local/bin）
 #   --force         覆盖已存在二进制
 #   --activate      安装后明确将 Relay owner 切换到 CLI（默认保留当前 owner）
@@ -17,7 +17,7 @@
 #   --no-modify-path 不修改 shell 配置（默认行为，兼容旧调用）
 #
 # 行为：
-#   - 不带 --version 时只解析正式版；beta/alpha/rc 必须显式 --version 才能安装
+#   - macOS 默认或 --version latest 暂固定 0.16.2；明确版本号不受影响
 #   - 检测 OS/Arch，下载 yoooclaw-<os>-<arch>（OSS 渲染版从 OSS 下载，源码版从 GitHub Release）
 #   - 校验 sha256（从同目录 checksums.txt 取）
 #   - 写入 <dir>/yoooclaw，并 symlink yc -> yoooclaw
@@ -28,7 +28,7 @@
 set -eu
 
 # 以下两个占位符由 tools/oss-upload 在发布时渲染。渲染后的脚本从阿里云 OSS
-# 解析版本并下载制品；未渲染的源码原版继续走 GitHub API + Release。
+# 解析版本并下载制品；未渲染的源码原版从生产 OSS 解析默认版本，再从 GitHub Release 下载。
 OSS_BASE_URL="__YOOOCLAW_CLI_OSS_BASE_URL__"
 OSS_RENDERED="__YOOOCLAW_CLI_TEMPLATE_RENDERED__"
 
@@ -96,6 +96,16 @@ ASSET="yoooclaw-${OS}-${ARCH}"
 # ---------- resolve version ----------
 need_cmd() { command -v "$1" >/dev/null 2>&1 || err "缺少依赖: $1"; }
 need_cmd curl
+
+# Temporary macOS hold: resolve both default and explicit latest before reading any pointer.
+if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+  if [ "$OS" = "darwin" ]; then
+    VERSION="0.16.2"
+    info "macOS 默认安装暂固定为 ${VERSION}"
+  else
+    VERSION=""
+  fi
+fi
 
 if [ "$OSS_RENDERED" = "1" ]; then
   # OSS 渲染版：latest 标记文件里存的是纯版本号（测试区也允许预发布版）

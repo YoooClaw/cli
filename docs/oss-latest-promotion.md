@@ -154,3 +154,13 @@ production environment 使用与 test 相同的 deployment branch policy：
 现有 master ruleset 未修改。生产 environment 的 release/*、cli-v* 引用范围限制保留，
 它不会阻止原有 release 分支推送或 tag 发布，也不会要求额外版本 PR。
 上传并发、普通地域端点配置、取消与分片清理，以及生产桶已生效的 7 天分片兜底规则均保留。
+
+## macOS 临时安装版本固定
+
+macOS 的 Shell 安装入口暂固定默认版本为 `0.16.2`。
+省略 `--version` 或传入 `--version latest` 均采用该版本。
+该规则覆盖源码脚本及测试、生产 OSS 渲染脚本。
+明确指定其他版本仍按指定版本安装。
+Linux 默认安装继续读取对应 OSS latest，Windows 脚本不变。
+此改动不控制已安装客户端的 OTA 更新资格。
+恢复 Mac 发布时，应移除 `scripts/install.sh` 中的临时固定规则。
