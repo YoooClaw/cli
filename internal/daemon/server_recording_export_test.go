@@ -211,10 +211,24 @@ func TestCaptureRecordingExportRoutesStartAndStatus(t *testing.T) {
 		t.Fatalf("idempotent replay=%+v uploads=%d", again, cloud.uploads)
 	}
 
-	// 省略 sourceType 时自动找到 Capture 录音并沿用原导出。
+	// 省略 sourceType 默认 mobile_app，不能看到仅存在于 Capture 的录音。
 	for _, body := range []string{
 		`{"recordingId":"cap_export","requestId":"cap-req-1"}`,
 		`{"recordingId":"cap_export","exportId":"` + exportID + `"}`,
+	} {
+		method := "recordings.export.start"
+		if strings.Contains(body, "exportId") {
+			method = "recordings.export.status"
+		}
+		resp := asClient(t, "POST", ts.URL+"/gateway/"+method, "phone-a", body)
+		if code := errorCode(resp); code != "NOT_FOUND" {
+			t.Fatalf("default source must not see Capture: %s code=%s", method, code)
+		}
+	}
+	// 显式 all 可以在两个来源中找到同一个 Capture 导出。
+	for _, body := range []string{
+		`{"recordingId":"cap_export","requestId":"cap-req-1","sourceType":"all"}`,
+		`{"recordingId":"cap_export","exportId":"` + exportID + `","sourceType":"all"}`,
 	} {
 		method := "recordings.export.start"
 		if strings.Contains(body, "exportId") {
@@ -311,6 +325,71 @@ func TestRecordingExportRoutesValidation(t *testing.T) {
 	}
 }
 
+func TestRecordingExportAllSourcesAndReplay(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	mobile := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
+	t.Cleanup(srv.closeRecordingExports)
+	capture := srv.captureRecordingStorage
+	seedExportableRecording(t, capture, "same", "phone-a")
+	cloud := &daemonFakeExportCloud{}
+	srv.exportCloudFn = func(string) (recording.ExportCloud, error) { return cloud, nil }
+
+	start := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"request-all","sourceType":"all"}`))
+	id := asString(start["exportId"])
+	if start["sourceType"] != "capture_app" {
+		t.Fatal(start)
+	}
+	waitGatewayExport(t, ts.URL, "phone-a", "same", id, "all")
+
+	// 保留任务优先：另一来源后来出现同 UUID 也不重定向。
+	seedExportableRecording(t, mobile, "same", "phone-a")
+	for _, body := range []string{
+		`{"recordingId":"same","requestId":"request-all","sourceType":"all"}`,
+		`{"recordingId":"same","exportId":"` + id + `","sourceType":"all"}`,
+	} {
+		method := "start"
+		if strings.Contains(body, "exportId") {
+			method = "status"
+		}
+		result := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export."+method, "phone-a", body))
+		if result["exportId"] != id || result["sourceType"] != "capture_app" {
+			t.Fatal(result)
+		}
+	}
+
+	// all 命中两个可见来源时要求显式指定来源。
+	duplicate := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"new-request","sourceType":"all"}`)
+	if errorCode(duplicate) != "SOURCE_CONFLICT" {
+		t.Fatal(duplicate)
+	}
+	// 请求键已属于另一录音时返回 REQUEST_CONFLICT。
+	seedExportableRecording(t, mobile, "other", "phone-a")
+	conflict := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"other","requestId":"request-all","sourceType":"all"}`)
+	if errorCode(conflict) != "REQUEST_CONFLICT" {
+		t.Fatal(conflict)
+	}
+	if cloud.uploads != 1 {
+		t.Fatalf("uploads=%d", cloud.uploads)
+	}
+
+	// 来源不可用不会掩盖保留任务，但无法确认新请求键时返回存储不可用。
+	srv.recordingStorage = nil
+	result := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"request-all","sourceType":"all"}`))
+	if result["exportId"] != id {
+		t.Fatal(result)
+	}
+	missing := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"another","sourceType":"all"}`)
+	if errorCode(missing) != "RECORDING_LIST_UNAVAILABLE" {
+		t.Fatal(missing)
+	}
+}
+
 func TestGatewayHealthListsRecordingExportMethods(t *testing.T) {
 	_, ts := newTestServer(t, "")
 	data := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/health", "", `{}`))
@@ -332,7 +411,7 @@ func errorCode(resp map[string]any) string {
 	return asString(errObj["code"])
 }
 
-func TestRecordingExportAutomaticSourceAndReplay(t *testing.T) {
+func TestRecordingExportExplicitSourceAndReplay(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	mobile := withRecordings(t, srv)
 	withCaptureRecordings(t, srv)
@@ -341,15 +420,28 @@ func TestRecordingExportAutomaticSourceAndReplay(t *testing.T) {
 	seedExportableRecording(t, capture, "same", "phone-a")
 	cloud := &daemonFakeExportCloud{}
 	srv.exportCloudFn = func(string) (recording.ExportCloud, error) { return cloud, nil }
-	start := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"request-auto","sourceType":"  "}`))
+
+	// 省略 sourceType 默认 mobile_app，不会看到仅存在于 Capture 的录音。
+	defaultStart := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"request-capture"}`)
+	if errorCode(defaultStart) != "NOT_FOUND" {
+		t.Fatal(defaultStart)
+	}
+
+	start := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"request-capture","sourceType":"capture_app"}`))
 	id := asString(start["exportId"])
 	if start["sourceType"] != "capture_app" {
 		t.Fatal(start)
 	}
-	waitGatewayExport(t, ts.URL, "phone-a", "same", id)
-	// A later duplicate UUID must not redirect a retained request or task.
+	waitGatewayExport(t, ts.URL, "phone-a", "same", id, "capture_app")
+
+	// 保留任务优先于 UUID 查找：另一来源出现同 ID 记录也不影响重放。
 	seedExportableRecording(t, mobile, "same", "phone-a")
-	for _, body := range []string{`{"recordingId":"same","requestId":"request-auto"}`, `{"recordingId":"same","exportId":"` + id + `"}`} {
+	for _, body := range []string{
+		`{"recordingId":"same","requestId":"request-capture","sourceType":"capture_app"}`,
+		`{"recordingId":"same","exportId":"` + id + `","sourceType":"capture_app"}`,
+	} {
 		method := "start"
 		if strings.Contains(body, "exportId") {
 			method = "status"
@@ -359,27 +451,38 @@ func TestRecordingExportAutomaticSourceAndReplay(t *testing.T) {
 			t.Fatal(result)
 		}
 	}
-	duplicate := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"new-request"}`)
-	if errorCode(duplicate) != "SOURCE_CONFLICT" {
-		t.Fatal(duplicate)
+
+	// 默认来源是 mobile_app：同 ID 的 mobile 记录独立导出，不再与 Capture 冲突。
+	mobileStart := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"request-mobile"}`))
+	mobileID := asString(mobileStart["exportId"])
+	if mobileStart["sourceType"] != "mobile_app" || mobileID == id {
+		t.Fatal(mobileStart)
 	}
+	waitGatewayExport(t, ts.URL, "phone-a", "same", mobileID)
+
+	// requestId 在同一来源内不能复用于其他录音。
 	seedExportableRecording(t, mobile, "other", "phone-a")
-	conflict := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"other","requestId":"request-auto"}`)
+	conflict := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"other","requestId":"request-mobile"}`)
 	if errorCode(conflict) != "REQUEST_CONFLICT" {
 		t.Fatal(conflict)
 	}
-	if cloud.uploads != 1 {
+	if cloud.uploads != 2 {
 		t.Fatalf("uploads=%d", cloud.uploads)
 	}
-	// Unavailable sources prevent establishing that a new key is unused, but
-	// do not hide a retained task in a healthy source.
+
+	// 默认来源不可用时返回存储不可用，而不是误报 NOT_FOUND。
 	srv.recordingStorage = nil
-	result := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"request-auto"}`))
-	if result["exportId"] != id {
-		t.Fatal(result)
-	}
-	missing := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a", `{"recordingId":"same","requestId":"another"}`)
+	missing := asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"another"}`)
 	if errorCode(missing) != "RECORDING_LIST_UNAVAILABLE" {
 		t.Fatal(missing)
+	}
+	// 显式 Capture 仍能重放保留任务。
+	result := gatewayData(t, asClient(t, "POST", ts.URL+"/gateway/recordings.export.start", "phone-a",
+		`{"recordingId":"same","requestId":"request-capture","sourceType":"capture_app"}`))
+	if result["exportId"] != id {
+		t.Fatal(result)
 	}
 }

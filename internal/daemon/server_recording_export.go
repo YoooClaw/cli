@@ -110,7 +110,8 @@ func (s *server) recordingExportCloud(label string) (recording.ExportCloud, erro
 }
 
 // resolveRecordingExport prefers a retained task over UUID lookup so retries
-// remain bound to their original source even if a duplicate UUID appears later.
+// remain bound to their source. An omitted sourceType selects mobile_app;
+// capture_app selects one store; all explicitly resolves across both stores.
 func (s *server) resolveRecordingExport(w http.ResponseWriter, auth authResult, source, id, requestID, exportID string) (*recording.Storage, recording.Entry, string, bool) {
 	sources, ok := s.recordingReadSources(w, source)
 	if !ok {
@@ -159,8 +160,7 @@ func (s *server) resolveRecordingExport(w http.ResponseWriter, auth authResult, 
 	if task != nil {
 		return task.store, taskEntry, task.source, true
 	}
-	// Creating a new export requires proving the request key is unused in every
-	// selected source. A status miss also cannot be established on an unreadable store.
+	// 新建导出需要确认所选来源都未占用该请求键；来源不可用时不能断定任务不存在。
 	if unavailable {
 		gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
 		return nil, recording.Entry{}, "", false
