@@ -5,12 +5,39 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+type captureLogger struct {
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *captureLogger) Info(string) {}
+
+func (l *captureLogger) Warn(msg string) {
+	l.mu.Lock()
+	l.warns = append(l.warns, msg)
+	l.mu.Unlock()
+}
+
+func (l *captureLogger) Error(string) {}
+
+func (l *captureLogger) contains(sub string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, warn := range l.warns {
+		if strings.Contains(warn, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 type fakeExportCloud struct {
 	mu           sync.Mutex
@@ -93,7 +120,7 @@ func (f *fakeExportCloud) counts() (uploads, links int) {
 	return f.uploads, f.links
 }
 
-func newExportFixture(t *testing.T) (*Storage, *ExportService, *fakeExportCloud) {
+func newExportStorage(t *testing.T) *Storage {
 	t.Helper()
 	storage := newResultStorage(t)
 	if _, err := storage.Ingest("rec_export", Metadata{Name: "方案评审", CreatedAt: "2026-11-09T10:00:00+08:00", DurationSec: 120}, "phone-a"); err != nil {
@@ -116,6 +143,12 @@ func newExportFixture(t *testing.T) (*Storage, *ExportService, *fakeExportCloud)
 	if err := storage.SetAudioFile("rec_export", path[len(storage.AudioDir())+1:]); err != nil {
 		t.Fatal(err)
 	}
+	return storage
+}
+
+func newExportFixture(t *testing.T) (*Storage, *ExportService, *fakeExportCloud) {
+	t.Helper()
+	storage := newExportStorage(t)
 	service := NewExportService(storage, testLogger{t})
 	t.Cleanup(service.Close)
 	return storage, service, &fakeExportCloud{}
@@ -259,6 +292,88 @@ func waitExportWithScope(t *testing.T, service *ExportService, cloud ExportCloud
 	}
 }
 
+func TestExportSourceFailureNamesMissingFile(t *testing.T) {
+	tests := map[string]struct {
+		remove      func(t *testing.T, storage *Storage, entry Entry) string
+		wantMessage string
+		wantSource  string
+	}{
+		"transcriptData": {
+			remove: func(t *testing.T, storage *Storage, entry Entry) string {
+				if err := os.Remove(filepath.Join(storage.dir, entry.TranscriptDataFile)); err != nil {
+					t.Fatal(err)
+				}
+				return entry.TranscriptDataFile
+			},
+			wantMessage: "Transcript data file no longer exists",
+			wantSource:  "transcriptData",
+		},
+		"transcript": {
+			remove: func(t *testing.T, storage *Storage, entry Entry) string {
+				if err := os.Remove(filepath.Join(storage.dir, entry.TranscriptFile)); err != nil {
+					t.Fatal(err)
+				}
+				return entry.TranscriptFile
+			},
+			wantMessage: "Transcript file no longer exists",
+			wantSource:  "transcript",
+		},
+		"summary": {
+			remove: func(t *testing.T, storage *Storage, entry Entry) string {
+				if err := os.Remove(filepath.Join(storage.dir, entry.SummaryFile)); err != nil {
+					t.Fatal(err)
+				}
+				return entry.SummaryFile
+			},
+			wantMessage: "Summary file no longer exists",
+			wantSource:  "summary",
+		},
+		"srt": {
+			remove: func(t *testing.T, storage *Storage, _ Entry) string {
+				const rel = "transcripts/rec_export.srt"
+				if err := storage.updateEntry("rec_export", func(entry *Entry) { entry.SrtFile = rel }); err != nil {
+					t.Fatal(err)
+				}
+				return rel
+			},
+			wantMessage: "Subtitle file no longer exists",
+			wantSource:  "srt",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			storage := newExportStorage(t)
+			entry, ok := storage.FindByID("rec_export")
+			if !ok {
+				t.Fatal("fixture recording missing")
+			}
+			logger := &captureLogger{}
+			service := NewExportService(storage, logger)
+			t.Cleanup(service.Close)
+			cloud := &fakeExportCloud{}
+			logPath := tc.remove(t, storage, entry)
+
+			start := startExport(t, service, cloud, "rec_export", "req-1", "local")
+			status := waitExport(t, service, cloud, "rec_export", start.ExportID)
+			if status.State != ExportStateFailed || status.Error == nil {
+				t.Fatalf("status=%+v", status)
+			}
+			if status.Error.Code != "SOURCE_NOT_FOUND" {
+				t.Fatalf("code=%s message=%s", status.Error.Code, status.Error.Message)
+			}
+			if status.Error.Message != tc.wantMessage {
+				t.Fatalf("message=%q want %q", status.Error.Message, tc.wantMessage)
+			}
+			if status.Error.Source != tc.wantSource {
+				t.Fatalf("source=%q want %q", status.Error.Source, tc.wantSource)
+			}
+			if !logger.contains(logPath) {
+				t.Fatalf("warn log does not contain %q: %v", logPath, logger.warns)
+			}
+		})
+	}
+}
+
 func TestExportReadyDetectsSourceChangeAndDeletion(t *testing.T) {
 	storage, service, cloud := newExportFixture(t)
 	start := startExport(t, service, cloud, "rec_export", "req-1", "local")
@@ -281,6 +396,12 @@ func TestExportReadyDetectsSourceChangeAndDeletion(t *testing.T) {
 	status = waitExport(t, service, cloud, "rec_export", second.ExportID)
 	if status.State != ExportStateFailed || status.Error == nil || status.Error.Code != "SOURCE_NOT_FOUND" {
 		t.Fatalf("status=%+v", status)
+	}
+	if status.Error.Message != "Recording audio file no longer exists" {
+		t.Fatalf("message=%q", status.Error.Message)
+	}
+	if status.Error.Source != "audio" {
+		t.Fatalf("source=%q", status.Error.Source)
 	}
 }
 

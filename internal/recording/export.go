@@ -55,6 +55,9 @@ type ExportFailure struct {
 	Message   string `json:"message"`
 	Scope     string `json:"scope"`
 	Retryable bool   `json:"retryable"`
+	// Source 标识失败对应哪一类源文件（audio/transcriptData/transcript/
+	// summary/srt），便于客户端按类别提示；永远不包含本地路径。
+	Source string `json:"source,omitempty"`
 }
 
 type ExportTransfer struct {
@@ -177,6 +180,10 @@ func (s *ExportService) Start(ctx context.Context, req ExportStartRequest, cloud
 		return ExportStartResult{RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State, SizeBytes: sizeBytes}, nil
 	}
 	if !s.storage.Exportable(entry) {
+		// 导出前置条件失败发生在状态机之前，原先没有任何日志；这里记录索引
+		// 里的音频状态和相对路径，便于区分"还没下载"和"文件被删"。
+		s.logger.Warn("[recording-export] 录音不可导出: recording=" + recordingID + ", status=" + entry.Status +
+			", audioStatus=" + entry.AudioStatus + ", audioFile=" + entry.AudioFile)
 		return ExportStartResult{}, ErrExportNotExportable
 	}
 	if cloud == nil {
@@ -218,7 +225,7 @@ func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, clo
 	case ExportStatePreparing, ExportStateUploading:
 		return status, nil
 	case ExportStateFailed, ExportStateExpired:
-		status.Error = &ExportFailure{Code: record.ErrorCode, Message: record.ErrorMessage, Scope: record.ErrorScope, Retryable: record.Retryable}
+		status.Error = failureOf(record)
 		return status, nil
 	case ExportStateReady:
 	default:
@@ -228,10 +235,10 @@ func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, clo
 	source, err := prepareExportSource(s.storage, recordingID, false)
 	if err != nil {
 		// ready 之后来源从可读变为不可读，按来源变化处理；只有明确删除才报 NOT_FOUND。
-		return s.failStatus(recordingID, exportID, readySourceFailureCode(err), readySourceFailureMessage(err), "item", false), nil
+		return s.failReadySource(recordingID, exportID, err), nil
 	}
 	if source.sourceVersion != record.SourceVersion {
-		return s.failStatus(recordingID, exportID, "SOURCE_CHANGED", "Recording source changed", "item", false), nil
+		return s.failSourceChanged(recordingID, exportID), nil
 	}
 	if cloud == nil {
 		return status, ErrExportLinkUnavailable
@@ -251,10 +258,10 @@ func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, clo
 	// hash，不重新计算整段音频。
 	current, err := prepareExportSource(s.storage, recordingID, false)
 	if err != nil {
-		return s.failStatus(recordingID, exportID, readySourceFailureCode(err), readySourceFailureMessage(err), "item", false), nil
+		return s.failReadySource(recordingID, exportID, err), nil
 	}
 	if current.sourceVersion != record.SourceVersion {
-		return s.failStatus(recordingID, exportID, "SOURCE_CHANGED", "Recording source changed", "item", false), nil
+		return s.failSourceChanged(recordingID, exportID), nil
 	}
 	payload := current.payload
 	payload.OssTaskID = record.TaskID
@@ -272,15 +279,41 @@ func exportStatus(recordingID string, record ExportRecord) ExportStatus {
 	return ExportStatus{RecordingID: recordingID, ExportID: record.ExportID, State: record.State, UpdatedAt: record.UpdatedAt, SizeBytes: record.SizeBytes}
 }
 
+func failureOf(record ExportRecord) *ExportFailure {
+	return &ExportFailure{
+		Code: record.ErrorCode, Message: record.ErrorMessage, Scope: record.ErrorScope,
+		Retryable: record.Retryable, Source: record.ErrorSource,
+	}
+}
+
 func (s *ExportService) failStatus(recordingID, exportID, code, message, scope string, retryable bool) ExportStatus {
-	s.fail(recordingID, exportID, code, message, scope, retryable)
+	return s.failStatusWithSource(recordingID, exportID, code, message, "", scope, retryable)
+}
+
+func (s *ExportService) failStatusWithSource(recordingID, exportID, code, message, source, scope string, retryable bool) ExportStatus {
+	s.failWithSource(recordingID, exportID, code, message, source, scope, retryable)
 	entry, record, ok := s.storage.FindExport(recordingID, exportID)
 	if !ok {
 		return ExportStatus{RecordingID: recordingID, ExportID: exportID, State: ExportStateFailed}
 	}
 	status := exportStatus(entry.ID, record)
-	status.Error = &ExportFailure{Code: record.ErrorCode, Message: record.ErrorMessage, Scope: record.ErrorScope, Retryable: record.Retryable}
+	status.Error = failureOf(record)
 	return status
+}
+
+// failReadySource 处理 ready 之后来源变得不可读的情况，并记录具体文件类别和
+// 相对路径。状态一旦落为 failed，后续 status 会走早返回，不会重复刷日志。
+func (s *ExportService) failReadySource(recordingID, exportID string, err error) ExportStatus {
+	code := readySourceFailureCode(err)
+	s.logger.Warn("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
+		", code=" + code + ", err=" + exportErrorLog(err))
+	return s.failStatusWithSource(recordingID, exportID, code, readySourceFailureMessage(err),
+		string(exportSourceKindOf(err)), "item", false)
+}
+
+func (s *ExportService) failSourceChanged(recordingID, exportID string) ExportStatus {
+	s.logger.Warn("[recording-export] 导出源已变化: " + exportID + ", recording=" + recordingID)
+	return s.failStatus(recordingID, exportID, "SOURCE_CHANGED", "Recording source changed", "item", false)
 }
 
 func (s *ExportService) expireStatus(recordingID, exportID string) ExportStatus {
@@ -300,17 +333,22 @@ func (s *ExportService) expireStatus(recordingID, exportID string) ExportStatus 
 		return ExportStatus{RecordingID: recordingID, ExportID: exportID, State: ExportStateExpired}
 	}
 	status := exportStatus(entry.ID, record)
-	status.Error = &ExportFailure{Code: record.ErrorCode, Message: record.ErrorMessage, Scope: record.ErrorScope, Retryable: record.Retryable}
+	status.Error = failureOf(record)
 	return status
 }
 
 func (s *ExportService) fail(recordingID, exportID, code, message, scope string, retryable bool) {
+	s.failWithSource(recordingID, exportID, code, message, "", scope, retryable)
+}
+
+func (s *ExportService) failWithSource(recordingID, exportID, code, message, source, scope string, retryable bool) {
 	if message == "" {
 		message = "Recording export failed"
 	}
 	_, _, err := s.storage.UpdateExport(recordingID, exportID, s.stamp(), func(record *ExportRecord) bool {
 		record.State = ExportStateFailed
 		record.ErrorCode, record.ErrorMessage, record.ErrorScope, record.Retryable = code, message, scope, retryable
+		record.ErrorSource = source
 		return true
 	})
 	if err != nil {
@@ -403,7 +441,7 @@ func (s *ExportService) runExport(recordingID, exportID string, cloud ExportClou
 		return
 	}
 	if current.sourceVersion != source.sourceVersion {
-		s.fail(recordingID, exportID, "SOURCE_CHANGED", "Recording source changed", "item", false)
+		s.failSourceChanged(recordingID, exportID)
 		return
 	}
 	_, updated, err = s.storage.UpdateExport(recordingID, exportID, s.stamp(), func(record *ExportRecord) bool {
@@ -426,7 +464,12 @@ func (s *ExportService) runExport(recordingID, exportID string, cloud ExportClou
 
 func (s *ExportService) failSource(recordingID, exportID string, err error) {
 	code := sourceFailureCode(err)
-	s.fail(recordingID, exportID, code, sourceFailureMessage(err), "item", false)
+	// 源文件错误以前完全静默，线上只能看到 SOURCE_NOT_FOUND；这里把类别、
+	// 相对路径和底层错误写进本地日志，便于定位是哪个文件被删/被改。
+	// 先写日志再落状态，避免轮询方先看到 failed 而日志尚未输出。
+	s.logger.Warn("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
+		", code=" + code + ", err=" + exportErrorLog(err))
+	s.failWithSource(recordingID, exportID, code, sourceFailureMessage(err), string(exportSourceKindOf(err)), "item", false)
 }
 
 func sourceFailureCode(err error) string {
@@ -442,11 +485,30 @@ func sourceFailureCode(err error) string {
 func sourceFailureMessage(err error) string {
 	switch sourceFailureCode(err) {
 	case "SOURCE_NOT_FOUND":
-		return "Source file no longer exists"
+		return sourceNotFoundMessage(err)
 	case "SOURCE_CHANGED":
 		return "Recording source changed"
 	default:
 		return "Recording source cannot be read"
+	}
+}
+
+// sourceNotFoundMessage 把缺失的源文件类别透出给客户端，让用户在 App 里能直接
+// 看到"是转写、总结还是字幕文件没了"；本地路径只进 daemon 日志。
+func sourceNotFoundMessage(err error) string {
+	switch exportSourceKindOf(err) {
+	case ExportSourceAudio:
+		return "Recording audio file no longer exists"
+	case ExportSourceTranscriptData:
+		return "Transcript data file no longer exists"
+	case ExportSourceTranscript:
+		return "Transcript file no longer exists"
+	case ExportSourceSummary:
+		return "Summary file no longer exists"
+	case ExportSourceSrt:
+		return "Subtitle file no longer exists"
+	default:
+		return "Source file no longer exists"
 	}
 }
 
@@ -459,7 +521,7 @@ func readySourceFailureCode(err error) string {
 
 func readySourceFailureMessage(err error) string {
 	if errors.Is(err, ErrExportSourceNotFound) {
-		return "Source file no longer exists"
+		return sourceNotFoundMessage(err)
 	}
 	return "Recording source changed"
 }
