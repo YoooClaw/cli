@@ -21,6 +21,51 @@ var (
 	ErrExportSourceChanged  = errors.New("export source changed")
 )
 
+// ExportSourceKind 标识导出失败时对应的源文件类别。它只说明"是哪一类文件"，
+// 用于客户端提示和日志定位；本地相对路径只写进 daemon 日志。
+type ExportSourceKind string
+
+const (
+	ExportSourceRecording      ExportSourceKind = "recording"
+	ExportSourceAudio          ExportSourceKind = "audio"
+	ExportSourceTranscriptData ExportSourceKind = "transcriptData"
+	ExportSourceTranscript     ExportSourceKind = "transcript"
+	ExportSourceSummary        ExportSourceKind = "summary"
+	ExportSourceSrt            ExportSourceKind = "srt"
+)
+
+// exportSourceError 在源文件错误上补充类别和相对路径。Error() 只在本地日志
+// 里输出路径，返回给客户端的 message 由 sourceFailureMessage 单独生成。
+type exportSourceError struct {
+	kind ExportSourceKind
+	path string
+	err  error
+}
+
+func (e *exportSourceError) Error() string {
+	if e.path == "" {
+		return fmt.Sprintf("%s (%s)", e.err, e.kind)
+	}
+	return fmt.Sprintf("%s (%s: %s)", e.err, e.kind, e.path)
+}
+
+func (e *exportSourceError) Unwrap() error { return e.err }
+
+func wrapExportSource(kind ExportSourceKind, path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &exportSourceError{kind: kind, path: path, err: err}
+}
+
+func exportSourceKindOf(err error) ExportSourceKind {
+	var sourceErr *exportSourceError
+	if errors.As(err, &sourceErr) {
+		return sourceErr.kind
+	}
+	return ""
+}
+
 // ExportRecording is the metadata projection allowed in writePayload. It
 // deliberately omits the old OSS URL and local paths.
 type ExportRecording struct {
@@ -85,10 +130,10 @@ type exportVersionMaterial struct {
 func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (exportSource, error) {
 	entry, ok := storage.FindByID(recordingID)
 	if !ok {
-		return exportSource{}, ErrExportSourceNotFound
+		return exportSource{}, wrapExportSource(ExportSourceRecording, "", ErrExportSourceNotFound)
 	}
 	if entry.AudioFile == "" || entry.AudioStatus != AudioStatusDownloaded {
-		return exportSource{}, ErrExportSourceNotFound
+		return exportSource{}, wrapExportSource(ExportSourceAudio, entry.AudioFile, ErrExportSourceNotFound)
 	}
 	root, err := os.OpenRoot(storage.dir)
 	if err != nil {
@@ -99,14 +144,14 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 	audio, err := root.Open(entry.AudioFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return exportSource{}, ErrExportSourceNotFound
+			return exportSource{}, wrapExportSource(ExportSourceAudio, entry.AudioFile, ErrExportSourceNotFound)
 		}
-		return exportSource{}, err
+		return exportSource{}, wrapExportSource(ExportSourceAudio, entry.AudioFile, err)
 	}
 	defer audio.Close()
 	info, err := audio.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxAudioExportBytes {
-		return exportSource{}, ErrExportSourceNotFound
+		return exportSource{}, wrapExportSource(ExportSourceAudio, entry.AudioFile, ErrExportSourceNotFound)
 	}
 	device, inode := exportFileIdentity(info)
 	identity := ExportAudioIdentity{Device: device, Inode: inode, Size: info.Size(), ModTime: info.ModTime().UnixNano()}
@@ -115,7 +160,7 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		h := sha256.New()
 		n, err := io.Copy(h, io.LimitReader(audio, MaxAudioExportBytes+1))
 		if err != nil || n != info.Size() {
-			return exportSource{}, ErrExportSourceChanged
+			return exportSource{}, wrapExportSource(ExportSourceAudio, entry.AudioFile, ErrExportSourceChanged)
 		}
 		digest = hex.EncodeToString(h.Sum(nil))
 	}
@@ -127,26 +172,26 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 
 	dataRaw, _, err := readExportText(root, entry.TranscriptDataFile)
 	if err != nil {
-		return exportSource{}, err
+		return exportSource{}, wrapExportSource(ExportSourceTranscriptData, entry.TranscriptDataFile, err)
 	}
 	transcriptMD, _, err := readExportText(root, entry.TranscriptFile)
 	if err != nil {
-		return exportSource{}, err
+		return exportSource{}, wrapExportSource(ExportSourceTranscript, entry.TranscriptFile, err)
 	}
 	summaryMD, _, err := readExportText(root, entry.SummaryFile)
 	if err != nil {
-		return exportSource{}, err
+		return exportSource{}, wrapExportSource(ExportSourceSummary, entry.SummaryFile, err)
 	}
 	srtRaw, _, err := readExportText(root, entry.SrtFile)
 	if err != nil {
-		return exportSource{}, err
+		return exportSource{}, wrapExportSource(ExportSourceSrt, entry.SrtFile, err)
 	}
 
 	var doc *TranscriptDocument
 	if len(dataRaw) > 0 {
 		var parsed TranscriptDocument
 		if err := json.Unmarshal(dataRaw, &parsed); err != nil {
-			return exportSource{}, fmt.Errorf("invalid transcript data: %w", err)
+			return exportSource{}, wrapExportSource(ExportSourceTranscriptData, entry.TranscriptDataFile, fmt.Errorf("invalid transcript data: %w", err))
 		}
 		doc = &parsed
 	}

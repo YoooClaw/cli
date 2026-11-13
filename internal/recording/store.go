@@ -113,6 +113,7 @@ type ExportRecord struct {
 	ErrorCode     string               `json:"errorCode,omitempty"`
 	ErrorMessage  string               `json:"errorMessage,omitempty"`
 	ErrorScope    string               `json:"errorScope,omitempty"`
+	ErrorSource   string               `json:"errorSource,omitempty"`
 	Retryable     bool                 `json:"retryable,omitempty"`
 	Audio         *ExportAudioIdentity `json:"audio,omitempty"`
 }
