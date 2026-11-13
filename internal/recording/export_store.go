@@ -110,6 +110,35 @@ func (s *Storage) FindExport(recordingID, exportID string) (Entry, ExportRecord,
 	return Entry{}, ExportRecord{}, false
 }
 
+// ActiveExport returns the newest in-flight attempt for recordingID within
+// scopeKey. A start rejected as busy uses it to hand the caller the export it
+// can poll, instead of leaving it with an error it cannot act on. Attempts from
+// another client scope are never returned: status is scope-isolated, so the
+// caller could not poll them anyway, and they must not be exposed.
+func (s *Storage) ActiveExport(recordingID, scopeKey string) (ExportRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return ExportRecord{}, false
+	}
+	idx := s.findIndexLocked(recordingID)
+	if idx < 0 {
+		return ExportRecord{}, false
+	}
+	entry := s.index.Recordings[idx]
+	for i := len(entry.Exports) - 1; i >= 0; i-- {
+		record := entry.Exports[i]
+		if record.ScopeKey != scopeKey {
+			continue
+		}
+		switch record.State {
+		case ExportStatePreparing, ExportStateUploading:
+			return record, true
+		}
+	}
+	return ExportRecord{}, false
+}
+
 // FindExportByRequest returns the retained attempt for an idempotency key
 // across the whole index, so a retried start can be answered before source
 // prerequisites are checked again.
