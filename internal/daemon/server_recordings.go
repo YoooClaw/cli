@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/YoooClaw/cli/internal/clientlabel"
@@ -261,6 +262,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		scope := auth.scope()
 		entries := make([]recording.Entry, 0)
 		exportableBySource := make(map[string]map[string]bool, len(sources))
+		indexedBySource := make([]string, 0, len(sources))
 		for _, source := range sources {
 			// 完整清单语义：所选来源索引降级或读取失败时整体返回不可用，
 			// 不返回部分集合。省略 sourceType 时只读 mobile_app；Capture 需
@@ -280,6 +282,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
 				return
 			}
+			indexedBySource = append(indexedBySource, source.source+"="+strconv.Itoa(len(snapshot)))
 			exportableBySource[source.source] = source.store.ExportableEntries(snapshot)
 			for _, entry := range snapshot {
 				if status != "" && entry.Status != status {
@@ -298,6 +301,13 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		for _, entry := range entries {
 			items = append(items, recordingListItem(entry, exportableBySource[entry.RecordingSource()][entry.ID]))
 		}
+		// 诊断：只记录过滤参数与条目数，不打印条目内容（响应体可能含签名 URL）。
+		logStatus := status
+		if logStatus == "" {
+			logStatus = "all"
+		}
+		s.logger.Info("[recording-list] indexed " + strings.Join(indexedBySource, " ") +
+			", status=" + logStatus + ", returned=" + strconv.Itoa(len(items)))
 		gatewayOK(w, map[string]any{"total": len(items), "recordings": items})
 
 	case "recordings.status":
