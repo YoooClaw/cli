@@ -300,6 +300,10 @@ func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Requ
 
 func writeRecordingExportError(w http.ResponseWriter, err error) {
 	switch {
+	case recording.IsStorageFull(err):
+		// 受理阶段写索引/文件遇到 ENOSPC 时也必须返回契约里的 STORAGE_FULL，
+		// 否则 App 只会看到 INTERNAL_ERROR 并按可重试错误继续重试整批。
+		gatewayErr(w, "STORAGE_FULL", recording.StorageFullMessage)
 	case errors.Is(err, recording.ErrExportRequestConflict):
 		gatewayErr(w, "REQUEST_CONFLICT", "requestId already belongs to another recording")
 	case errors.Is(err, recording.ErrExportBusy):

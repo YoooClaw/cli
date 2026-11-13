@@ -528,7 +528,7 @@ func readySourceFailureMessage(err error) string {
 
 func exportPersistFailure(err error) (code, message, scope string, retryable bool) {
 	if isStorageFullError(err) {
-		return "STORAGE_FULL", "Not enough disk space", "batch", false
+		return "STORAGE_FULL", StorageFullMessage, "batch", false
 	}
 	return "EXPORT_UPLOAD_FAILED", "Recording export could not be persisted", "item", true
 }
@@ -539,7 +539,7 @@ func exportRunFailure(err error) (code, message, scope string, retryable bool) {
 	}
 	if isStorageFullError(err) {
 		// 本地空间不足按契约停止整批，而不是只结算当前项。
-		return "STORAGE_FULL", "Not enough disk space", "batch", false
+		return "STORAGE_FULL", StorageFullMessage, "batch", false
 	}
 	return "EXPORT_UPLOAD_FAILED", safeExportError(err), "item", true
 }

@@ -148,6 +148,13 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			ClientLabel:  label,
 		})
 		if err != nil {
+			s.logRecordingWriteFailure(recordingID, r.Header.Get(relay.InternalRequestIDHeader), err)
+			// 空间不足必须是独立错误码：App 依 STORAGE_FULL 停止整批同步，
+			// 不能退化成通用写失败让客户端反复重试。
+			if recording.IsStorageFull(err) {
+				gatewayErr(w, "STORAGE_FULL", recording.StorageFullMessage)
+				return
+			}
 			code := "RESULT_WRITE_FAILED"
 			switch {
 			case strings.HasPrefix(err.Error(), "Recording not found:"):
@@ -156,7 +163,6 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				err.Error() == "transcript or summary is required" || strings.Contains(err.Error(), "recording_type"):
 				code = "INVALID_PARAMS"
 			}
-			s.logRecordingWriteFailure(recordingID, r.Header.Get(relay.InternalRequestIDHeader), err)
 			gatewayErr(w, code, err.Error())
 			return
 		}
@@ -370,7 +376,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		}
 		entry, ok, err := store.Rename(recordingID, name)
 		if err != nil {
-			gatewayErr(w, "INTERNAL_ERROR", err.Error())
+			recordingIndexWriteErr(w, err)
 			return
 		}
 		if !ok {
@@ -409,7 +415,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		}
 		deleted, err := store.Delete(recordingID, !body.DeleteRemote)
 		if err != nil {
-			gatewayErr(w, "INTERNAL_ERROR", err.Error())
+			recordingIndexWriteErr(w, err)
 			return
 		}
 		if !deleted {
@@ -421,6 +427,16 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 	default:
 		writeJSON(w, 404, errBody("YOOOCLAW_NOT_FOUND", "未知路径："+path))
 	}
+}
+
+// recordingIndexWriteErr 统一索引写盘失败的映射：空间不足必须单独成码，
+// 其余情况保持通用内部错误。rename/delete 都只改索引，失败原因一致。
+func recordingIndexWriteErr(w http.ResponseWriter, err error) {
+	if recording.IsStorageFull(err) {
+		gatewayErr(w, "STORAGE_FULL", recording.StorageFullMessage)
+		return
+	}
+	gatewayErr(w, "INTERNAL_ERROR", err.Error())
 }
 
 func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
