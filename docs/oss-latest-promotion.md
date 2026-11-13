@@ -164,3 +164,14 @@ macOS 的 Shell 安装入口暂固定默认版本为 `0.16.2`。
 Linux 默认安装继续读取对应 OSS latest，Windows 脚本不变。
 此改动不控制已安装客户端的 OTA 更新资格。
 恢复 Mac 发布时，应移除 `scripts/install.sh` 中的临时固定规则。
+
+## Linux / Windows 生产发布
+
+正式标签流水线只构建 Linux x64、Linux ARM64 和 Windows x64。
+两区 OSS 上传器使用 `--linux-windows`，要求这三份二进制及校验清单齐全。
+两区正式版草稿使用 `OTA_PLATFORM_SCOPE=linux-windows`，不包含 Mac 制品。
+不构建、签名、公证或发布新的 Mac 二进制和 npm 子包。
+npm 主包的 Mac 依赖固定为已发布的 `0.16.2`，其他平台依赖当前版本。
+公共 Shell 安装脚本的 Mac 默认和 latest 仍固定为 `0.16.2`。
+日常 alpha 测试流水线保持原矩阵；不要将包含 Mac 的测试草稿直接用于生产。
+恢复 Mac 正式发布时，需同时恢复构建、签名公证、上传、草稿和 npm 依赖策略。

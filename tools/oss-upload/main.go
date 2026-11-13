@@ -87,6 +87,10 @@ var nativeArtifacts = []string{
 	"checksums.txt",
 }
 
+func linuxWindowsArtifacts() []string {
+	return []string{"yoooclaw-linux-arm64", "yoooclaw-linux-x64", "yoooclaw-win32-x64.exe", "checksums.txt"}
+}
+
 func logf(format string, args ...any) { fmt.Printf("\x1b[36m[upload]\x1b[0m "+format+"\n", args...) }
 func okf(format string, args ...any)  { fmt.Printf("\x1b[32m[upload]\x1b[0m "+format+"\n", args...) }
 func warnf(format string, args ...any) {
@@ -420,7 +424,11 @@ func main() {
 	only := flag.String("only", "", "只上传某类内容: install | artifacts")
 	dryRun := flag.Bool("dry-run", false, "只打印将要上传的内容，不实际上传")
 	testBuild := flag.Bool("test-build", false, "测试环境构建：版本号可不同于 package.json，刷新 live 安装脚本")
+	linuxWindows := flag.Bool("linux-windows", false, "仅发布 Linux 和 Windows 制品")
 	flag.Parse()
+	if *linuxWindows {
+		nativeArtifacts = linuxWindowsArtifacts()
+	}
 
 	if *only != "" && *only != "install" && *only != "artifacts" {
 		fatalf("--only 只能是 install 或 artifacts")

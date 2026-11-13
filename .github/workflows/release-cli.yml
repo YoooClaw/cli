@@ -55,7 +55,7 @@ jobs:
 
   build-release:
     needs: preflight
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
@@ -79,159 +79,11 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Validate Apple signing secrets
-        env:
-          APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
-          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
-          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
-          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
-          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
-        run: |
-          missing=()
-          for key in \
-            APPLE_DEVELOPER_ID_CERT_P12_BASE64 \
-            APPLE_DEVELOPER_ID_CERT_PASSWORD \
-            APPLE_NOTARY_APPLE_ID \
-            APPLE_NOTARY_TEAM_ID \
-            APPLE_NOTARY_PASSWORD
-          do
-            if [ -z "${!key}" ]; then
-              missing+=("$key")
-            fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::缺少 Apple 签名或公证 GitHub Secrets: ${missing[*]}"
-            exit 1
-          fi
+      - name: Build Linux and Windows distribution
+        run: scripts/build-go.sh --linux-windows "$VERSION"
 
-      - name: Build Go npm distribution
-        run: scripts/build-go.sh "$VERSION"
-
-      - name: Smoke test current macOS binary
-        run: |
-          case "$(uname -m)" in
-            arm64) bin="dist-native/yoooclaw-darwin-arm64" ;;
-            x86_64) bin="dist-native/yoooclaw-darwin-x64" ;;
-            *)
-              echo "::error::Unsupported macOS runner arch: $(uname -m)"
-              exit 1
-              ;;
-          esac
-          VERSION_OUT="$("$bin" --version)"
-          if [ "$VERSION_OUT" != "$VERSION" ]; then
-            echo "::error::$bin --version 输出 $VERSION_OUT，期望 $VERSION"
-            exit 1
-          fi
-
-      - name: Import Developer ID certificate
-        env:
-          APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
-          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/yoooclaw-signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
-
-          echo "::add-mask::$KEYCHAIN_PASSWORD"
-          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          printf '%s' "$APPLE_DEVELOPER_ID_CERT_P12_BASE64" | base64 -D > "$CERTIFICATE_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" \
-            -k "$KEYCHAIN_PATH" \
-            -P "$APPLE_DEVELOPER_ID_CERT_PASSWORD" \
-            -A \
-            -t cert \
-            -f pkcs12
-          security set-key-partition-list \
-            -S apple-tool:,apple: \
-            -s \
-            -k "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
-
-          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | awk '/Developer ID Application/ { print $2; exit }')"
-          if [ -z "$SIGNING_IDENTITY" ]; then
-            echo "::error::P12 中未找到 Developer ID Application 签名身份"
-            exit 1
-          fi
-
-          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
-
-      - name: Sign Darwin binaries
-        run: |
-          for file in \
-            dist-native/yoooclaw-darwin-arm64 \
-            dist-native/yoooclaw-darwin-x64
-          do
-            codesign \
-              --force \
-              --options runtime \
-              --timestamp \
-              --keychain "$SIGNING_KEYCHAIN_PATH" \
-              --sign "$SIGNING_IDENTITY" \
-              "$file"
-            codesign --verify --strict --verbose=2 "$file"
-          done
-
-          cp dist-native/yoooclaw-darwin-arm64 dist-npm/cli-darwin-arm64/bin/yc
-          cp dist-native/yoooclaw-darwin-x64 dist-npm/cli-darwin-x64/bin/yc
-          chmod +x dist-npm/cli-darwin-arm64/bin/yc dist-npm/cli-darwin-x64/bin/yc
-
-          for file in \
-            dist-npm/cli-darwin-arm64/bin/yc \
-            dist-npm/cli-darwin-x64/bin/yc
-          do
-            codesign --verify --strict --verbose=2 "$file"
-          done
-
-      - name: Notarize Darwin binaries
-        env:
-          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
-          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
-          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
-        run: |
-          NOTARY_PROFILE="yoooclaw-notarytool"
-          NOTARY_STAGE="$RUNNER_TEMP/yoooclaw-notary"
-          ZIP_PATH="$RUNNER_TEMP/yoooclaw-darwin.zip"
-          RESULT_PATH="$RUNNER_TEMP/yoooclaw-notary-result.json"
-          LOG_PATH="$RUNNER_TEMP/yoooclaw-notary-log.json"
-
-          mkdir -p "$NOTARY_STAGE"
-          cp dist-native/yoooclaw-darwin-* "$NOTARY_STAGE/"
-          ditto -c -k --keepParent "$NOTARY_STAGE" "$ZIP_PATH"
-
-          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
-            --keychain "$SIGNING_KEYCHAIN_PATH" \
-            --apple-id "$APPLE_NOTARY_APPLE_ID" \
-            --team-id "$APPLE_NOTARY_TEAM_ID" \
-            --password "$APPLE_NOTARY_PASSWORD"
-
-          set +e
-          xcrun notarytool submit "$ZIP_PATH" \
-            --keychain-profile "$NOTARY_PROFILE" \
-            --keychain "$SIGNING_KEYCHAIN_PATH" \
-            --wait \
-            --output-format json > "$RESULT_PATH"
-          submit_code=$?
-          set -e
-
-          cat "$RESULT_PATH"
-          submission_id="$(jq -r '.id // empty' "$RESULT_PATH")"
-          status="$(jq -r '.status // empty' "$RESULT_PATH")"
-          if [ -n "$submission_id" ]; then
-            xcrun notarytool log "$submission_id" \
-              --keychain-profile "$NOTARY_PROFILE" \
-              --keychain "$SIGNING_KEYCHAIN_PATH" \
-              "$LOG_PATH" || true
-            [ ! -s "$LOG_PATH" ] || cat "$LOG_PATH"
-          fi
-          if [ "$submit_code" -ne 0 ] || [ "$status" != "Accepted" ]; then
-            echo "::error::Apple 公证失败，status=${status:-unknown}"
-            exit 1
-          fi
+      - name: Smoke test Linux binary
+        run: test "$(./dist-native/yoooclaw-linux-x64 --version)" = "$VERSION"
 
       - name: Verify npm package layout
         run: |
@@ -243,12 +95,11 @@ jobs:
           const dirs = fs.readdirSync(root).sort();
           const expected = [
             'cli',
-            'cli-darwin-arm64',
-            'cli-darwin-x64',
             'cli-linux-arm64',
             'cli-linux-x64',
             'cli-win32-x64',
           ];
+          if (JSON.stringify(dirs) !== JSON.stringify(expected)) throw new Error("unexpected platform packages");
           for (const dir of expected) {
             if (!dirs.includes(dir)) throw new Error(`missing ${dir}`);
             const pkg = JSON.parse(fs.readFileSync(path.join(root, dir, 'package.json'), 'utf8'));
@@ -256,8 +107,6 @@ jobs:
           }
           const main = JSON.parse(fs.readFileSync(path.join(root, 'cli', 'package.json'), 'utf8'));
           for (const dep of [
-            '@yoooclaw/cli-darwin-arm64',
-            '@yoooclaw/cli-darwin-x64',
             '@yoooclaw/cli-linux-arm64',
             '@yoooclaw/cli-linux-x64',
             '@yoooclaw/cli-win32-x64',
@@ -265,6 +114,9 @@ jobs:
             if (main.optionalDependencies?.[dep] !== version) {
               throw new Error(`optional dependency ${dep} is not pinned to ${version}`);
             }
+          }
+          for (const arch of ['arm64', 'x64']) {
+            if (main.optionalDependencies[`@yoooclaw/cli-darwin-${arch}`] !== '0.16.2') throw new Error('Mac fallback must stay at 0.16.2');
           }
           NODE
 
@@ -284,14 +136,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Delete temporary signing keychain
-        if: always()
-        run: |
-          if [ -n "${SIGNING_KEYCHAIN_PATH:-}" ] && [ -e "$SIGNING_KEYCHAIN_PATH" ]; then
-            security delete-keychain "$SIGNING_KEYCHAIN_PATH"
-          fi
-
-  # Promote the signed build unchanged; register a draft without starting rollout.
+  # Promote the Linux/Windows build unchanged to both environments.
   deploy-test:
     needs: build-release
     runs-on: ubuntu-latest
@@ -337,10 +182,11 @@ jobs:
             echo "::error::缺少 test environment secrets: ${missing[*]}"
             exit 1
           fi
-          go -C tools/oss-upload run . --test-build --version "$VERSION"
+          go -C tools/oss-upload run . --test-build --linux-windows --version "$VERSION"
       - name: Register test OTA draft
         timeout-minutes: 4
         env:
+          OTA_PLATFORM_SCOPE: linux-windows
           OTA_DRAFT_URL: https://openclaw-service-test.yoooclaw.com/api/ota/pipeline/plugin/releases
           OTA_PLUGIN_RELEASE_PIPELINE_TOKEN: ${{ secrets.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN }}
           OTA_ARTIFACT_BASE_URL: ${{ secrets.OSS_PUBLIC_URL }}/cli
@@ -472,7 +318,7 @@ jobs:
         run: |
           cd dist-native
           sha256sum yoooclaw-* > checksums.txt
-          expected=5
+          expected=3
           actual="$(wc -l < checksums.txt | tr -d ' ')"
           if [ "$actual" != "$expected" ]; then
             echo "::error::checksums.txt 应包含 $expected 个 native 产物，实际为 $actual"
@@ -485,8 +331,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           assets=(
-            dist-native/yoooclaw-darwin-arm64 \
-            dist-native/yoooclaw-darwin-x64 \
             dist-native/yoooclaw-linux-arm64 \
             dist-native/yoooclaw-linux-x64 \
             dist-native/yoooclaw-win32-x64.exe \
@@ -515,11 +359,12 @@ jobs:
             echo "::error::缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET GitHub Secrets（production environment）"
             exit 1
           fi
-          go -C tools/oss-upload run . --version "$VERSION"
+          go -C tools/oss-upload run . --linux-windows --version "$VERSION"
 
       - name: Register production OTA draft
         timeout-minutes: 4
         env:
+          OTA_PLATFORM_SCOPE: linux-windows
           OTA_DRAFT_URL: https://openclaw-service.yoooclaw.com/api/ota/pipeline/plugin/releases
           OTA_PLUGIN_RELEASE_PIPELINE_TOKEN: ${{ secrets.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN }}
           OTA_ARTIFACT_BASE_URL: ${{ env.OSS_PUBLIC_URL }}/${{ env.OSS_PREFIX }}
