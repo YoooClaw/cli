@@ -14,31 +14,41 @@ func TestRecordingStatusSourceLookup(t *testing.T) {
 	for _, tc := range []struct {
 		name, mobileLabel, captureLabel, source, broken, missing, wantSource, wantCode string
 	}{
-		{name: "blank source", captureLabel: "phone-a", source: "  ", wantSource: "capture_app"},
-		{name: "explicit empty source", captureLabel: "phone-a", source: "<empty>", wantSource: "capture_app"},
+		{name: "blank source defaults to mobile", mobileLabel: "phone-a", source: "  ", wantSource: "mobile_app"},
+		{name: "explicit empty source defaults to mobile", mobileLabel: "phone-a", source: "<empty>", wantSource: "mobile_app"},
 		{name: "both degraded", broken: "mobile_app,capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
 		{name: "explicit degraded mobile", broken: "mobile_app", source: "mobile_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
-		{name: "missing capture", missing: "capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+		{name: "missing capture does not affect default", mobileLabel: "phone-a", missing: "capture_app", wantSource: "mobile_app"},
 		{name: "both missing", missing: "both", wantCode: "RECORDING_LIST_UNAVAILABLE"},
 		{name: "healthy hit missing capture", mobileLabel: "phone-a", missing: "capture_app", wantSource: "mobile_app"},
 		{name: "explicit missing capture", source: "capture_app", missing: "capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
 
 		{name: "legacy mobile", mobileLabel: "phone-a", wantSource: "mobile_app"},
-		{name: "capture without source", captureLabel: "phone-a", wantSource: "capture_app"},
+		{name: "capture without source defaults to mobile", captureLabel: "phone-a", wantCode: "NOT_FOUND"},
 		{name: "explicit capture", captureLabel: "phone-a", source: "capture_app", wantSource: "capture_app"},
 		{name: "explicit source does not fall back", captureLabel: "phone-a", source: "mobile_app", wantCode: "NOT_FOUND"},
 		{name: "unknown source", source: "unknown", wantCode: "INVALID_PARAMS"},
 		{name: "missing", wantCode: "NOT_FOUND"},
 		{name: "hidden capture", captureLabel: "phone-b", wantCode: "NOT_FOUND"},
 		{name: "hidden mobile", mobileLabel: "phone-b", wantCode: "NOT_FOUND"},
-		{name: "duplicate visible", mobileLabel: "phone-a", captureLabel: "phone-a", wantCode: "SOURCE_CONFLICT"},
+		{name: "duplicate visible defaults to mobile", mobileLabel: "phone-a", captureLabel: "phone-a", wantSource: "mobile_app"},
 		{name: "explicit resolves duplicate", mobileLabel: "phone-a", captureLabel: "phone-a", source: "capture_app", wantSource: "capture_app"},
-		{name: "hidden duplicate does not leak", mobileLabel: "phone-b", captureLabel: "phone-a", wantSource: "capture_app"},
-		{name: "capture unavailable missing", broken: "capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+		{name: "hidden duplicate does not leak", mobileLabel: "phone-b", captureLabel: "phone-a", wantCode: "NOT_FOUND"},
+		{name: "capture unavailable does not affect default", mobileLabel: "phone-a", broken: "capture_app", wantSource: "mobile_app"},
 		{name: "mobile unavailable missing", broken: "mobile_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
 		{name: "healthy match with broken capture", mobileLabel: "phone-a", broken: "capture_app", wantSource: "mobile_app"},
-		{name: "healthy match with broken mobile", captureLabel: "phone-a", broken: "mobile_app", wantSource: "capture_app"},
+		{name: "broken mobile is unavailable by default", captureLabel: "phone-a", broken: "mobile_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
 		{name: "explicit broken source", mobileLabel: "phone-a", broken: "capture_app", source: "capture_app", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+
+		{name: "all mobile hit", mobileLabel: "phone-a", source: "all", wantSource: "mobile_app"},
+		{name: "all capture hit", captureLabel: "phone-a", source: "all", wantSource: "capture_app"},
+		{name: "all duplicate visible conflicts", mobileLabel: "phone-a", captureLabel: "phone-a", source: "all", wantCode: "SOURCE_CONFLICT"},
+		{name: "all hidden duplicate does not leak", mobileLabel: "phone-b", captureLabel: "phone-a", source: "all", wantSource: "capture_app"},
+		{name: "all missing capture still resolves mobile", mobileLabel: "phone-a", missing: "capture_app", source: "all", wantSource: "mobile_app"},
+		{name: "all missing capture without hit is unavailable", missing: "capture_app", source: "all", wantCode: "RECORDING_LIST_UNAVAILABLE"},
+		{name: "all healthy mobile with broken capture", mobileLabel: "phone-a", broken: "capture_app", source: "all", wantSource: "mobile_app"},
+		{name: "all healthy capture with broken mobile", captureLabel: "phone-a", broken: "mobile_app", source: "all", wantSource: "capture_app"},
+		{name: "all both degraded", broken: "mobile_app,capture_app", source: "all", wantCode: "RECORDING_LIST_UNAVAILABLE"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, ts := newTestServer(t, "")
@@ -109,13 +119,16 @@ func TestRecordingStatusSourceLookup(t *testing.T) {
 	}
 }
 
-func TestRecordingListMissingSourceIsUnavailable(t *testing.T) {
+func TestRecordingListDefaultsToMobileSource(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	withRecordings(t, srv)
+	srv.captureRecordingStorage = nil
+	// 省略 sourceType 时只读 mobile_app，Capture 缺失不应影响默认列表。
 	resp := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "phone-a", `{}`)
+	gatewayData(t, resp)
+	// 显式指定不可用的 Capture 才返回来源不可用。
+	resp = asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "phone-a", `{"sourceType":"capture_app"}`)
 	if errorCode(resp) != "RECORDING_LIST_UNAVAILABLE" {
 		t.Fatal(resp)
 	}
-	resp = asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.list", "phone-a", `{"sourceType":"mobile_app"}`)
-	gatewayData(t, resp)
 }

@@ -48,7 +48,7 @@ func (s *server) recordingStore(w http.ResponseWriter, source, method string) (*
 	case recording.SourceCaptureApp:
 		store = s.captureRecordingStorage
 	default:
-		gatewayErr(w, "INVALID_PARAMS", "sourceType must be mobile_app or capture_app")
+		gatewayErr(w, "INVALID_PARAMS", "sourceType must be mobile_app or capture_app; all is read-only")
 		return nil, false
 	}
 	if store == nil {
@@ -74,18 +74,19 @@ type recordingListSource struct {
 }
 
 // recordingReadSources preserves missing stores so callers can distinguish
-// unavailable sources from empty indexes. List requires every source; status
-// may return a visible match from a healthy source.
+// unavailable sources from empty indexes. An omitted source selects
+// mobile_app, matching every other recordings method; SourceAll explicitly
+// selects both stores for merged reads.
 func (s *server) recordingReadSources(w http.ResponseWriter, source string) ([]recordingListSource, bool) {
 	switch strings.TrimSpace(source) {
-	case "":
-		return []recordingListSource{{recording.SourceMobileApp, s.recordingStorage}, {recording.SourceCaptureApp, s.captureRecordingStorage}}, true
-	case recording.SourceMobileApp:
+	case "", recording.SourceMobileApp:
 		return []recordingListSource{{recording.SourceMobileApp, s.recordingStorage}}, true
 	case recording.SourceCaptureApp:
 		return []recordingListSource{{recording.SourceCaptureApp, s.captureRecordingStorage}}, true
+	case recording.SourceAll:
+		return []recordingListSource{{recording.SourceMobileApp, s.recordingStorage}, {recording.SourceCaptureApp, s.captureRecordingStorage}}, true
 	default:
-		gatewayErr(w, "INVALID_PARAMS", "sourceType must be mobile_app or capture_app")
+		gatewayErr(w, "INVALID_PARAMS", "sourceType must be mobile_app, capture_app or all")
 		return nil, false
 	}
 }
@@ -261,9 +262,9 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		entries := make([]recording.Entry, 0)
 		exportableBySource := make(map[string]map[string]bool, len(sources))
 		for _, source := range sources {
-			// 合并列表必须保持“完整清单”语义：任一侧索引降级或读取失败时
-			// 整体返回不可用，不能返回部分集合让 App 按差集误判。来源隔离
-			// 通过显式 sourceType 查询健康来源实现。
+			// 完整清单语义：所选来源索引降级或读取失败时整体返回不可用，
+			// 不返回部分集合。省略 sourceType 时只读 mobile_app；Capture 需
+			// 显式指定，传 all 时合并两个来源并按时间倒序。
 			if source.store == nil {
 				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
 				return
@@ -287,7 +288,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				if !clientlabel.Visible(entry.ClientLabel, scope) {
 					continue
 				}
-				// 来源由所在存储决定，避免历史索引里误标的 sourceType 影响合并结果。
+				// 来源由所在存储决定，避免历史索引里误标的 sourceType 影响结果。
 				entry.SourceType = source.source
 				entries = append(entries, entry)
 			}
@@ -309,8 +310,8 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
 			return
 		}
-		// Like list, an omitted source searches both stores. Filter by client
-		// visibility before detecting ambiguity so hidden records are not exposed.
+		// 省略 sourceType 时只查 mobile_app；Capture 需显式指定，传 all 时
+		// 合并查询两个来源。先按客户端可见性过滤，避免把隐藏记录当作匹配。
 		sources, ok := s.recordingReadSources(w, body.SourceType)
 		if !ok {
 			return
@@ -336,7 +337,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if match != nil {
 			gatewayOK(w, recordingDetail(*match))
 		} else if unavailable {
-			// A failed store may contain the UUID; absence is not established.
+			// 无法读取的来源可能包含该 UUID，不能把不可用误报为不存在。
 			gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
 		} else {
 			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)

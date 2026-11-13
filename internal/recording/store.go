@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	SourceMobileApp       = "mobile_app"
-	SourceCaptureApp      = "capture_app"
+	SourceMobileApp  = "mobile_app"
+	SourceCaptureApp = "capture_app"
+	// SourceAll selects both stores for read and export methods. It is a query
+	// selector only and is never persisted on an entry.
+	SourceAll             = "all"
 	audioDirName          = "audio"
 	transcriptDataDirName = "transcript-data"
 	transcriptsDirName    = "transcripts"
