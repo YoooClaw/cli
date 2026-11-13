@@ -11,6 +11,7 @@ import (
 
 	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clictx"
+	"github.com/YoooClaw/cli/internal/daemon"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/prompt"
@@ -52,8 +53,61 @@ func newRecordingCmd() *cobra.Command {
 	today.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	today.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 
-	c.AddCommand(list, status, storagePath, setupAsr, events, latest, today)
+	deleteCmd := &cobra.Command{Use: "delete <id>", Short: "删除录音（索引与本地文件）🟢", Args: cobra.ExactArgs(1), RunE: run(recordingDelete)}
+	deleteCmd.Flags().String("source", recordingSourceMobileApp, "录音来源：mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
+	deleteCmd.Flags().Bool("local-only", false, "仅清理本地文件，保留索引等待重新下载")
+	deleteCmd.Flags().Bool("yes", false, "跳过删除确认（非交互调用必须显式传入）")
+
+	c.AddCommand(list, status, storagePath, setupAsr, events, latest, today, deleteCmd)
 	return c
+}
+
+// parseRecordingDeleteSource 只接受可写的两种来源；删除不像查询那样有 all。
+func parseRecordingDeleteSource(raw string) (string, error) {
+	switch source := strings.ToLower(strings.TrimSpace(raw)); source {
+	case "", recordingSourceMobileApp, recordingSourceSmartHardware:
+		return recordingSourceMobileApp, nil
+	case capturerecording.SourceType:
+		return capturerecording.SourceType, nil
+	default:
+		return "", errs.Newf(errs.CodeInvalidArgument,
+			"--source 只能是 mobile_app 或 capture_app（smart_hardware 为 mobile_app 别名，收到 %q）", raw)
+	}
+}
+
+// recordingDelete 通过 daemon 的 recordings.delete 删除录音。索引与文件由 daemon
+// 在同一把锁内更新，避免直接改 index.json 后被内存快照覆盖。
+func recordingDelete(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, error) {
+	source, err := parseRecordingDeleteSource(flagStr(cmd, "source"))
+	if err != nil {
+		return nil, err
+	}
+	localOnly := flagBool(cmd, "local-only")
+	if !flagBool(cmd, "yes") {
+		question := "确认删除录音 `" + args[0] + "`？索引与本地文件将一并删除。"
+		if localOnly {
+			question = "确认清理录音 `" + args[0] + "` 的本地文件？索引会保留并等待重新下载。"
+		}
+		ok, err := prompt.Confirm(question, false)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errs.New(errs.CodeConfirmationRequired, "已取消")
+		}
+	}
+	if err := daemon.AssertRunning(ctx.Paths); err != nil {
+		return nil, err
+	}
+	status, result, err := daemon.NewClient(ctx.Paths).Request("POST", "/gateway/recordings.delete", map[string]any{
+		"recordingId":  args[0],
+		"sourceType":   source,
+		"deleteRemote": !localOnly,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return daemon.CheckedResponse(status, result)
 }
 
 func recToListItem(r recording.Entry, sourceType string) map[string]any {

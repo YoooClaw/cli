@@ -416,6 +416,11 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 			return
 		}
+		if body.DeleteRemote {
+			s.logger.Info("录音已删除: " + recordingID + ", sourceType=" + source)
+		} else {
+			s.logger.Info("录音本地文件已清理: " + recordingID + ", sourceType=" + source)
+		}
 		gatewayOK(w, map[string]any{"ok": true, "recordingId": recordingID, "sourceType": source, "deletedRemote": body.DeleteRemote})
 
 	default:

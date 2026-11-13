@@ -190,8 +190,17 @@ type Storage struct {
 	index             indexWrapper
 	loadErr           error
 	audioLocks        map[string]*sync.Mutex
+	// indexStamp 记录 daemon 上次读写 index.json 时的文件身份。写操作前用它
+	// 发现外部进程（人工修复、迁移脚本等）对索引的修改，避免用内存快照覆盖。
+	indexStamp    indexStamp
+	indexStampSet bool
 	// writeIndex 是索引原子写边界；测试可注入磁盘错误，生产保持 nil。
 	writeIndex func(path string, v any, mode os.FileMode) error
+}
+
+type indexStamp struct {
+	modTime time.Time
+	size    int64
 }
 
 // NewStorage 构造录音存储；dir 为 recordings 目录。
@@ -256,8 +265,7 @@ var ErrStorageUnavailable = errors.New("recording storage unavailable")
 func (s *Storage) Close() error { return nil }
 
 func (s *Storage) loadIndex() error {
-	var wrapper indexWrapper
-	exists, err := fsutil.ReadJSON(s.indexPath, &wrapper)
+	wrapper, exists, err := readRecordingIndex(s.indexPath)
 	if err != nil {
 		s.index = indexWrapper{Recordings: []Entry{}}
 		return err
@@ -267,12 +275,36 @@ func (s *Storage) loadIndex() error {
 		if s.hasRecordingAssets() {
 			return errors.New("recording index missing but recording assets exist")
 		}
+		s.rememberIndexStampLocked()
 		return nil
 	}
-	if wrapper.Recordings == nil {
-		s.index = indexWrapper{Recordings: []Entry{}}
-		return errors.New("invalid recording index")
+	needsRewrite := s.normalizeIndexLocked(&wrapper)
+	s.index = wrapper
+	s.rememberIndexStampLocked()
+	if needsRewrite {
+		return s.saveIndexLocked()
 	}
+	return nil
+}
+
+// readRecordingIndex 读取磁盘索引，不修改内存状态。exists=false 表示文件不存在。
+func readRecordingIndex(path string) (indexWrapper, bool, error) {
+	var wrapper indexWrapper
+	exists, err := fsutil.ReadJSON(path, &wrapper)
+	if err != nil {
+		return indexWrapper{}, false, err
+	}
+	if !exists {
+		return indexWrapper{Recordings: []Entry{}}, false, nil
+	}
+	if wrapper.Recordings == nil {
+		return indexWrapper{}, true, errors.New("invalid recording index")
+	}
+	return wrapper, true, nil
+}
+
+// normalizeIndexLocked 把旧版/异常条目归一到当前语义，返回是否需要写回磁盘。
+func (s *Storage) normalizeIndexLocked(wrapper *indexWrapper) bool {
 	needsRewrite := false
 	now := nowISO()
 	for i := range wrapper.Recordings {
@@ -327,7 +359,7 @@ func (s *Storage) loadIndex() error {
 					needsRewrite = true
 				}
 			} else {
-				// 索引不能继续声称一个不存在的文件可用。保留 OSS URL，启动后的
+				// 索引不能继续声称一个不存在的文件可用。保留 OSS URL，
 				// recovery 会重新下载。
 				entry.AudioFile = ""
 				entry.AudioSourceURL = ""
@@ -345,11 +377,65 @@ func (s *Storage) loadIndex() error {
 			needsRewrite = true
 		}
 	}
-	s.index = wrapper
-	if needsRewrite {
-		return s.saveIndexLocked()
+	return needsRewrite
+}
+
+func (s *Storage) currentIndexStampLocked() (indexStamp, bool) {
+	info, err := os.Stat(s.indexPath)
+	if err != nil || info.IsDir() {
+		return indexStamp{}, false
 	}
-	return nil
+	return indexStamp{modTime: info.ModTime(), size: info.Size()}, true
+}
+
+func (s *Storage) rememberIndexStampLocked() {
+	if stamp, ok := s.currentIndexStampLocked(); ok {
+		s.indexStamp = stamp
+		s.indexStampSet = true
+	}
+}
+
+// refreshIndexLocked 在读写前对齐磁盘索引：若 index.json 在本次进程上次读写
+// 之后被其他进程修改，先按磁盘内容重新加载，避免随后的整份写回用旧内存快照
+// 覆盖外部变更（例如人工修复或删除），也让 status 与直接读盘的 list 一致。
+// 解析失败或文件消失时保留内存索引并记录错误，既不丢数据，也不把无法理解的
+// 外写当成删除。
+func (s *Storage) refreshIndexLocked() {
+	stamp, ok := s.currentIndexStampLocked()
+	if !ok {
+		return
+	}
+	if !s.indexStampSet {
+		s.indexStamp, s.indexStampSet = stamp, true
+		return
+	}
+	if stamp == s.indexStamp {
+		return
+	}
+	wrapper, exists, err := readRecordingIndex(s.indexPath)
+	if err != nil {
+		s.logger.Error("录音索引被外部修改后无法解析，保留内存索引: " + err.Error())
+		return
+	}
+	if !exists {
+		s.logger.Error("录音索引被外部删除，保留内存索引等待重建: " + s.indexPath)
+		return
+	}
+	needsRewrite := s.normalizeIndexLocked(&wrapper)
+	s.index = wrapper
+	s.rememberIndexStampLocked()
+	s.logger.Info("检测到录音索引被外部修改，已按磁盘内容重新加载: " + s.indexPath)
+	if needsRewrite {
+		if err := s.saveIndexLocked(); err != nil {
+			s.logger.Error("重新加载后规范化录音索引失败: " + err.Error())
+		}
+	}
+}
+
+// prepareWriteLocked 是所有写操作的统一入口：先对齐外部修改，再检查存储可用性。
+func (s *Storage) prepareWriteLocked() error {
+	s.refreshIndexLocked()
+	return s.ensureWritableLocked()
 }
 
 // hasRecordingAssets 区分“首次使用的空目录”与“索引丢失但仍有真实资产”。
@@ -379,10 +465,16 @@ func (s *Storage) saveIndexLocked() error {
 	if err := s.ensureWritableLocked(); err != nil {
 		return err
 	}
+	var err error
 	if s.writeIndex != nil {
-		return s.writeIndex(s.indexPath, s.index, fsutil.ConfigFileMode)
+		err = s.writeIndex(s.indexPath, s.index, fsutil.ConfigFileMode)
+	} else {
+		err = fsutil.WriteJSON(s.indexPath, s.index, fsutil.ConfigFileMode)
 	}
-	return fsutil.WriteJSON(s.indexPath, s.index, fsutil.ConfigFileMode)
+	if err == nil {
+		s.rememberIndexStampLocked()
+	}
+	return err
 }
 
 func nowISO() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -411,7 +503,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	metadata.DurationDisplay = FormatDurationDisplay(metadata.DurationSec)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return Entry{}, err
 	}
 
@@ -502,6 +594,8 @@ func (s *Storage) LookupByID(id string) (Entry, bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 读取前对齐外部修改，使 status 与直接读盘的 list 看到同一份索引。
+	s.refreshIndexLocked()
 	if s.loadErr != nil {
 		return Entry{}, false, ErrStorageUnavailable
 	}
@@ -593,6 +687,7 @@ func exportableWithRoot(root *os.Root, entry Entry) bool {
 func (s *Storage) ListAll() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshIndexLocked()
 	out := append([]Entry(nil), s.index.Recordings...)
 	SortByCreatedDesc(out)
 	return out
@@ -614,7 +709,7 @@ func (s *Storage) ListByStatus(status string) []Entry {
 func (s *Storage) Rename(recordingID, name string) (Entry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return Entry{}, false, err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -634,7 +729,7 @@ func (s *Storage) Rename(recordingID, name string) (Entry, bool, error) {
 func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return false, err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -672,7 +767,7 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 func (s *Storage) UpdateStatus(recordingID, newStatus string) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return Entry{}, err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -698,7 +793,7 @@ func (s *Storage) UpdateStatus(recordingID, newStatus string) (Entry, error) {
 func (s *Storage) MarkResultWritten(recordingID string) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return Entry{}, err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -774,6 +869,9 @@ func (s *Storage) markResultAudioPending(entry *Entry, nextURL string) {
 func (s *Storage) prepareResultAudioRecovery(snapshot Entry) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return false, err
+	}
 	idx := s.findIndexLocked(snapshot.ID)
 	if idx < 0 {
 		return false, nil
@@ -796,7 +894,7 @@ func (s *Storage) prepareResultAudioRecovery(snapshot Entry) (bool, error) {
 func (s *Storage) SetResultAudioDownloading(recordingID, ossURL string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return false, err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -830,7 +928,7 @@ func (s *Storage) SetResultAudioFailed(recordingID, ossURL, message string) (boo
 func (s *Storage) SetResultAudioFailedWithCode(recordingID, ossURL, message, code string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return false, err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -862,7 +960,7 @@ func (s *Storage) SetResultAudioFailedWithCode(recordingID, ossURL, message, cod
 func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, filename string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return false, err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -932,7 +1030,7 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 func (s *Storage) ImportEntry(recordingID string, merge func(current *Entry) (*Entry, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return err
 	}
 	idx := s.findIndexLocked(recordingID)
@@ -1066,7 +1164,7 @@ func (s *Storage) SetLastErrorCode(recordingID, code, message string) error {
 func (s *Storage) updateEntry(recordingID string, mutate func(*Entry)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureWritableLocked(); err != nil {
+	if err := s.prepareWriteLocked(); err != nil {
 		return err
 	}
 	idx := s.findIndexLocked(recordingID)
