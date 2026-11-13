@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 const transcriptDocumentSchemaVersion = 1
@@ -194,11 +195,7 @@ func formatTranscriptSegmentText(seg TranscriptSegment) string {
 	if seg.StartMS != nil {
 		prefix = "[" + formatTimestamp(*seg.StartMS) + "] "
 	}
-	if name := strings.TrimSpace(seg.SpeakerName); name != "" {
-		prefix += name + "："
-	} else if seg.SpeakerID != nil {
-		prefix += fmt.Sprintf("说话人%d：", *seg.SpeakerID)
-	}
+	prefix += transcriptSpeakerPrefix(seg, true)
 	return prefix + text
 }
 
@@ -235,4 +232,30 @@ func extractSummary(text string) string {
 		return string(runes[:10])
 	}
 	return "录音转写"
+}
+
+// transcriptSpeakerPrefix renders a name as inline Markdown. The result.write
+// fallback historically omitted unnamed speakers; ASR includes their IDs.
+func transcriptSpeakerPrefix(seg TranscriptSegment, includeID bool) string {
+	name := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, seg.SpeakerName)
+	name = strings.Join(strings.Fields(name), " ")
+	if name != "" {
+		var out strings.Builder
+		for _, r := range name {
+			if strings.ContainsRune("\\`*_{}[]<>()#+-.!|~&", r) {
+				out.WriteByte('\\')
+			}
+			out.WriteRune(r)
+		}
+		return out.String() + "："
+	}
+	if includeID && seg.SpeakerID != nil {
+		return fmt.Sprintf("说话人%d：", *seg.SpeakerID)
+	}
+	return ""
 }

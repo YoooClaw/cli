@@ -273,7 +273,7 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 		segments := make([]ResultTranscriptSegment, 0, len(doc.Normalized.Segments))
 		for _, segment := range doc.Normalized.Segments {
 			segments = append(segments, ResultTranscriptSegment{
-				Text: segment.Text, StartMS: segment.StartMS, EndMS: segment.EndMS, SpeakerID: segment.SpeakerID, SpeakerName: segment.SpeakerName,
+				Text: segment.Text, StartMS: segment.StartMS, EndMS: segment.EndMS, SpeakerID: segment.SpeakerID, SpeakerName: strings.TrimSpace(segment.SpeakerName),
 			})
 		}
 		out := &ResultTranscript{

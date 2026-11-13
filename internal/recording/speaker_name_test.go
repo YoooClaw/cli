@@ -77,3 +77,48 @@ func TestSpeakerNameMarkdownCompatibility(t *testing.T) {
 		}
 	}
 }
+
+// Supplied Markdown remains authoritative: callers must regenerate it after
+// editing segments, or omit it to request CLI-generated Markdown.
+func TestSpeakerNameSuppliedMarkdown(t *testing.T) {
+	for _, markdown := range []string{"# 自定义格式\n\n旧名字：正文\n", "# 自定义格式\n\n新名字：正文\n"} {
+		storage, entry := seedExportPayloadRecording(t, &ResultTranscript{
+			Segments: []ResultTranscriptSegment{{Text: "正文", SpeakerName: "新名字"}}, Markdown: markdown,
+		}, nil)
+		source, err := prepareExportSource(storage, entry.ID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if source.payload.Transcript.Markdown != markdown || source.payload.Transcript.Segments[0].SpeakerName != "新名字" {
+			t.Fatalf("payload=%+v", source.payload.Transcript)
+		}
+	}
+}
+
+func TestASRSpeakerNameAndSafeMarkdown(t *testing.T) {
+	var result recordResult
+	if err := json.Unmarshal([]byte(`{"sourceTextList":[{"content":"正文","speakerId":0,"speakerName":" 李四\n---\n# 标题\u0000[*](x) "}]}`), &result); err != nil {
+		t.Fatal(err)
+	}
+	_, segments := extractTextAndSegments(&result, 1000)
+	if len(segments) != 1 || segments[0].SpeakerName != "李四\n---\n# 标题\x00[*](x)" {
+		t.Fatalf("segments=%+v", segments)
+	}
+	want := `李四 \-\-\- \# 标题 \[\*\]\(x\)：`
+	if got := transcriptSpeakerPrefix(segments[0], true); got != want {
+		t.Fatalf("got=%q want=%q", got, want)
+	}
+	if got := transcriptSpeakerPrefix(segments[0], false); got != want {
+		t.Fatalf("result prefix=%q", got)
+	}
+	id := 2
+	if got := transcriptSpeakerPrefix(TranscriptSegment{SpeakerID: &id}, false); got != "" {
+		t.Fatalf("legacy result.write changed: %q", got)
+	}
+	doc := BuildTranscriptDocument("rec", TranscriptSource{Provider: "model-proxy"}, "", "", "", "", segments, nil)
+	doc.Normalized.Segments[0].SpeakerName = " 张三 "
+	exported, _ := buildExportTranscript(&doc, "", "")
+	if exported.Segments[0].SpeakerName != "张三" {
+		t.Fatal("export did not trim historical name")
+	}
+}

@@ -40,7 +40,9 @@ type ResultTranscript struct {
 	Brief       string                    `json:"brief,omitempty"`
 	Text        string                    `json:"text,omitempty"`
 	Segments    []ResultTranscriptSegment `json:"segments,omitempty"`
-	Markdown    string                    `json:"markdown,omitempty"`
+	// Markdown, when supplied, is authoritative to preserve App formatting.
+	// Callers changing segments/speaker names must regenerate it or omit it.
+	Markdown string `json:"markdown,omitempty"`
 }
 
 // ResultSummary 是 result.write 写入的总结结果。
@@ -619,9 +621,7 @@ func buildResultTranscriptMarkdown(meta Metadata, title, text string, segments [
 			if seg.StartMS != nil {
 				prefix = "[" + formatTimestamp(*seg.StartMS) + "] "
 			}
-			if name := strings.TrimSpace(seg.SpeakerName); name != "" {
-				prefix += name + "："
-			}
+			prefix += transcriptSpeakerPrefix(seg, false)
 			lines = append(lines, strings.TrimSpace(prefix+seg.Text), "")
 		}
 	} else {
