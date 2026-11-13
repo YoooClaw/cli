@@ -179,3 +179,16 @@ func TestValidateTestTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestLinuxWindowsArtifacts(t *testing.T) {
+	want := []string{"yoooclaw-linux-arm64", "yoooclaw-linux-x64", "yoooclaw-win32-x64.exe", "checksums.txt"}
+	got := linuxWindowsArtifacts()
+	if len(got) != len(want) {
+		t.Fatalf("unexpected artifacts: %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected artifacts: %v", got)
+		}
+	}
+}

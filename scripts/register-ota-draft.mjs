@@ -2,7 +2,7 @@
 import { appendFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export function draftPayload(version, baseUrl) {
+export function draftPayload(version, baseUrl, scope = 'all') {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta)\.(0|[1-9]\d*))?$/.test(version)) throw new Error('Expected x.y.z, x.y.z-alpha.N or x.y.z-beta.N');
   if (new URL(baseUrl).protocol !== 'https:') throw new Error('Artifact base URL must use HTTPS');
   const files = {
@@ -10,6 +10,8 @@ export function draftPayload(version, baseUrl) {
     'linux-arm64': 'yoooclaw-linux-arm64', 'linux-x64': 'yoooclaw-linux-x64',
     'windows-x64': 'yoooclaw-win32-x64.exe',
   };
+  if (!['all', 'linux-windows'].includes(scope)) throw new Error('Invalid OTA platform scope');
+  if (scope === 'linux-windows') { delete files['macos-arm64']; delete files['macos-x64']; }
   return {
     releaseName: `CLI ${version}`, component: 'CLI', version,
     platformArtifacts: Object.fromEntries(Object.entries(files).map(([platform, file]) =>
@@ -36,7 +38,7 @@ export async function registerDraft(endpoint, token, payload, fetchImpl = fetch)
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const payload = draftPayload(process.env.VERSION, process.env.OTA_ARTIFACT_BASE_URL);
+    const payload = draftPayload(process.env.VERSION, process.env.OTA_ARTIFACT_BASE_URL, process.env.OTA_PLATFORM_SCOPE || 'all');
     const id = await registerDraft(process.env.OTA_DRAFT_URL, process.env.OTA_PLUGIN_RELEASE_PIPELINE_TOKEN, payload);
     console.log(`OTA draft registered: releaseId=${id}, version=${payload.version}`);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
