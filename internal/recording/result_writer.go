@@ -24,10 +24,11 @@ type ResultTranscriptSource struct {
 
 // ResultTranscriptSegment 是 result.write 入参里的转写分段。
 type ResultTranscriptSegment struct {
-	Text      string   `json:"text"`
-	StartMS   *float64 `json:"startMs,omitempty"`
-	EndMS     *float64 `json:"endMs,omitempty"`
-	SpeakerID *int     `json:"speakerId,omitempty"`
+	Text        string   `json:"text"`
+	StartMS     *float64 `json:"startMs,omitempty"`
+	EndMS       *float64 `json:"endMs,omitempty"`
+	SpeakerID   *int     `json:"speakerId,omitempty"`
+	SpeakerName string   `json:"speakerName,omitempty"`
 }
 
 // ResultTranscript 是 result.write 写入的转写结果。
@@ -581,10 +582,11 @@ func normalizeResultSegments(segments []ResultTranscriptSegment) []TranscriptSeg
 			continue
 		}
 		out = append(out, TranscriptSegment{
-			Text:      text,
-			StartMS:   seg.StartMS,
-			EndMS:     seg.EndMS,
-			SpeakerID: seg.SpeakerID,
+			Text:        text,
+			StartMS:     seg.StartMS,
+			EndMS:       seg.EndMS,
+			SpeakerID:   seg.SpeakerID,
+			SpeakerName: strings.TrimSpace(seg.SpeakerName),
 		})
 	}
 	return out
@@ -616,6 +618,9 @@ func buildResultTranscriptMarkdown(meta Metadata, title, text string, segments [
 			prefix := ""
 			if seg.StartMS != nil {
 				prefix = "[" + formatTimestamp(*seg.StartMS) + "] "
+			}
+			if name := strings.TrimSpace(seg.SpeakerName); name != "" {
+				prefix += name + "："
 			}
 			lines = append(lines, strings.TrimSpace(prefix+seg.Text), "")
 		}
