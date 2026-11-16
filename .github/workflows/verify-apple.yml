@@ -1,0 +1,185 @@
+name: Verify Apple signing and notarization
+
+on:
+  push:
+    branches: [codex/apple-notarization-check]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-apple:
+    runs-on: macos-latest
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set verification version
+        run: echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+      - name: Validate Apple signing secrets
+        env:
+          APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          missing=()
+          for key in \
+            APPLE_DEVELOPER_ID_CERT_P12_BASE64 \
+            APPLE_DEVELOPER_ID_CERT_PASSWORD \
+            APPLE_NOTARY_APPLE_ID \
+            APPLE_NOTARY_TEAM_ID \
+            APPLE_NOTARY_PASSWORD
+          do
+            if [ -z "${!key}" ]; then
+              missing+=("$key")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::缺少 Apple 签名或公证 GitHub Secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Build Go npm distribution
+        run: scripts/build-go.sh "$VERSION"
+
+      - name: Smoke test current macOS binary
+        run: |
+          case "$(uname -m)" in
+            arm64) bin="dist-native/yoooclaw-darwin-arm64" ;;
+            x86_64) bin="dist-native/yoooclaw-darwin-x64" ;;
+            *)
+              echo "::error::Unsupported macOS runner arch: $(uname -m)"
+              exit 1
+              ;;
+          esac
+          VERSION_OUT="$("$bin" --version)"
+          if [ "$VERSION_OUT" != "$VERSION" ]; then
+            echo "::error::$bin --version 输出 $VERSION_OUT，期望 $VERSION"
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/yoooclaw-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
+
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_DEVELOPER_ID_CERT_P12_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_DEVELOPER_ID_CERT_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk '/Developer ID Application/ { print $2; exit }')"
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "::error::P12 中未找到 Developer ID Application 签名身份"
+            exit 1
+          fi
+
+          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign Darwin binaries
+        run: |
+          for file in \
+            dist-native/yoooclaw-darwin-arm64 \
+            dist-native/yoooclaw-darwin-x64
+          do
+            codesign \
+              --force \
+              --options runtime \
+              --timestamp \
+              --keychain "$SIGNING_KEYCHAIN_PATH" \
+              --sign "$SIGNING_IDENTITY" \
+              "$file"
+            codesign --verify --strict --verbose=2 "$file"
+          done
+
+          cp dist-native/yoooclaw-darwin-arm64 dist-npm/cli-darwin-arm64/bin/yc
+          cp dist-native/yoooclaw-darwin-x64 dist-npm/cli-darwin-x64/bin/yc
+          chmod +x dist-npm/cli-darwin-arm64/bin/yc dist-npm/cli-darwin-x64/bin/yc
+
+          for file in \
+            dist-npm/cli-darwin-arm64/bin/yc \
+            dist-npm/cli-darwin-x64/bin/yc
+          do
+            codesign --verify --strict --verbose=2 "$file"
+          done
+
+      - name: Notarize Darwin binaries
+        env:
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          NOTARY_PROFILE="yoooclaw-notarytool"
+          NOTARY_STAGE="$RUNNER_TEMP/yoooclaw-notary"
+          ZIP_PATH="$RUNNER_TEMP/yoooclaw-darwin.zip"
+          RESULT_PATH="$RUNNER_TEMP/yoooclaw-notary-result.json"
+          LOG_PATH="$RUNNER_TEMP/yoooclaw-notary-log.json"
+
+          mkdir -p "$NOTARY_STAGE"
+          cp dist-native/yoooclaw-darwin-* "$NOTARY_STAGE/"
+          ditto -c -k --keepParent "$NOTARY_STAGE" "$ZIP_PATH"
+
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --keychain "$SIGNING_KEYCHAIN_PATH" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" \
+            --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD"
+
+          set +e
+          xcrun notarytool submit "$ZIP_PATH" \
+            --keychain-profile "$NOTARY_PROFILE" \
+            --keychain "$SIGNING_KEYCHAIN_PATH" \
+            --wait \
+            --output-format json > "$RESULT_PATH"
+          submit_code=$?
+          set -e
+
+          cat "$RESULT_PATH"
+          submission_id="$(jq -r '.id // empty' "$RESULT_PATH")"
+          status="$(jq -r '.status // empty' "$RESULT_PATH")"
+          if [ -n "$submission_id" ]; then
+            xcrun notarytool log "$submission_id" \
+              --keychain-profile "$NOTARY_PROFILE" \
+              --keychain "$SIGNING_KEYCHAIN_PATH" \
+              "$LOG_PATH" || true
+            [ ! -s "$LOG_PATH" ] || cat "$LOG_PATH"
+          fi
+          if [ "$submit_code" -ne 0 ] || [ "$status" != "Accepted" ]; then
+            echo "::error::Apple 公证失败，status=${status:-unknown}"
+            exit 1
+          fi
+
+      - name: Delete temporary signing keychain
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN_PATH:-}" ] && [ -e "$SIGNING_KEYCHAIN_PATH" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH"
+          fi
