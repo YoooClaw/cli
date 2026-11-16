@@ -158,7 +158,7 @@ type IngestResult struct {
 }
 
 // Ingest 接收图片元数据，后台下载 OSS 文件。
-func Ingest(imagesDir string, payload SyncPayload, clientLabel string, maxBytes int64, logger Logger) (IngestResult, error) {
+func Ingest(imagesDir string, payload SyncPayload, clientLabel string, maxBytes int64, logger Logger, onCommit ...func(Entry)) (IngestResult, error) {
 	imageID := strings.TrimSpace(payload.ImageID)
 	if imageID == "" || strings.TrimSpace(payload.Image.OssImageURL) == "" || strings.TrimSpace(payload.Image.CreatedAt) == "" {
 		return IngestResult{}, fmt.Errorf("imageId / image.oss_image_url / image.created_at 必填")
@@ -182,15 +182,18 @@ func Ingest(imagesDir string, payload SyncPayload, clientLabel string, maxBytes 
 	if err := upsert(imagesDir, entry); err != nil {
 		return IngestResult{}, err
 	}
+	for _, notify := range onCommit {
+		notify(entry)
+	}
 	go func() {
-		if err := downloadInBackground(imagesDir, entry, maxBytes, logger); err != nil {
+		if err := downloadInBackground(imagesDir, entry, maxBytes, logger, onCommit...); err != nil {
 			logger.Warn("image[" + imageID + "] 后台下载异常：" + err.Error())
 		}
 	}()
 	return IngestResult{OK: true, ImageID: imageID, Status: "syncing"}, nil
 }
 
-func downloadInBackground(imagesDir string, entry Entry, maxBytes int64, logger Logger) error {
+func downloadInBackground(imagesDir string, entry Entry, maxBytes int64, logger Logger, onCommit ...func(Entry)) error {
 	filesDir := filepath.Join(imagesDir, "files")
 	if err := fsutil.EnsureDir(filesDir, fsutil.DirMode); err != nil {
 		return err
@@ -217,6 +220,9 @@ func downloadInBackground(imagesDir string, entry Entry, maxBytes int64, logger 
 	entry.SyncedAt = &now
 	if err := upsert(imagesDir, entry); err != nil {
 		return err
+	}
+	for _, notify := range onCommit {
+		notify(entry)
 	}
 	logger.Info("image[" + entry.ImageID + "] 下载完成")
 	return nil

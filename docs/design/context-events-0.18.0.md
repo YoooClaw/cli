@@ -1,6 +1,6 @@
 # 0.18.0 上下文接收完成事件方案
 
-状态：技术方案，待评审；尚未实现。
+状态：已实现，2026-11-16 本地验证；接口使用见 [context-events.md](../context-events.md)。
 基线：master `6f4e948`；工作分支：`release/0.18.0`。
 
 ## 1. 目标与语义
@@ -77,9 +77,8 @@ HTTP / Relay / 宿主转发
     "occurredAt": "2026-11-15T08:00:00Z",
     "source": "notifications",
     "operation": "append",
-    "requestId": "<request-id>",
     "scope": { "kind": "client", "clientLabel": "<label>" },
-    "result": { "committedCount": 12, "partial": false }
+    "result": { "committedCount": 12, "partial": false, "unit": "records" }
   }
 }
 ```
@@ -145,4 +144,8 @@ Egress 只是可选的实时快捷通道。`client` 事件使用 `PushEventTo`�
 - 两个 clientLabel 不能互读私有事件；未知来源不广播；共享来源按现有可见性处理；撤销凭证后长连接失效。
 - 并发测试使用 race 检查；端到端用真实 daemon 接收合成数据，订阅收到事件后再读取对应上下文。
 
-方案阶段只新增本文，不改业务代码、不改版本号、不发布。后续实现按上述步骤推进；本地验证、宿主联调和正式发布分别报告结果。
+实现未修改版本号，也未执行正式发布。当前实现使用 `result.unit` 区分 records/days/snapshots/objects；日程和健康计数为实际改写日期数，提醒事项只在快照内容变化时通知。图片元数据提交和后台下载完成分别通知，消费者按事件重新读取当前状态。
+
+SSE 仅支持直接 HTTP，Relay 请求桥接通过游标查询恢复；连接上限 32，凭证每秒复核。实时 Egress 投递使用 8 个并发槽，繁忙时保留日志并跳过快捷投递。分段清理以段内最早记录时间为准，保留时间为上限。v1 暂不填充可选 requestId/collectedAt；异步处理不复用失效请求上下文。
+
+本地验证、宿主联调和正式发布分别报告结果。

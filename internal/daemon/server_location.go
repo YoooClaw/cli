@@ -24,7 +24,9 @@ func (s *server) handleLocationIngest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.locationStorage.Append(body.Items); err != nil {
+	committed, err := s.locationStorage.AppendResult(body.Items)
+	s.publishContext("locations", "append", "", committed, err != nil, "records")
+	if err != nil {
 		s.logger.Error(fmt.Sprintf("[locations] requestId=%s write failed: %v", r.Header.Get(relay.InternalRequestIDHeader), err))
 		writeJSON(w, http.StatusInternalServerError, errBody("LOCATION_WRITE_FAILED", "位置数据保存失败"))
 		return

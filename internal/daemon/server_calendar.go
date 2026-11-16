@@ -24,6 +24,7 @@ func (s *server) handleCalendarIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.calendarStorage.Replace(batch)
+	s.publishContext("calendars", "replace", "", result.ChangedFiles, err != nil, "days")
 	if err != nil {
 		s.logger.Error(fmt.Sprintf("[calendars] requestId=%s write failed: %v", r.Header.Get(relay.InternalRequestIDHeader), err))
 		writeJSON(w, http.StatusInternalServerError, errBody("CALENDAR_WRITE_FAILED", "日程数据保存失败"))

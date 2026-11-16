@@ -15,7 +15,9 @@ func (s *server) handleWebPageIngest(w http.ResponseWriter, r *http.Request, aut
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	result, err := webpage.Ingest(s.ctx.Paths.WebPages, body, auth.clientLabel, s.logger)
+	result, err := webpage.Ingest(s.ctx.Paths.WebPages, body, auth.clientLabel, s.logger, func(entry webpage.Entry, partial bool) {
+		s.publishContext("web-pages", "upsert", entry.ClientLabel, 1, partial, "objects", entry.URLHash)
+	})
 	if err != nil {
 		var ingestErr *webpage.Error
 		if errors.As(err, &ingestErr) {

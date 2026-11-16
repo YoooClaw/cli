@@ -92,9 +92,12 @@ type index struct {
 	Keys    map[string]string `json:"idempotencyKeys"`
 }
 type Store struct {
-	Dir    string
-	Config config.DataSection
-	mu     *sync.Mutex
+	// OnCommit observes newly saved object records after releasing the store lock.
+	// Blob reuse still commits a record; idempotent replay does not call this hook.
+	OnCommit func(Object)
+	Dir      string
+	Config   config.DataSection
+	mu       *sync.Mutex
 }
 
 var locks sync.Map
@@ -102,7 +105,7 @@ var locks sync.Map
 func New(dir string, c config.DataSection) *Store {
 	abs, _ := filepath.Abs(dir)
 	lock, _ := locks.LoadOrStore(abs, &sync.Mutex{})
-	return &Store{abs, Limits(c), lock.(*sync.Mutex)}
+	return &Store{Dir: abs, Config: Limits(c), mu: lock.(*sync.Mutex)}
 }
 
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -250,6 +253,12 @@ func (s *Store) ImportFile(path string, m Metadata, label string) (PutResult, er
 	return s.put(f, m, label, s.Config.MaxImportBytes)
 }
 func (s *Store) put(r io.Reader, m Metadata, label string, maxBytes int64) (result PutResult, err error) {
+	var committed *Object
+	defer func() {
+		if committed != nil && s.OnCommit != nil {
+			s.OnCommit(*committed)
+		}
+	}()
 	if e := validate(&m); e != nil {
 		return result, e
 	}
@@ -406,6 +415,7 @@ func (s *Store) put(r io.Reader, m Metadata, label string, maxBytes int64) (resu
 	if e = s.save(x); e != nil {
 		return result, e
 	}
+	committed = &o
 	return PutResult{true, o, dedup}, nil
 }
 func classify(media, declared, name string) string {

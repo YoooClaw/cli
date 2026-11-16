@@ -34,6 +34,9 @@ func (s *server) handleReminderIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, errBody("REMINDERS_WRITE_FAILED", "提醒事项保存失败"))
 		return
 	}
+	if result.Applied && result.Changed {
+		s.publishContext("reminders", "replace", "", 1, false, "snapshots")
+	}
 	s.logger.Info(fmt.Sprintf("[reminders] ingested=%d applied=%t bytes=%d", result.Ingested, result.Applied, len(raw)))
 	writeJSON(w, 200, result)
 }

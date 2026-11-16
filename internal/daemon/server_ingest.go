@@ -43,9 +43,10 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		}
 		body.RecordingID = recordingID
 		result, err := recording.HandleRecordingResultWrite(body, s.recordingStorage, s.logger, recording.SyncOptions{
-			NotifyStatus: s.notifyRecordingStatus,
-			URLRefresher: s.recordingURLRefresher,
-			ClientLabel:  auth.clientLabel,
+			OnContentCommit: s.notifyRecordingContent,
+			NotifyStatus:    s.notifyRecordingStatus,
+			URLRefresher:    s.recordingURLRefresher,
+			ClientLabel:     auth.clientLabel,
 		})
 		if err != nil {
 			code := "RESULT_WRITE_FAILED"
@@ -102,7 +103,8 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		go func() {
 			defer finishRecording()
 			if err := recording.TriggerTranscription(recordingID, s.recordingStorage, *asr, s.logger, recording.SyncOptions{
-				NotifyStatus: s.notifyRecordingStatus,
+				OnContentCommit: s.notifyRecordingContent,
+				NotifyStatus:    s.notifyRecordingStatus,
 			}); err != nil {
 				s.logger.Error("[recording-retranscribe] 重试转写失败: " + recordingID + ", " + err.Error())
 			}
@@ -239,7 +241,7 @@ func (s *server) handleImageHTTP(w http.ResponseWriter, r *http.Request, auth au
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	result, err := imgstore.Ingest(s.ctx.Paths.Images, body, auth.clientLabel, s.cfg.Image.MaxBytes, s.logger)
+	result, err := imgstore.Ingest(s.ctx.Paths.Images, body, auth.clientLabel, s.cfg.Image.MaxBytes, s.logger, s.notifyImageContent)
 	if err != nil {
 		writeJSON(w, 400, errBody("INVALID_PARAMS", err.Error()))
 		return
@@ -252,7 +254,7 @@ func (s *server) handleImageGateway(w http.ResponseWriter, r *http.Request, auth
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	result, err := imgstore.Ingest(s.ctx.Paths.Images, body, auth.clientLabel, s.cfg.Image.MaxBytes, s.logger)
+	result, err := imgstore.Ingest(s.ctx.Paths.Images, body, auth.clientLabel, s.cfg.Image.MaxBytes, s.logger, s.notifyImageContent)
 	if err != nil {
 		gatewayErr(w, "INVALID_PARAMS", err.Error())
 		return
@@ -360,4 +362,11 @@ func errorSuffix(err string) string {
 		return ""
 	}
 	return " err=" + err
+}
+
+func (s *server) notifyRecordingContent(entry recording.Entry, partial bool) {
+	s.publishContext("recordings", "upsert", entry.ClientLabel, 1, partial, "objects", entry.ID)
+}
+func (s *server) notifyImageContent(entry imgstore.Entry) {
+	s.publishContext("images", "upsert", entry.ClientLabel, 1, false, "objects", entry.ImageID)
 }

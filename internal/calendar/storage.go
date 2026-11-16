@@ -1,6 +1,8 @@
 package calendar
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -22,9 +24,10 @@ type state struct {
 type Result struct {
 	Applied      bool
 	FilesWritten int
+	ChangedFiles int
 }
 
-// Storage 串行覆盖同一 profile 的日程日期文件，不读旧记录或比较 ID。
+// Storage 串行覆盖同一 profile 的日程日期文件，以字节比较标记内容变化。
 type Storage struct {
 	dir string
 	mu  sync.Mutex
@@ -40,18 +43,27 @@ func (s *Storage) Replace(batch *Batch) (Result, error) {
 	if last := s.lastCollectedAt(); last.After(batch.collectedAt) {
 		return Result{Applied: false}, nil
 	}
+	result := Result{}
 	for _, file := range batch.files {
 		path := filepath.Join(s.dir, file.date+".jsonl")
+		prior, readErr := os.ReadFile(path)
+		changed := readErr != nil || !bytes.Equal(prior, file.data)
 		if err := fsutil.WriteAtomic(path, file.data, fsutil.SecretFileMode); err != nil {
-			return Result{}, err
+			return result, err
+		}
+		result.FilesWritten++
+		if changed {
+			result.ChangedFiles++
 		}
 	}
 	// 日期文件写成功后再推进水位；中途失败时客户端重试同一份快照会整批重放。
 	st := state{Version: 1, LastCollectedAt: batch.collectedAt.Format(time.RFC3339Nano)}
 	if err := fsutil.WriteJSON(filepath.Join(s.dir, stateFile), st, fsutil.SecretFileMode); err != nil {
-		return Result{}, err
+		return result, err
 	}
-	return Result{Applied: true, FilesWritten: len(batch.files)}, nil
+	result.Applied = true
+	result.FilesWritten = len(batch.files)
+	return result, nil
 }
 
 // lastCollectedAt 读取上次应用的快照时间。状态文件缺失或损坏都返回零值：

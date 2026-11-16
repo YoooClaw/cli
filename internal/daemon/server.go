@@ -25,6 +25,7 @@ import (
 	"github.com/YoooClaw/cli/internal/calendar"
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"github.com/YoooClaw/cli/internal/creds"
 	"github.com/YoooClaw/cli/internal/data"
 	"github.com/YoooClaw/cli/internal/envhost"
@@ -189,6 +190,9 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 			Recordings:    recordingStorage,
 		},
 	}
+	if _, err := srv.contextJournal(); err != nil {
+		srv.logger.Error("context.event.unavailable: journal initialization failed; restart after repairing storage")
+	}
 	if err := srv.startTransferImports(); err != nil {
 		srv.logger.Warn("[transfer] automatic import unavailable: invalid fulfillment configuration; check cloud host and report URL override")
 	}
@@ -320,6 +324,11 @@ func RunForeground(ctx *clictx.Context, opts StartOpts) (runErr error) {
 }
 
 type server struct {
+	contextOnce           sync.Once
+	contextDelivery       chan struct{}
+	contextLog            *contextevent.Log
+	contextErr            error
+	contextStreams        atomic.Int64
 	lastRecordingActivity atomic.Int64
 	activeRecordingWrites atomic.Int64
 	activeRequests        atomic.Int64
@@ -441,11 +450,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if path != "/daemon/status" && path != "/health" {
+	if path != "/daemon/status" && path != "/health" && !contextEventPath(path) {
 		s.activeRequests.Add(1)
 		defer s.activeRequests.Add(-1)
 	}
 	switch {
+	case contextEventPath(path):
+		s.handleContextEvents(w, r, authCtx)
 	case path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path) || dataRecordPath(path):
 		s.handleData(w, r, authCtx)
 	case assetKind(path) != "":
@@ -669,6 +680,7 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request, auth authR
 	}
 	result := s.storage.Ingest(filtered, auth.clientLabel)
 	s.recordIngest(result)
+	s.publishContext("notifications", "append", auth.clientLabel, result.Ingested, result.Failed > 0 || result.Invalid > 0, "records")
 	writeJSON(w, 200, map[string]any{
 		"ok": result.Failed == 0, "received": result.Received, "ingested": result.Ingested,
 		"dedupedById": result.DedupedByID, "dedupedByContent": result.DedupedByContent, "invalid": result.Invalid,
@@ -780,6 +792,9 @@ func (s *server) relayStatusPayload() map[string]any {
 // ── helpers ──
 
 func isIngestPath(path string) bool {
+	if contextEventPath(path) {
+		return true
+	}
 	if path == "/data" || strings.HasPrefix(path, "/data/") || path == "/gateway/data.write" || dataImportPath(path) || dataRecordPath(path) {
 		return true
 	}

@@ -84,6 +84,9 @@ type ResultWriteResult struct {
 // 找不到录音时按占位元数据 upsert 新建；
 // 可选 ossUrl 时在后台下载并覆盖本地音频。不触发插件侧 ASR。
 func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logger Logger, opts SyncOptions) (ResultWriteResult, error) {
+	finish := observeContent(storage, params.RecordingID, opts.OnContentCommit)
+	success := false
+	defer func() { finish(success) }()
 	recordingID := strings.TrimSpace(params.RecordingID)
 	if recordingID == "" {
 		return ResultWriteResult{}, errors.New("recordingId is required")
@@ -191,6 +194,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		}()
 	}
 
+	success = true
 	return ResultWriteResult{
 		OK:             true,
 		RecordingID:    recordingID,
@@ -346,7 +350,9 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 	if err := fsutil.WriteAtomic(filepath.Join(storage.TranscriptDataDir(), dataName), dataBytes, fsutil.ConfigFileMode); err != nil {
 		return "", nil, err
 	}
-	_ = storage.SetTranscriptDataFile(recordingID, dataName)
+	if err := storage.SetTranscriptDataFile(recordingID, dataName); err != nil {
+		return "", nil, err
+	}
 
 	markdown := normalizeMultiline(t.Markdown)
 	if strings.TrimSpace(markdown) == "" {
@@ -356,8 +362,12 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 	if err := fsutil.WriteAtomic(filepath.Join(storage.TranscriptsDir(), mdName), []byte(ensureTrailingNewline(markdown)), fsutil.ConfigFileMode); err != nil {
 		return "", nil, err
 	}
-	_ = storage.SetTranscriptFile(recordingID, mdName)
-	_ = storage.SetTitle(recordingID, title)
+	if err := storage.SetTranscriptFile(recordingID, mdName); err != nil {
+		return "", nil, err
+	}
+	if err := storage.SetTitle(recordingID, title); err != nil {
+		return "", nil, err
+	}
 	logger.Info("[recording-result] 转录文本已写入: " + recordingID)
 
 	return title, ExtractSourceTextListFromDocument(doc), nil
@@ -378,7 +388,9 @@ func writeResultSummary(recordingID string, sm ResultSummary, storage *Storage, 
 	if err := fsutil.WriteAtomic(filepath.Join(storage.SummariesDir(), name), []byte(ensureTrailingNewline(markdown)), fsutil.ConfigFileMode); err != nil {
 		return "", err
 	}
-	_ = storage.SetSummaryFile(recordingID, name)
+	if err := storage.SetSummaryFile(recordingID, name); err != nil {
+		return "", err
+	}
 	logger.Info("[recording-result] 总结已写入: " + recordingID)
 	return strings.TrimSpace(markdown), nil
 }

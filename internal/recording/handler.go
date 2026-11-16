@@ -7,6 +7,7 @@ import (
 
 // SyncOptions 控制录音后台流程（转写、result.write 音频下载）。
 type SyncOptions struct {
+	OnContentCommit func(Entry, bool)
 	URLRefresher    func(label, taskID string) func(context.Context) (string, error)
 	NotifyStatus    func(StatusEvent)
 	DownloadOptions DownloadOptions
@@ -17,6 +18,9 @@ type SyncOptions struct {
 
 // TriggerTranscription 触发 ASR 转写。
 func TriggerTranscription(recordingID string, storage *Storage, asr AsrConfig, logger Logger, opts SyncOptions) error {
+	finish := observeContent(storage, recordingID, opts.OnContentCommit)
+	success := false
+	defer func() { finish(success) }()
 	entry, ok := storage.FindByID(recordingID)
 	if !ok {
 		logger.Warn("[asr-trigger] 录音不存在: " + recordingID)
@@ -42,14 +46,25 @@ func TriggerTranscription(recordingID string, storage *Storage, asr AsrConfig, l
 		emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, message, nil)
 		return nil
 	}
-	_ = storage.SetTranscriptDataFile(recordingID, result.TranscriptDataFilename)
-	_ = storage.SetTranscriptFile(recordingID, result.TranscriptFilename)
-	if result.SummaryFilename != "" {
-		_ = storage.SetSummaryFile(recordingID, result.SummaryFilename)
+	if err := storage.SetTranscriptDataFile(recordingID, result.TranscriptDataFilename); err != nil {
+		return err
 	}
-	_ = storage.SetTitle(recordingID, result.Title)
-	_, _ = storage.UpdateStatus(recordingID, StatusTranscribed)
+	if err := storage.SetTranscriptFile(recordingID, result.TranscriptFilename); err != nil {
+		return err
+	}
+	if result.SummaryFilename != "" {
+		if err := storage.SetSummaryFile(recordingID, result.SummaryFilename); err != nil {
+			return err
+		}
+	}
+	if err := storage.SetTitle(recordingID, result.Title); err != nil {
+		return err
+	}
+	if _, err := storage.UpdateStatus(recordingID, StatusTranscribed); err != nil {
+		return err
+	}
 	_ = storage.SetLastError(recordingID, "")
+	success = true
 	logger.Info("[asr-trigger] 转写完成: " + recordingID + ", summary=\"" + result.Title + "\"")
 	emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, "", &StatusEvent{
 		Transcript: result.Transcript,

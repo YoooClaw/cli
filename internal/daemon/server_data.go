@@ -41,7 +41,11 @@ func writeDataError(w http.ResponseWriter, e error) {
 	}
 	writeJSON(w, status, map[string]any{"ok": false, "error": map[string]any{"code": code, "message": message}})
 }
-func (s *server) dataStore() *data.Store { return data.New(s.ctx.Paths.Data, s.cfg.Data) }
+func (s *server) dataStore() *data.Store {
+	store := data.New(s.ctx.Paths.Data, s.cfg.Data)
+	store.OnCommit = func(o data.Object) { s.publishContext("data", "append", o.ClientLabel, 1, false, "objects", o.ID) }
+	return store
+}
 func (s *server) dataStatus() any {
 	u, e := s.dataStore().Usage()
 	if e != nil {
