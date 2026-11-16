@@ -174,6 +174,12 @@ jobs:
               --sign "$SIGNING_IDENTITY" \
               "$file"
             codesign --verify --strict --verbose=2 "$file"
+            signature="$(codesign -dv --verbose=4 "$file" 2>&1)"
+            printf '%s\n' "$signature"
+            if ! printf '%s\n' "$signature" | grep -qx 'TeamIdentifier=7LMW5J8VKX'; then
+              echo "::error::Unexpected Apple signing team"
+              exit 1
+            fi
           done
 
           cp dist-native/yoooclaw-darwin-arm64 dist-npm/cli-darwin-arm64/bin/yc
@@ -325,6 +331,7 @@ jobs:
           OSS_REGION: ${{ secrets.OSS_REGION }}
           OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
           OSS_PUBLIC_URL: ${{ secrets.OSS_PUBLIC_URL }}
+          OSS_ENDPOINT: https://oss-cn-hangzhou.aliyuncs.com
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
@@ -336,7 +343,7 @@ jobs:
             echo "::error::缺少 test environment secrets: ${missing[*]}"
             exit 1
           fi
-          go -C tools/oss-upload run . --version "$VERSION"
+          go -C tools/oss-upload run . --test-build --version "$VERSION"
       - name: Register test OTA draft
         timeout-minutes: 4
         env:
@@ -506,6 +513,7 @@ jobs:
       - name: Upload artifacts to Alibaba OSS
         timeout-minutes: 40
         env:
+          OSS_ENDPOINT: https://oss-cn-hangzhou.aliyuncs.com
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
