@@ -21,20 +21,22 @@ type TranscriptSource struct {
 
 // TranscriptSegment 是 transcript-data normalized.segments 的单段。
 type TranscriptSegment struct {
-	Text        string   `json:"text"`
-	StartMS     *float64 `json:"startMs,omitempty"`
-	EndMS       *float64 `json:"endMs,omitempty"`
-	SpeakerID   *int     `json:"speakerId,omitempty"`
-	SpeakerName string   `json:"speakerName,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Text        string                     `json:"text"`
+	StartMS     *float64                   `json:"startMs,omitempty"`
+	EndMS       *float64                   `json:"endMs,omitempty"`
+	SpeakerID   *int                       `json:"speakerId,omitempty"`
+	SpeakerName string                     `json:"speakerName,omitempty"`
 }
 
 // TranscriptItem 是对客户端展示的 sourceTextList 形状。
 type TranscriptItem struct {
-	Content     string   `json:"content"`
-	SpeakerID   *int     `json:"speakerId,omitempty"`
-	SpeakerName string   `json:"speakerName,omitempty"`
-	StartTime   *float64 `json:"startTime,omitempty"`
-	EndTime     *float64 `json:"endTime,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Content     string                     `json:"content"`
+	SpeakerID   *int                       `json:"speakerId,omitempty"`
+	SpeakerName string                     `json:"speakerName,omitempty"`
+	StartTime   *float64                   `json:"startTime,omitempty"`
+	EndTime     *float64                   `json:"endTime,omitempty"`
 }
 
 // TranscriptDocument 是转写结构化主存储。
@@ -88,6 +90,7 @@ func ExtractSourceTextListFromDocument(doc TranscriptDocument) []TranscriptItem 
 				continue
 			}
 			out = append(out, TranscriptItem{
+				Extra:       mergeMetadataExtra(nil, seg.Extra),
 				Content:     seg.Text,
 				SpeakerID:   seg.SpeakerID,
 				SpeakerName: strings.TrimSpace(seg.SpeakerName),
