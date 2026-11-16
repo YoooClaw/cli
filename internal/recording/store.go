@@ -56,6 +56,8 @@ type Metadata struct {
 
 // Entry 是一条录音索引项。
 type Entry struct {
+	// ContextRevision is populated only for the committed-content callback.
+	ContextRevision    string   `json:"-"`
 	OssTaskID          string   `json:"ossTaskId,omitempty"`
 	ID                 string   `json:"id"`
 	ClientLabel        string   `json:"clientLabel,omitempty"`

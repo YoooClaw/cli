@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"io"
 	"mime"
 	"net/http"
@@ -43,7 +44,9 @@ func writeDataError(w http.ResponseWriter, e error) {
 }
 func (s *server) dataStore() *data.Store {
 	store := data.New(s.ctx.Paths.Data, s.cfg.Data)
-	store.OnCommit = func(o data.Object) { s.publishContext("data", "append", o.ClientLabel, 1, false, "objects", o.ID) }
+	store.OnCommit = func(o data.Object) {
+		s.publishContext("data", "append", o.ClientLabel, 1, false, "objects", contextevent.Details{Revision: o.SHA256}, o.ID)
+	}
 	return store
 }
 func (s *server) dataStatus() any {

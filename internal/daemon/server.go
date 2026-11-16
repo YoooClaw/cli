@@ -680,7 +680,13 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request, auth authR
 	}
 	result := s.storage.Ingest(filtered, auth.clientLabel)
 	s.recordIngest(result)
-	s.publishContext("notifications", "append", auth.clientLabel, result.Ingested, result.Failed > 0 || result.Invalid > 0, "records")
+	dates := make([]string, 0, len(result.Inserted))
+	for _, item := range result.Inserted {
+		if stamp, ok := notif.ParseTime(item.Timestamp); ok {
+			dates = append(dates, stamp.In(time.Local).Format("2006-01-02"))
+		}
+	}
+	s.publishContext("notifications", "append", auth.clientLabel, result.Ingested, result.Failed > 0 || result.Invalid > 0, "records", contextevent.Details{ChangedDates: dates})
 	writeJSON(w, 200, map[string]any{
 		"ok": result.Failed == 0, "received": result.Received, "ingested": result.Ingested,
 		"dedupedById": result.DedupedByID, "dedupedByContent": result.DedupedByContent, "invalid": result.Invalid,

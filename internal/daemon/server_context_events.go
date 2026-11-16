@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,23 @@ func (s *server) contextJournal() (*contextevent.Log, error) {
 	})
 	return s.contextLog, s.contextErr
 }
-func (s *server) publishContext(source, operation, label string, count int, partial bool, unit string, ids ...string) {
+
+// contextRevision fingerprints a committed representation; no source bytes escape.
+func contextRevision(value any) string {
+	raw, _ := json.Marshal(value)
+	return fmt.Sprintf("%x", sha256.Sum256(raw))
+}
+
+func (s *server) publishContext(source, operation, label string, count int, partial bool, unit string, details contextevent.Details, ids ...string) {
+	if details.ReadScope == "" {
+		details.ReadScope = "snapshot"
+		if len(details.ChangedDates) > 0 {
+			details.ReadScope = "dates"
+		}
+		if len(ids) > 0 {
+			details.ReadScope = "resources"
+		}
+	}
 	if count == 0 {
 		return
 	}
@@ -38,7 +55,7 @@ func (s *server) publishContext(source, operation, label string, count int, part
 	log, e := s.contextJournal()
 	if e == nil {
 		var ev contextevent.Event
-		ev, e = log.Append(contextevent.Event{Source: source, Operation: operation, Scope: scope, Result: contextevent.Result{CommittedCount: count, Partial: partial, Unit: unit}, ResourceIDs: ids})
+		ev, e = log.Append(contextevent.Event{Details: details, Source: source, Operation: operation, Scope: scope, Result: contextevent.Result{CommittedCount: count, Partial: partial, Unit: unit}, ResourceIDs: ids})
 		if e == nil {
 			if s.logger != nil {
 				s.logger.Info("context.event.persisted source=" + source + " eventId=" + ev.EventID)

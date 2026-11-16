@@ -68,6 +68,7 @@ func observeContent(s *Storage, id string, notify func(Entry, bool)) func(bool) 
 		entry, ok := s.FindByID(id)
 		mu.Unlock()
 		if notify != nil && ok && after != "" && after != before {
+			entry.ContextRevision = after
 			notify(entry, !success)
 		}
 	}

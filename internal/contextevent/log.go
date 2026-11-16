@@ -35,7 +35,18 @@ type Result struct {
 	Partial        bool   `json:"partial"`
 	Unit           string `json:"unit,omitempty"`
 }
+
+// Details locates committed data without carrying private content.
+// Revision is an opaque commit fingerprint, not a historical read token.
+type Details struct {
+	ReadScope      string   `json:"readScope,omitempty"`
+	ChangedDates   []string `json:"changedDates,omitempty"`
+	DatesTruncated bool     `json:"datesTruncated,omitempty"`
+	Revision       string   `json:"revision,omitempty"`
+}
+
 type Event struct {
+	Details
 	SchemaVersion      int       `json:"schemaVersion"`
 	EventID            string    `json:"eventId"`
 	Cursor             string    `json:"cursor"`
@@ -272,6 +283,20 @@ func (l *Log) Append(ev Event) (Event, error) {
 	defer l.mu.Unlock()
 	if e := l.prune(); e != nil {
 		return Event{}, e
+	}
+	// Copy before sorting/capping: callers may reuse their commit result.
+	ev.ChangedDates = append([]string(nil), ev.ChangedDates...)
+	sort.Strings(ev.ChangedDates)
+	dates := ev.ChangedDates[:0]
+	for _, date := range ev.ChangedDates {
+		if len(dates) == 0 || date != dates[len(dates)-1] {
+			dates = append(dates, date)
+		}
+	}
+	ev.ChangedDates = dates
+	if len(ev.ChangedDates) > 100 {
+		ev.ChangedDates = ev.ChangedDates[:100]
+		ev.DatesTruncated = true
 	}
 	ev.SchemaVersion = 1
 	ev.EventID = uuid()

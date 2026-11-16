@@ -66,6 +66,30 @@ func TestContextEventSourcesAndCommittedData(t *testing.T) {
 			if len(p.Events) != before+1 || p.Events[before].Source != tc.source {
 				t.Fatal(p)
 			}
+			ev := p.Events[before]
+			switch tc.source {
+			case "notifications", "locations", "calendars", "health-data":
+				if ev.ReadScope != "dates" || len(ev.ChangedDates) == 0 {
+					t.Fatalf("missing date locator: %+v", ev)
+				}
+				for _, date := range ev.ChangedDates {
+					path := filepath.Join(s.ctx.Paths.Dir, tc.source, date+".jsonl")
+					if _, err := os.Stat(path); err != nil {
+						t.Fatalf("locator is not readable: %s: %v", date, err)
+					}
+				}
+				if tc.source == "health-data" && ev.ChangedDates[0] != "2026-10-19" {
+					t.Fatal("used receipt date for historical data", ev)
+				}
+			case "reminders":
+				if ev.ReadScope != "snapshot" || ev.Revision == "" {
+					t.Fatal("missing snapshot revision", ev)
+				}
+			default:
+				if ev.ReadScope != "resources" || len(ev.ResourceIDs) != 1 || ev.Revision == "" {
+					t.Fatal("missing object revision", ev)
+				}
+			}
 			raw, _ := json.Marshal(p.Events[before])
 			if strings.Contains(string(raw), "private") || strings.Contains(string(raw), "secret") {
 				t.Fatal("body leaked")
@@ -112,11 +136,11 @@ func TestContextEventSourcesAndCommittedData(t *testing.T) {
 func TestContextEventsSSEReplayLiveAndRevocation(t *testing.T) {
 	s, ts := newTestServer(t, "gateway")
 	s.credentialSet = creds.CredentialSet{Entries: []creds.ApiKeyEntry{{Label: "a", Key: "a-key"}, {Label: "b", Key: "b-key"}}}
-	s.publishContext("data", "append", "a", 1, false, "objects", "one")
+	s.publishContext("data", "append", "a", 1, false, "objects", contextevent.Details{}, "one")
 	p := eventPage(t, s, "a-key")
 	cursor := p.HighWatermark
-	s.publishContext("data", "append", "b", 1, false, "objects", "hidden")
-	s.publishContext("data", "append", "a", 1, false, "objects", "two")
+	s.publishContext("data", "append", "b", 1, false, "objects", contextevent.Details{}, "hidden")
+	s.publishContext("data", "append", "a", 1, false, "objects", contextevent.Details{}, "two")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/context/events/stream?after="+cursor, nil)
@@ -148,7 +172,7 @@ func TestContextEventsSSEReplayLiveAndRevocation(t *testing.T) {
 	if ev := next(); len(ev.ResourceIDs) != 1 || ev.ResourceIDs[0] != "two" {
 		t.Fatal(ev)
 	}
-	s.publishContext("data", "append", "a", 1, false, "objects", "three")
+	s.publishContext("data", "append", "a", 1, false, "objects", contextevent.Details{}, "three")
 	if ev := next(); ev.ResourceIDs[0] != "three" {
 		t.Fatal(ev)
 	}
@@ -189,6 +213,9 @@ func TestContextEventsPartialHealthAndJournalFailure(t *testing.T) {
 	p := eventPage(t, s, "")
 	if len(p.Events) != 1 || !p.Events[0].Result.Partial || p.Events[0].Result.CommittedCount != 1 {
 		t.Fatal(p)
+	}
+	if got := p.Events[0].ChangedDates; len(got) != 1 || got[0] != "2026-10-19" {
+		t.Fatal("failed day leaked into committed dates", got)
 	}
 	if e := os.Remove(filepath.Join(s.ctx.Paths.State, "context-events", "state.json")); e != nil {
 		t.Fatal(e)
@@ -231,6 +258,9 @@ func TestContextImageCompletion(t *testing.T) {
 	for time.Now().Before(deadline) {
 		p := eventPage(t, s, "")
 		if len(p.Events) == 2 {
+			if p.Events[0].Revision == "" || p.Events[0].Revision == p.Events[1].Revision || p.Events[1].ReadScope != "resources" {
+				t.Fatal("image stages need distinct revisions", p)
+			}
 			if _, e := os.Stat(filepath.Join(s.ctx.Paths.Images, "files", "ctx-image.jpg")); e != nil {
 				t.Fatal(e)
 			}
@@ -255,7 +285,7 @@ func TestContextEventProxyDeliveryAndSharedNoBroadcast(t *testing.T) {
 	}))
 	defer callback.Close()
 	s.egress = NewProxyEgress(callback.URL, "callback-key", s.logger)
-	s.publishContext("data", "append", "phone", 1, false, "objects", "o")
+	s.publishContext("data", "append", "phone", 1, false, "objects", contextevent.Details{}, "o")
 	select {
 	case frame := <-frames:
 		if string(frame["event"]) != `"context.updated"` || string(frame["clientLabel"]) != `"phone"` {
@@ -270,7 +300,7 @@ func TestContextEventProxyDeliveryAndSharedNoBroadcast(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("missing proxy event")
 	}
-	s.publishContext("calendars", "replace", "", 1, false, "days")
+	s.publishContext("calendars", "replace", "", 1, false, "days", contextevent.Details{})
 	if len(eventPage(t, s, "").Events) != 2 {
 		t.Fatal("missing shared event")
 	}
@@ -348,5 +378,73 @@ func TestContextEventsStandaloneRelayRoundTrip(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("relay timed out")
+	}
+}
+
+func TestContextNotificationDatesExcludeDedupAndInvalid(t *testing.T) {
+	s, _ := newTestServer(t, "")
+	first := `{"notifications":[{"id":"old","app":"test","body":"old","timestamp":"2026-10-01T12:00:00Z"}]}`
+	if w := contextRequest(t, s, "POST", "/notifications", first, ""); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	before := len(eventPage(t, s, "").Events)
+	batch := `{"notifications":[{"id":"old","app":"test","body":"old","timestamp":"2026-10-01T12:00:00Z"},{"id":"new","app":"test","body":"new","timestamp":"2026-10-02T12:00:00Z"},{"id":"bad","timestamp":"invalid"}]}`
+	contextRequest(t, s, "POST", "/notifications", batch, "")
+	events := eventPage(t, s, "").Events
+	if len(events) != before+1 {
+		t.Fatal(events)
+	}
+	ev := events[before]
+	if len(ev.ChangedDates) != 1 || ev.ChangedDates[0] != "2026-10-02" || ev.Result.CommittedCount != 1 || !ev.Result.Partial {
+		t.Fatal(ev)
+	}
+}
+
+func TestContextCalendarPartialDatesAndClear(t *testing.T) {
+	s, _ := newTestServer(t, "")
+	if err := os.MkdirAll(filepath.Join(s.ctx.Paths.Calendars, "2026-10-17.jsonl"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	w := contextRequest(t, s, "POST", "/calendars", calendarSnapshot, "")
+	if w.Code != 500 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	ev := eventPage(t, s, "").Events[0]
+	if !ev.Result.Partial || len(ev.ChangedDates) != 1 || ev.ChangedDates[0] != "2026-10-16" {
+		t.Fatal(ev)
+	}
+	if err := os.Remove(filepath.Join(s.ctx.Paths.Calendars, "2026-10-17.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	contextRequest(t, s, "POST", "/calendars", calendarSnapshot, "")
+	var empty map[string]any
+	json.Unmarshal([]byte(calendarSnapshot), &empty)
+	empty["items"] = []any{}
+	empty["collectedAt"] = "2026-10-16T13:00:00+08:00"
+	body, _ := json.Marshal(empty)
+	contextRequest(t, s, "POST", "/calendars", string(body), "")
+	events := eventPage(t, s, "").Events
+	ev = events[len(events)-1]
+	// End at midnight on the 18th: only the 16th/17th had content to clear.
+	if len(ev.ChangedDates) != 2 || ev.ChangedDates[0] != "2026-10-16" || ev.ChangedDates[1] != "2026-10-17" {
+		t.Fatal(ev)
+	}
+}
+
+func TestContextRecordingRevisionsTrackContent(t *testing.T) {
+	s, _ := newTestServer(t, "")
+	s.recordingStorage = recording.NewStorage(s.ctx.Paths.Recordings, s.logger)
+	if err := s.recordingStorage.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{"recordingId":"revision","summary":{"markdown":"one"}}`, `{"recordingId":"revision","summary":{"markdown":"two"}}`, `{"recordingId":"revision","summary":{"markdown":"two"}}`} {
+		w := contextRequest(t, s, "POST", "/gateway/recordings.result.write", body, "")
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	events := eventPage(t, s, "").Events
+	if len(events) != 2 || events[0].Revision == "" || events[0].Revision == events[1].Revision {
+		t.Fatal(events)
 	}
 }

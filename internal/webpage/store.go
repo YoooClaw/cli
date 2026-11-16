@@ -81,6 +81,8 @@ type Payload struct {
 
 // Entry 是 index.json 里的一条网页记录。字段与 TS / Python 两端严格对齐。
 type Entry struct {
+	// ContextRevision is populated only for the committed-content callback.
+	ContextRevision string `json:"-"`
 	URLHash         string `json:"urlHash"`
 	CanonicalURL    string `json:"canonicalUrl"`
 	URL             string `json:"url,omitempty"`
@@ -233,7 +235,9 @@ func Ingest(dir string, payload Payload, clientLabel string, logger Logger, onCo
 		after := contextContentHash(dir, current)
 		if current != nil && after != "" && before != after {
 			for _, notify := range onCommit {
-				notify(*current, err != nil)
+				entry := *current
+				entry.ContextRevision = after
+				notify(entry, err != nil)
 			}
 		}
 	}()

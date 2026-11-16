@@ -59,3 +59,86 @@ HTTP API key 只能读取自己的私有事件及共享事件；gateway token/�
 游标过期或代次不符返回 `410 CURSOR_EXPIRED` 和新 `highWatermark`。消费者先保存该水位，再重新读取当前上下文，随后从该水位补读。SSE 已建立后遇到过期，发送 `event: error`，携带同样的错误码及水位，然后关闭。非法游标返回 400，日志不可用返回 503。
 
 数据与事件日志不是原子事务：进程在数据写入后、事件记录前崩溃可能漏事件。日志写入失败会记录 `context.event.persist_failed`，不会回滚已提交的数据，也不会改变原有成功响应。若启动时日志初始化失败，daemon 仍可接收数据，事件接口返回 503；修复存储后需重启以重新初始化日志。消费者应首次启动和定期重新核对当前数据，不能把通知日志作为业务数据的唯一副本。
+
+## 变更定位（2026-11-16）
+
+新增能力标记 `context.events.read-hints.v1`。
+`schemaVersion` 仍为 1；新增字段向后兼容。
+旧日志可以缺少这些字段，消费者按来源重新核对。
+
+| 字段 | 含义 |
+| --- | --- |
+| `readScope` | `dates` 按日期读取；`resources` 按对象读取；`snapshot` 读取当前快照 |
+| `changedDates` | 实际成功写入的存储日期，格式 YYYY-MM-DD |
+| `datesTruncated` | 日期超过 100 个时为 true；消费者需核对完整来源 |
+| `resourceIds` | 现有对象读取入口使用的 ID，最多 100 个 |
+| `resourcesTruncated` | 对象列表截断；消费者需分页核对来源 |
+| `revision` | 单个对象或快照的提交指纹；用于判断提交版本变化 |
+
+`readScope` 只描述读取粒度，不授予访问权限。
+继续使用 `scope` 及现有鉴权读取数据。
+`changedDates` 排序并去重，只包含已提交部分。
+失败日期、重复通知所在日期不会混入结果。
+日历清空也携带被清空的日期。
+
+| 来源 | readScope | 定位与版本 |
+| --- | --- | --- |
+| notifications | dates | 新增通知实际存储日期；按 daemon 本地时区划日 |
+| locations | dates | 追加文件使用的接收日期，不是位置观测日期 |
+| calendars | dates | 实际变化的日期文件，含清空；遵循日程来源日期 |
+| health-data | dates | 成功替换的来源日期，含历史修订 |
+| reminders | snapshot | `revision` 为现有提醒快照 revision |
+| images | resources | imageId；revision 区分元数据及文件完成状态 |
+| recordings | resources | recordingId；revision 为可读取正文/摘要的指纹 |
+| web-pages | resources | URL hash；revision 为可读取内容的指纹 |
+| data | resources | 对象 ID；revision 为已提交内容的 SHA-256 |
+
+日期来源不伪造单条资源 ID。
+通知上报 ID 不是现有资产读取接口的 recordId。
+日历、健康的日期粒度也覆盖删除和清空。
+消费者读取对应日期后，比较记录及内容版本。
+
+`revision` 不是递增序号或事件排序依据。
+除表中明确对应的字段外，它不等同于读取 API 的版本字段。
+它不提供历史版本读取或快照隔离。
+读取时可能已存在更新的内容，应处理最新版本。
+不同事件时间不能替代日期或版本判断。
+图片的 revision 是提交状态指纹，不是图片字节 hash。
+`data` 内容相同、对象不同，仍需分别处理对象 ID。
+
+历史健康修订事件示例：
+
+```json
+{
+  "schemaVersion": 1,
+  "eventId": "<uuid>",
+  "cursor": "<opaque-cursor>",
+  "occurredAt": "2026-11-16T00:00:00Z",
+  "source": "health-data",
+  "operation": "replace",
+  "scope": {"kind": "shared"},
+  "result": {"committedCount": 1, "partial": false, "unit": "days"},
+  "readScope": "dates",
+  "changedDates": ["2026-10-19"]
+}
+```
+
+本机宿主使用相同 profile 的已有只读 CLI。
+例如 `health-data get --date 2026-10-19`。
+日历及位置使用 `list --date` 读取对应日期。
+通知使用 `notification search --from/--to` 查询日期范围。
+跨进程消费者仍须处理读取接口的分页和权限。
+现有 `/assets` 接口不因此增加任意日期过滤参数。
+
+推荐消费流程：
+
+1. 按 eventId 去重并持久接收事件。
+2. 按 profile、scope、source 合并读取提示。
+3. 按日期、对象或快照读取当前内容。
+4. 生成或升级 signal，再执行订阅路由。
+5. Thread 和 Discover 分别聚合待处理信号。
+
+事件不携带正文、会话内容或 Thread ID。
+语义分类、Thread 归属与运行时机由消费者决定。
+新字段不消除提交与事件之间的崩溃窗口。
+首次接入、游标失效和定期对账仍不可省略。

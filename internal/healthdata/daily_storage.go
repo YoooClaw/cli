@@ -13,19 +13,19 @@ import (
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
-func (s *Storage) replaceDaily(b *DailyBatch) (committed int, err error) {
+func (s *Storage) replaceDaily(b *DailyBatch) (result Result, err error) {
 	if err := fsutil.EnsureDir(s.dir, fsutil.DirMode); err != nil {
-		return committed, err
+		return result, err
 	}
 	if err := s.ensureDailyReadme(); err != nil {
-		return committed, err
+		return result, err
 	}
 	collected, _ := time.Parse(time.RFC3339Nano, b.CollectedAt)
 	for _, day := range b.Days {
 		path := filepath.Join(s.dir, day.Date+".jsonl")
 		prior, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
-			return committed, err
+			return result, err
 		}
 		if len(prior) > 0 {
 			var priorHeader struct {
@@ -33,7 +33,7 @@ func (s *Storage) replaceDaily(b *DailyBatch) (committed int, err error) {
 			}
 			first := bytes.SplitN(bytes.TrimSpace(prior), []byte{'\n'}, 2)[0]
 			if json.Unmarshal(first, &priorHeader) != nil || priorHeader.SchemaVersion > 3 || priorHeader.SchemaVersion < 1 {
-				return committed, fmt.Errorf("unrecognized health file at %s", day.Date)
+				return result, fmt.Errorf("unrecognized health file at %s", day.Date)
 			}
 			var header dailyHeader
 			scan := bufio.NewScanner(bytes.NewReader(prior))
@@ -49,7 +49,7 @@ func (s *Storage) replaceDaily(b *DailyBatch) (committed int, err error) {
 		encoder := json.NewEncoder(&out)
 		encoder.SetEscapeHTML(false)
 		if err := encoder.Encode(header); err != nil {
-			return committed, err
+			return result, err
 		}
 		metrics := append([]json.RawMessage(nil), day.Items...)
 		sort.Slice(metrics, func(i, j int) bool {
@@ -63,7 +63,7 @@ func (s *Storage) replaceDaily(b *DailyBatch) (committed int, err error) {
 		for _, item := range metrics {
 			var compact bytes.Buffer
 			if err := json.Compact(&compact, item); err != nil {
-				return committed, err
+				return result, err
 			}
 			out.Write(compact.Bytes())
 			out.WriteByte('\n')
@@ -73,7 +73,7 @@ func (s *Storage) replaceDaily(b *DailyBatch) (committed int, err error) {
 				Type    string       `json:"type"`
 				Session SleepSession `json:"session"`
 			}{"sleepSession", session}); err != nil {
-				return committed, err
+				return result, err
 			}
 		}
 		details := []struct {
@@ -85,7 +85,7 @@ func (s *Storage) replaceDaily(b *DailyBatch) (committed int, err error) {
 		for _, detail := range details {
 			encoded, err := json.Marshal(detail.Value)
 			if err != nil {
-				return committed, err
+				return result, err
 			}
 			if string(encoded) == "null" || string(encoded) == "[]" {
 				continue
@@ -94,19 +94,20 @@ func (s *Storage) replaceDaily(b *DailyBatch) (committed int, err error) {
 				Type    string          `json:"type"`
 				Records json.RawMessage `json:"records"`
 			}{detail.Type, encoded}); err != nil {
-				return committed, err
+				return result, err
 			}
 		}
 		if out.Len() > MaxDayBytes {
-			return committed, fmt.Errorf("health day exceeds 4 MiB")
+			return result, fmt.Errorf("health day exceeds 4 MiB")
 		}
 		if bytes.Equal(prior, out.Bytes()) {
 			continue
 		}
 		if err := fsutil.WriteAtomic(path, out.Bytes(), fsutil.SecretFileMode); err != nil {
-			return committed, err
+			return result, err
 		}
-		committed++
+		result.Committed++
+		result.ChangedDates = append(result.ChangedDates, day.Date)
 	}
-	return committed, nil
+	return result, nil
 }

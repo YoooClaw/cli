@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"net/http"
 
 	"github.com/YoooClaw/cli/internal/healthdata"
@@ -24,8 +25,8 @@ func (s *server) handleHealthDataIngest(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errBody("INVALID_PARAMS", "collectedAt is too far in the future"))
 		return
 	}
-	committed, err := s.healthDataStorage.AppendResult(batch)
-	s.publishContext("health-data", "replace", "", committed, err != nil, "days")
+	result, err := s.healthDataStorage.AppendDetails(batch)
+	s.publishContext("health-data", "replace", "", result.Committed, err != nil, "days", contextevent.Details{ChangedDates: result.ChangedDates})
 	if err != nil {
 		s.logger.Error(fmt.Sprintf("[health-data] requestId=%s write failed: %v", r.Header.Get(relay.InternalRequestIDHeader), err))
 		writeJSON(w, http.StatusInternalServerError, errBody("HEALTH_DATA_WRITE_FAILED", "健康数据保存失败"))

@@ -25,6 +25,7 @@ type Result struct {
 	Applied      bool
 	FilesWritten int
 	ChangedFiles int
+	ChangedDates []string
 }
 
 // Storage 串行覆盖同一 profile 的日程日期文件，以字节比较标记内容变化。
@@ -54,6 +55,7 @@ func (s *Storage) Replace(batch *Batch) (Result, error) {
 		result.FilesWritten++
 		if changed {
 			result.ChangedFiles++
+			result.ChangedDates = append(result.ChangedDates, file.date)
 		}
 	}
 	// 日期文件写成功后再推进水位；中途失败时客户端重试同一份快照会整批重放。

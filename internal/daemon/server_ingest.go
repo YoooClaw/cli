@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"net/http"
 	"strings"
 
@@ -365,8 +366,8 @@ func errorSuffix(err string) string {
 }
 
 func (s *server) notifyRecordingContent(entry recording.Entry, partial bool) {
-	s.publishContext("recordings", "upsert", entry.ClientLabel, 1, partial, "objects", entry.ID)
+	s.publishContext("recordings", "upsert", entry.ClientLabel, 1, partial, "objects", contextevent.Details{Revision: entry.ContextRevision}, entry.ID)
 }
 func (s *server) notifyImageContent(entry imgstore.Entry) {
-	s.publishContext("images", "upsert", entry.ClientLabel, 1, false, "objects", entry.ImageID)
+	s.publishContext("images", "upsert", entry.ClientLabel, 1, false, "objects", contextevent.Details{Revision: contextRevision(entry)}, entry.ImageID)
 }

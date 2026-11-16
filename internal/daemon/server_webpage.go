@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"net/http"
 	"strings"
 
@@ -16,7 +17,7 @@ func (s *server) handleWebPageIngest(w http.ResponseWriter, r *http.Request, aut
 		return
 	}
 	result, err := webpage.Ingest(s.ctx.Paths.WebPages, body, auth.clientLabel, s.logger, func(entry webpage.Entry, partial bool) {
-		s.publishContext("web-pages", "upsert", entry.ClientLabel, 1, partial, "objects", entry.URLHash)
+		s.publishContext("web-pages", "upsert", entry.ClientLabel, 1, partial, "objects", contextevent.Details{Revision: entry.ContextRevision}, entry.URLHash)
 	})
 	if err != nil {
 		var ingestErr *webpage.Error

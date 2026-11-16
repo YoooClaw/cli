@@ -1,9 +1,11 @@
 package contextevent
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -139,5 +141,39 @@ func TestConcurrentPublishAndFailedWrite(t *testing.T) {
 	p, _, _ = l.Read("", 100, "")
 	if len(p.Events) != 50 {
 		t.Fatal("failed write became visible")
+	}
+}
+
+func TestDateHintsBoundedAndSurviveReplay(t *testing.T) {
+	dir := t.TempDir()
+	log := openTest(t, dir, Options{})
+	ev := sample("a")
+	ev.Details = Details{ReadScope: "dates", Revision: "opaque-revision"}
+	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 104; i >= 0; i-- {
+		ev.ChangedDates = append(ev.ChangedDates, start.AddDate(0, 0, i).Format("2006-01-02"))
+	}
+	ev.ChangedDates = append(ev.ChangedDates, ev.ChangedDates[0])
+	original := append([]string(nil), ev.ChangedDates...)
+	got, err := log.Append(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ChangedDates) != 100 || !got.DatesTruncated || got.ChangedDates[0] != "2020-01-01" {
+		t.Fatal(got)
+	}
+	if !reflect.DeepEqual(original, ev.ChangedDates) {
+		t.Fatal("modified caller slice")
+	}
+	reopened := openTest(t, dir, Options{})
+	page, _, err := reopened.Read("", 100, "a")
+	if err != nil || len(page.Events) != 1 || !reflect.DeepEqual(page.Events[0].Details, got.Details) {
+		t.Fatal(page, err)
+	}
+	raw, _ := json.Marshal(got)
+	var fields map[string]any
+	json.Unmarshal(raw, &fields)
+	if fields["readScope"] != "dates" || fields["revision"] != "opaque-revision" || fields["datesTruncated"] != true {
+		t.Fatal(string(raw))
 	}
 }
