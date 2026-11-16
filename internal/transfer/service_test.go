@@ -415,3 +415,56 @@ func TestRecordingMetadataExtensionsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRecordingExtensionsMigrationRoundTrip(t *testing.T) {
+	src, dst := newEnv(t), newEnv(t)
+	var params recording.ResultWriteParams
+	raw := []byte(`{"recordingId":"raw-roundtrip","recording":{"name":"raw","created_at":"2026-11-16T00:00:00Z","future":{"large":9007199254740993}},"future":[9007199254740993,[3,1,2],null],"transcript":{"text":"body","source":{"future":[2,1]},"future":[9007199254740993]},"summary":{"markdown":"summary","structured":{"items":[3,2,1,9007199254740993]}}}`)
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recording.HandleRecordingResultWrite(params, src.svc.Recordings, testutil.Logger{T: t}, recording.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, exportAll(t, src.roots)))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	after, ok := dst.svc.Recordings.FindByID(params.RecordingID)
+	if !ok {
+		t.Fatal("missing recording")
+	}
+	if string(after.ResultExtra["future"]) != `[9007199254740993,[3,1,2],null]` {
+		t.Fatalf("root extensions: %s", after.ResultExtra["future"])
+	}
+	if string(after.Metadata.Extra["future"]) != `{"large":9007199254740993}` {
+		t.Fatalf("metadata: %s", after.Metadata.Extra["future"])
+	}
+	if after.SummaryData == nil || string(after.SummaryData.Structured) != `{"items":[3,2,1,9007199254740993]}` {
+		t.Fatalf("summary: %+v", after.SummaryData)
+	}
+	transcript, err := os.ReadFile(filepath.Join(dst.roots[TypeRecordings], after.TranscriptDataFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(transcript), "9007199254740993") {
+		t.Fatal("transcript lost number")
+	}
+	// No whole-request copy or duplicate summary Markdown in the index.
+	index, err := os.ReadFile(filepath.Join(dst.roots[TypeRecordings], "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(index), "appDataFile") || strings.Contains(string(index), `"markdown"`) {
+		t.Fatal("duplicate content in index")
+	}
+	again := newEnv(t)
+	result = runPlan(t, again.svc, stagePlan(t, again.svc, exportAll(t, dst.roots)))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatal(result)
+	}
+	final, _ := again.svc.Recordings.FindByID(params.RecordingID)
+	if string(final.ResultExtra["future"]) != string(after.ResultExtra["future"]) {
+		t.Fatal("second migration lost extensions")
+	}
+}

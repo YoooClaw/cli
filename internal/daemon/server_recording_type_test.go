@@ -200,3 +200,24 @@ func TestRecordingReadPreservesExtensionsWithoutOverridingRuntime(t *testing.T) 
 		}
 	}
 }
+
+func TestRecordingResultGatewayPreservesBusinessJSON(t *testing.T) {
+	srv, ts := newTestServer(t, "")
+	dir := t.TempDir()
+	store := withRecordingsAt(t, srv, dir)
+	withCaptureRecordings(t, srv)
+	response := asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.result.write", "phone-a", `{"recordingId":"raw-gateway","future":{"items":[9007199254740993,null,2,1]},"recording":{"name":"test","markers":[{"index":2,"timestamp_ms":10,"future":[2,1]}]},"transcript":{"text":"text","source":{"extra":true}},"summary":{"markdown":"summary","extra":[3,2,1]}}`)
+	if response["ok"] != true {
+		t.Fatalf("write: %v", response)
+	}
+	entry, ok := store.FindByID("raw-gateway")
+	if !ok {
+		t.Fatal("missing recording")
+	}
+	if string(entry.ResultExtra["future"]) != `{"items":[9007199254740993,null,2,1]}` {
+		t.Fatalf("lost JSON: %s", entry.ResultExtra["future"])
+	}
+	if len(entry.Metadata.Markers) != 1 || string(entry.Metadata.Markers[0].Extra["future"]) != `[2,1]` {
+		t.Fatal("marker extensions lost")
+	}
+}

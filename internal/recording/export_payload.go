@@ -81,14 +81,15 @@ type ExportRecording struct {
 
 // ExportPayload mirrors recordings.result.write params.
 type ExportPayload struct {
-	RecordingID    string            `json:"recordingId"`
-	SourceType     string            `json:"sourceType"`
-	OssTaskID      string            `json:"ossTaskId"`
-	OssURL         string            `json:"ossUrl"`
-	DurationMillis *float64          `json:"durationMillis,omitempty"`
-	Recording      ExportRecording   `json:"recording"`
-	Transcript     *ResultTranscript `json:"transcript,omitempty"`
-	Summary        *ResultSummary    `json:"summary,omitempty"`
+	Extra          map[string]json.RawMessage `json:"-"`
+	RecordingID    string                     `json:"recordingId"`
+	SourceType     string                     `json:"sourceType"`
+	OssTaskID      string                     `json:"ossTaskId"`
+	OssURL         string                     `json:"ossUrl"`
+	DurationMillis *float64                   `json:"durationMillis,omitempty"`
+	Recording      ExportRecording            `json:"recording"`
+	Transcript     *ResultTranscript          `json:"transcript,omitempty"`
+	Summary        *ResultSummary             `json:"summary,omitempty"`
 }
 
 type ExportContentPresent struct {
@@ -110,6 +111,8 @@ type exportSource struct {
 }
 
 type exportVersionMaterial struct {
+	ResultExtra           map[string]json.RawMessage `json:"resultExtra,omitempty"`
+	SummaryData           *ResultSummary             `json:"summaryData,omitempty"`
 	MetadataExtra         map[string]json.RawMessage `json:"metadataExtra,omitempty"`
 	RecordingID           string                     `json:"recordingId"`
 	Name                  string                     `json:"name"`
@@ -199,6 +202,16 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 	}
 	transcript, transcriptPresent := buildExportTranscript(doc, string(transcriptMD), string(srtRaw))
 	summary, summaryPresent := buildExportSummary(string(summaryMD))
+	if entry.SummaryData != nil {
+		value := *entry.SummaryData
+		value.Extra = mergeMetadataExtra(nil, value.Extra)
+		value.Markdown = string(summaryMD)
+		if value.Format == "" {
+			value.Format = "markdown"
+		}
+		summary = &value
+		summaryPresent = summaryPresent || len(value.Structured) > 0
+	}
 	if transcript == nil && summary == nil {
 		// Audio-only compatibility: old DTOs carry empty objects.
 		transcript = &ResultTranscript{Segments: []ResultTranscriptSegment{}}
@@ -209,6 +222,7 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		markers = []Marker{}
 	}
 	payload := ExportPayload{
+		Extra:       mergeMetadataExtra(nil, entry.ResultExtra),
 		RecordingID: entry.ID,
 		// 接收方按 sourceType 把导出的录音写回对应来源；旧索引条目回退 mobile_app。
 		SourceType: entry.RecordingSource(),
@@ -227,6 +241,8 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		payload.DurationMillis = &millis
 	}
 	material := exportVersionMaterial{
+		ResultExtra:   entry.ResultExtra,
+		SummaryData:   entry.SummaryData,
 		MetadataExtra: entry.Metadata.Extra,
 		RecordingID:   entry.ID, Name: entry.Metadata.Name, Title: entry.Title, CreatedAt: entry.Metadata.CreatedAt,
 		DurationSec: entry.Metadata.DurationSec, RecordingType: NormalizeRecordingType(entry.Metadata.RecordingType),
@@ -282,11 +298,13 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 			})
 		}
 		out := &ResultTranscript{
+			Extra:       mergeMetadataExtra(nil, doc.ResultExtra),
 			GeneratedAt: doc.GeneratedAt, Title: doc.Normalized.Title, Category: doc.Normalized.Category,
 			Brief: doc.Normalized.Summary, Text: doc.Normalized.Text, Segments: segments, Markdown: markdown,
 		}
-		if doc.Source.Provider != "" || doc.Source.TaskID != "" || doc.Source.RequestID != "" || doc.Source.Status != "" {
+		if len(doc.Source.Extra) > 0 || doc.Source.Provider != "" || doc.Source.TaskID != "" || doc.Source.RequestID != "" || doc.Source.Status != "" {
 			out.Source = &ResultTranscriptSource{
+				Extra:    mergeMetadataExtra(nil, doc.Source.Extra),
 				Provider: doc.Source.Provider, TaskID: doc.Source.TaskID,
 				RequestID: doc.Source.RequestID, Status: doc.Source.Status,
 			}

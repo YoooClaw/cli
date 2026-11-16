@@ -11,10 +11,11 @@ const transcriptDocumentSchemaVersion = 1
 
 // TranscriptSource 是 transcript-data 的来源信息。
 type TranscriptSource struct {
-	Provider  string `json:"provider"`
-	TaskID    string `json:"taskId,omitempty"`
-	RequestID string `json:"requestId,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Extra     map[string]json.RawMessage `json:"-"`
+	Provider  string                     `json:"provider"`
+	TaskID    string                     `json:"taskId,omitempty"`
+	RequestID string                     `json:"requestId,omitempty"`
+	Status    string                     `json:"status,omitempty"`
 	// Delivery 标记结果写入通道，例如 result.write 写入时为 "result-write"。
 	Delivery string `json:"delivery,omitempty"`
 }
@@ -41,10 +42,11 @@ type TranscriptItem struct {
 
 // TranscriptDocument 是转写结构化主存储。
 type TranscriptDocument struct {
-	SchemaVersion int              `json:"schemaVersion"`
-	RecordingID   string           `json:"recordingId"`
-	GeneratedAt   string           `json:"generatedAt"`
-	Source        TranscriptSource `json:"source"`
+	ResultExtra   map[string]json.RawMessage `json:"resultExtra,omitempty"`
+	SchemaVersion int                        `json:"schemaVersion"`
+	RecordingID   string                     `json:"recordingId"`
+	GeneratedAt   string                     `json:"generatedAt"`
+	Source        TranscriptSource           `json:"source"`
 	Normalized    struct {
 		Title    string              `json:"title,omitempty"`
 		Category string              `json:"category,omitempty"`
