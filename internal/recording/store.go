@@ -53,16 +53,17 @@ const (
 
 // Metadata 是录音元数据（index.json entry.metadata）。
 type Metadata struct {
-	Name            string   `json:"name"`
-	DurationSec     float64  `json:"duration_sec"`
-	DurationDisplay string   `json:"duration_display"`
-	FileSizeDisplay string   `json:"file_size_display,omitempty"`
-	CreatedAt       string   `json:"created_at"`
-	Status          string   `json:"transfer_status,omitempty"`
-	Location        any      `json:"location,omitempty"`
-	OssAudioURL     string   `json:"oss_audio_url"`
-	OssSrtURL       string   `json:"oss_srt_url,omitempty"`
-	Markers         []Marker `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
+	Extra           map[string]json.RawMessage `json:"-"`
+	Name            string                     `json:"name"`
+	DurationSec     float64                    `json:"duration_sec"`
+	DurationDisplay string                     `json:"duration_display"`
+	FileSizeDisplay string                     `json:"file_size_display,omitempty"`
+	CreatedAt       string                     `json:"created_at"`
+	Status          string                     `json:"transfer_status,omitempty"`
+	Location        any                        `json:"location,omitempty"`
+	OssAudioURL     string                     `json:"oss_audio_url"`
+	OssSrtURL       string                     `json:"oss_srt_url,omitempty"`
+	Markers         []Marker                   `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
 	// RecordingType 只在请求显式携带时写入。nil 表示未提供（历史数据或
 	// update 省略），读取时按 normal 输出；空串及其他值在写入入口拒绝。
 	RecordingType *string `json:"recording_type,omitempty"`
@@ -512,6 +513,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	now := nowISO()
 	if idx := s.findIndexLocked(recordingID); idx >= 0 {
 		entry := &s.index.Recordings[idx]
+		metadata.Extra = mergeMetadataExtra(entry.Metadata.Extra, metadata.Extra)
 		if metadata.RecordingType == nil {
 			metadata.RecordingType = entry.Metadata.RecordingType
 		}
@@ -1047,6 +1049,9 @@ func (s *Storage) ImportEntry(recordingID string, merge func(current *Entry) (*E
 	next, err := merge(current)
 	if err != nil || next == nil {
 		return err
+	}
+	if current != nil {
+		next.Metadata.Extra = mergeMetadataExtra(current.Metadata.Extra, next.Metadata.Extra)
 	}
 	if current != nil && next.Metadata.RecordingType == nil {
 		next.Metadata.RecordingType = current.Metadata.RecordingType

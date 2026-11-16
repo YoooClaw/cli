@@ -69,13 +69,14 @@ func exportSourceKindOf(err error) ExportSourceKind {
 // ExportRecording is the metadata projection allowed in writePayload. It
 // deliberately omits the old OSS URL and local paths.
 type ExportRecording struct {
-	Name            string   `json:"name"`
-	CreatedAt       string   `json:"created_at"`
-	DurationSec     float64  `json:"duration_sec"`
-	DurationDisplay string   `json:"duration_display"`
-	RecordingType   string   `json:"recording_type"`
-	Location        any      `json:"location,omitempty"`
-	Markers         []Marker `json:"markers"`
+	Extra           map[string]json.RawMessage `json:"-"`
+	Name            string                     `json:"name"`
+	CreatedAt       string                     `json:"created_at"`
+	DurationSec     float64                    `json:"duration_sec"`
+	DurationDisplay string                     `json:"duration_display"`
+	RecordingType   string                     `json:"recording_type"`
+	Location        any                        `json:"location,omitempty"`
+	Markers         []Marker                   `json:"markers"`
 }
 
 // ExportPayload mirrors recordings.result.write params.
@@ -109,19 +110,20 @@ type exportSource struct {
 }
 
 type exportVersionMaterial struct {
-	RecordingID           string              `json:"recordingId"`
-	Name                  string              `json:"name"`
-	Title                 string              `json:"title,omitempty"`
-	CreatedAt             string              `json:"createdAt"`
-	DurationSec           float64             `json:"durationSec"`
-	RecordingType         string              `json:"recordingType"`
-	Location              any                 `json:"location,omitempty"`
-	Markers               []Marker            `json:"markers,omitempty"`
-	TranscriptDataSHA256  string              `json:"transcriptDataSha256,omitempty"`
-	TranscriptMarkdownSHA string              `json:"transcriptMarkdownSha256,omitempty"`
-	SummaryMarkdownSHA    string              `json:"summaryMarkdownSha256,omitempty"`
-	SrtSHA256             string              `json:"srtSha256,omitempty"`
-	Audio                 ExportAudioIdentity `json:"audio"`
+	MetadataExtra         map[string]json.RawMessage `json:"metadataExtra,omitempty"`
+	RecordingID           string                     `json:"recordingId"`
+	Name                  string                     `json:"name"`
+	Title                 string                     `json:"title,omitempty"`
+	CreatedAt             string                     `json:"createdAt"`
+	DurationSec           float64                    `json:"durationSec"`
+	RecordingType         string                     `json:"recordingType"`
+	Location              any                        `json:"location,omitempty"`
+	Markers               []Marker                   `json:"markers,omitempty"`
+	TranscriptDataSHA256  string                     `json:"transcriptDataSha256,omitempty"`
+	TranscriptMarkdownSHA string                     `json:"transcriptMarkdownSha256,omitempty"`
+	SummaryMarkdownSHA    string                     `json:"summaryMarkdownSha256,omitempty"`
+	SrtSHA256             string                     `json:"srtSha256,omitempty"`
+	Audio                 ExportAudioIdentity        `json:"audio"`
 }
 
 // prepareExportSource reads one consistent snapshot of the audio and text
@@ -211,7 +213,8 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		// 接收方按 sourceType 把导出的录音写回对应来源；旧索引条目回退 mobile_app。
 		SourceType: entry.RecordingSource(),
 		Recording: ExportRecording{
-			Name: entry.Metadata.Name, CreatedAt: entry.Metadata.CreatedAt,
+			Extra: mergeMetadataExtra(nil, entry.Metadata.Extra),
+			Name:  entry.Metadata.Name, CreatedAt: entry.Metadata.CreatedAt,
 			DurationSec: entry.Metadata.DurationSec, DurationDisplay: entry.Metadata.DurationDisplay,
 			RecordingType: NormalizeRecordingType(entry.Metadata.RecordingType),
 			Location:      entry.Metadata.Location, Markers: markers,
@@ -224,7 +227,8 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		payload.DurationMillis = &millis
 	}
 	material := exportVersionMaterial{
-		RecordingID: entry.ID, Name: entry.Metadata.Name, Title: entry.Title, CreatedAt: entry.Metadata.CreatedAt,
+		MetadataExtra: entry.Metadata.Extra,
+		RecordingID:   entry.ID, Name: entry.Metadata.Name, Title: entry.Title, CreatedAt: entry.Metadata.CreatedAt,
 		DurationSec: entry.Metadata.DurationSec, RecordingType: NormalizeRecordingType(entry.Metadata.RecordingType),
 		Location: entry.Metadata.Location, Markers: entry.Metadata.Markers,
 		TranscriptDataSHA256:  hashBytes(dataRaw),
