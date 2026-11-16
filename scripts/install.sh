@@ -7,7 +7,7 @@
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/bin
 #
 # 选项：
-#   --version <v>   指定版本；macOS 默认及 latest 暂固定 0.16.2
+#   --version <v>   指定版本（默认使用最新正式版）
 #   --dir <path>    安装目录（默认优先 ~/.local/bin，其次为可写的 /usr/local/bin）
 #   --force         覆盖已存在二进制
 #   --activate      安装后明确将 Relay owner 切换到 CLI（默认保留当前 owner）
@@ -17,7 +17,7 @@
 #   --no-modify-path 不修改 shell 配置（默认行为，兼容旧调用）
 #
 # 行为：
-#   - macOS 默认或 --version latest 暂固定 0.16.2；明确版本号不受影响
+#   - 默认或 --version latest 使用最新正式版
 #   - 检测 OS/Arch，下载 yoooclaw-<os>-<arch>（OSS 渲染版从 OSS 下载，源码版从 GitHub Release）
 #   - 校验 sha256（从同目录 checksums.txt 取）
 #   - 写入 <dir>/yoooclaw，并 symlink yc -> yoooclaw
@@ -97,14 +97,9 @@ ASSET="yoooclaw-${OS}-${ARCH}"
 need_cmd() { command -v "$1" >/dev/null 2>&1 || err "缺少依赖: $1"; }
 need_cmd curl
 
-# Temporary macOS hold: resolve both default and explicit latest before reading any pointer.
-if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
-  if [ "$OS" = "darwin" ]; then
-    VERSION="0.16.2"
-    info "macOS 默认安装暂固定为 ${VERSION}"
-  else
-    VERSION=""
-  fi
+# Normalize an explicit latest request before resolving the release pointer.
+if [ "$VERSION" = "latest" ]; then
+  VERSION=""
 fi
 
 if [ "$OSS_RENDERED" = "1" ]; then

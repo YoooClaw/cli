@@ -64,12 +64,12 @@ func TestInstallScriptPinsGitHubDownloadToOSSLatest(t *testing.T) {
 		wantPathModified bool
 		wantActivated    bool
 	}{
-		// macOS defaults remain pinned while explicit versions retain their meaning.
-		{name: "stable", wantVersion: "0.16.2"},
-		{name: "stable with legacy opt-out", args: []string{"--no-modify-path"}, wantVersion: "0.16.2"},
+		// All platforms follow OSS latest unless an explicit version is supplied.
+		{name: "stable", wantVersion: "0.7.2"},
+		{name: "stable with legacy opt-out", args: []string{"--no-modify-path"}, wantVersion: "0.7.2"},
 		{name: "explicit prerelease", args: []string{"--version", "0.8.0-beta.1"}, wantVersion: "0.8.0-beta.1"},
-		{name: "explicit path opt-in", args: []string{"--modify-path"}, wantVersion: "0.16.2", wantPathModified: true},
-		{name: "explicit owner activation", args: []string{"--activate"}, wantVersion: "0.16.2", wantActivated: true},
+		{name: "explicit path opt-in", args: []string{"--modify-path"}, wantVersion: "0.7.2", wantPathModified: true},
+		{name: "explicit owner activation", args: []string{"--activate"}, wantVersion: "0.7.2", wantActivated: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -686,7 +686,7 @@ case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac
 	}
 }
 
-func TestMacOSDefaultVersionHold(t *testing.T) {
+func TestInstallPlatformsResolveLatest(t *testing.T) {
 	raw, err := os.ReadFile("install.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -725,9 +725,6 @@ func TestMacOSDefaultVersionHold(t *testing.T) {
 						query := true
 						if version == "0.17.0" {
 							want = version
-							query = false
-						} else if osName == "Darwin" {
-							want = "0.16.2"
 							query = false
 						}
 						base := "https://github.com/YoooClaw/cli/releases/download/cli-v" + want

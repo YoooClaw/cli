@@ -175,3 +175,7 @@ npm 主包的 Mac 依赖固定为已发布的 `0.16.2`，其他平台依赖当�
 公共 Shell 安装脚本的 Mac 默认和 latest 仍固定为 `0.16.2`。
 日常 alpha 测试流水线保持原矩阵；不要将包含 Mac 的测试草稿直接用于生产。
 恢复 Mac 正式发布时，需同时恢复构建、签名公证、上传、草稿和 npm 依赖策略。
+
+## 0.17.2 恢复 macOS 发布
+
+新主体 Developer ID Application 证书（Team ID `7LMW5J8VKX`）启用后，正式标签流程恢复五平台构建、macOS 签名和 Apple 公证。npm 子包、两区 OSS 制品和 OTA 草稿均使用同一版本；Shell 安装器取消 macOS `0.16.2` 临时固定。以上临时 Linux / Windows 限制不再适用于 0.17.2 及后续正式发布。
