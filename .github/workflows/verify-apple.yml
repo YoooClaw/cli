@@ -2,7 +2,7 @@ name: Verify Apple signing and notarization
 
 on:
   push:
-    branches: [codex/apple-notarization-check]
+    branches: [release/apple-notarization-check]
 
 permissions:
   contents: read

@@ -10,7 +10,7 @@ on:
   pull_request:
     branches: [master, 'release/**']
   push:
-    branches: [master, 'release/**']
+    branches: [master, 'release/**', '!release/apple-notarization-check']
 
 concurrency:
   group: ${{ inputs.verify_oss_upload && 'cli-oss-upload-probe' || format('ci-{0}', github.ref) }}
