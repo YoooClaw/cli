@@ -21,6 +21,9 @@ func (s *Storage) ReadIndexSnapshot(ctx context.Context) ([]Entry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
 	info, err := os.Lstat(s.dir)
 	if os.IsNotExist(err) {
 		return []Entry{}, nil

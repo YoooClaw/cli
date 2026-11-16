@@ -27,7 +27,7 @@ func TestDownloadRenewalsDoNotExhaustRetryBudget(t *testing.T) {
 		n := refreshes.Add(1)
 		reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL + fmt.Sprintf("&generation=%d", n), "expiresAt": strconv.FormatInt(now.Load()+int64(30*time.Minute/time.Millisecond), 10)})
 	})
-	p := &renewingDownloadClient{cloud: c, taskID: testID, link: downloadLink{testID, signedURL, Number(now.Load() + int64(30*time.Minute/time.Millisecond))}, now: func() time.Time { return time.UnixMilli(now.Load()) }}
+	p := newRenewingDownloadClient(c, testID, downloadLink{testID, signedURL, Number(now.Load() + int64(30*time.Minute/time.Millisecond))}, func() time.Time { return time.UnixMilli(now.Load()) })
 	if _, err := p.currentURL(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestDownloadRenewalFailureIsSharedAndBounded(t *testing.T) {
 				}
 				reply(w, map[string]any{"taskId": testID, "signedUrl": signedURL, "expiresAt": expiry})
 			})
-			p := &renewingDownloadClient{cloud: c, taskID: testID, link: downloadLink{testID, signedURL, Number(time.Now().UnixMilli())}, now: time.Now}
+			p := newRenewingDownloadClient(c, testID, downloadLink{testID, signedURL, Number(time.Now().UnixMilli())}, time.Now)
 			var wg sync.WaitGroup
 			for i := 0; i < 8; i++ {
 				wg.Add(1)
@@ -139,7 +139,7 @@ func TestSDKDownloadRenewsURLWithoutRestarting(t *testing.T) {
 			left -= n
 		}
 	})
-	p := &renewingDownloadClient{cloud: c, taskID: testID, link: downloadLink{testID, signedURL, Number(now.Load() + int64(30*time.Minute/time.Millisecond))}, now: func() time.Time { return time.UnixMilli(now.Load()) }}
+	p := newRenewingDownloadClient(c, testID, downloadLink{testID, signedURL, Number(now.Load() + int64(30*time.Minute/time.Millisecond))}, func() time.Time { return time.UnixMilli(now.Load()) })
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "package")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -179,7 +179,7 @@ func TestUnexpectedExpiryStillUsesFailureRetryBudget(t *testing.T) {
 
 func TestDownloadRenewalHonorsCancellation(t *testing.T) {
 	c := mockOSSClient(t, func(w http.ResponseWriter, r *http.Request) { t.Error("request after cancellation") })
-	p := &renewingDownloadClient{cloud: c, taskID: testID, now: time.Now}
+	p := newRenewingDownloadClient(c, testID, downloadLink{}, time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := p.currentURL(ctx); err != context.Canceled {

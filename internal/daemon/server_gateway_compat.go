@@ -97,7 +97,8 @@ func gatewayMethodNames() []string {
 	return append(append([]string{"data.write", "data.import", "data.import.status", "data.import.retry"}, dataRecordMethods...), []string{
 		"agents.list", "channels.status", "chat.history", "cron.list", "health",
 		"lightrules.create", "lightrules.delete", "lightrules.list", "lightrules.update",
-		"notifications.push", "recordings.asr.init", "recordings.delete", "recordings.list",
+		"notifications.push", "recordings.asr.init", "recordings.delete", "recordings.export.start",
+		"recordings.export.status", "recordings.list",
 		"recordings.rename", "recordings.result.write", "recordings.retranscribe", "recordings.status",
 		"sessions.list", "usage.cost", "wake",
 	}...)

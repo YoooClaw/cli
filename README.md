@@ -386,7 +386,7 @@ Run `yoooclaw <service> --help` to see all shortcuts for a given service.
 yoooclaw notification search --app WeChat --keyword meeting --limit 50
 yoooclaw notification stats --dim app --from 2026-05-26
 yoooclaw notification summary-job create --from 2026-06-01T00:00:00+08:00 --chunk-size 150  # Chunked summarization for large notification batches: create→next→commit→result
-yoooclaw recording list [--source all|capture_app|smart_hardware] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
+yoooclaw recording list [--source all|mobile_app|capture_app] [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw recording setup-asr --mode api --language auto --non-interactive
 yoooclaw recording setup-asr --mode api --language zh-TW --non-interactive   # Traditional Chinese / Taiwan hint
 yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # Traditional Chinese script hint
@@ -415,8 +415,17 @@ An unfiltered `voice list` returns the rolling last 72 hours and includes an exp
 observed `app_id` and `app_name`; use `voice apps --all` for an explicit all-history inventory.
 Voice history is read from daily `audio-jsonl/YYYY-MM-DD.jsonl` files; returned IDs are stable
 `voice_id` strings and the CLI never falls back to the legacy SQLite database. Recording queries
-default to both `YoooClaw Capture` (`capture_app`) and YoooClaw smart hardware (`smart_hardware`),
-and every result includes its source.
+default to both `YoooClaw Capture` (`capture_app`) and YoooClaw smart hardware (`mobile_app`),
+and every result includes its source; `--source smart_hardware` remains an alias for `mobile_app`.
+Capture recordings use the gateway-written `voice/recordings/index.json` produced by
+`recordings.result.write` as the source of truth; the legacy `voice/recordings-jsonl/`
+index is read only as a fallback for recordings not yet migrated, and the gateway entry
+wins for the same ID.
+
+> **Upgrade note**: recording query output now uses `mobile_app` instead of `smart_hardware`
+> for `source_type`; `mobile_app` is the YoooClaw hardware connected through the App.
+> `--source smart_hardware` remains an input alias. Scripts that read JSON should map the old
+> value to `mobile_app`.
 
 ### 3. Raw API
 
@@ -488,7 +497,7 @@ yoooclaw recording events --id <recording-id> --watch
 
 Audio downloads reuse the Alibaba Cloud OSS Go SDK v2 multipart downloader (8 MiB parts, concurrency 3, Range + ETag validation): a flaky network resumes from the checkpoint within the current download instead of deleting the partial file and starting over; 5 GiB max per audio file, and an existing non-empty local audio file is reused. `recordings.result.write` accepts an optional top-level `ossTaskId` (the upload service's task ID, ≤256 characters, must come with an audio URL; not the ASR task ID in `transcript.source.taskId`): on a 403 the daemon uses the api-key that wrote the recording to fetch a fresh signed URL from the cloud and retries — the api-key is never sent to OSS. `ossTaskId` is stored in the recording index and echoed in the write response, `recording list/status` and `recording.status` events (omitted when absent); a new write without it clears the old value.
 
-Recording config and events live under the current profile at `recordings/asr-config.json` and `recordings/state/events.jsonl` respectively. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
+Recording config lives under the current profile at `recordings/asr-config.json`. `recording events` merges the `mobile_app` stream at `recordings/state/events.jsonl` and the `capture_app` stream at `voice/recordings/state/events.jsonl`, sorted by event time; every event carries `sourceType`, so merged results stay attributable to their source. Files under `transcripts/` / `summaries/` follow the naming convention `<YYYYMMDDHH>_<title>_<id>.md`, so filename order is chronological (files written before an upgrade keep their old names — no bulk migration). Recordings ingested via `/gateway/recordings.*` are tagged with the `clientLabel` of the api-key that wrote them, and the read side (`recording list/status/events`) is scoped the same way — a client connected over a Relay tunnel or a specific api-key only sees its own recordings, while loopback / gateway-token requests are unrestricted; `synced-web-page` and its endpoints follow the same scoping.
 
 ### Health Data Ingest
 

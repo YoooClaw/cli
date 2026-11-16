@@ -39,6 +39,9 @@ if (mode === "platform") {
   const deps = (rest[0] ?? "").trim().split(/\s+/).filter(Boolean);
   const optionalDependencies = {};
   for (const name of deps.sort()) optionalDependencies[name] = version;
+  if (rest[1]) {
+    for (const arch of ["arm64", "x64"]) optionalDependencies[`@yoooclaw/cli-darwin-${arch}`] = rest[1];
+  }
   write(dir, {
     name: "@yoooclaw/cli",
     description: "yoooclaw 独立 CLI（Go 实现，按平台分发原生二进制）",

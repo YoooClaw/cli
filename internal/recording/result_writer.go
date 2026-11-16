@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
@@ -23,10 +24,11 @@ type ResultTranscriptSource struct {
 
 // ResultTranscriptSegment 是 result.write 入参里的转写分段。
 type ResultTranscriptSegment struct {
-	Text      string   `json:"text"`
-	StartMS   *float64 `json:"startMs,omitempty"`
-	EndMS     *float64 `json:"endMs,omitempty"`
-	SpeakerID *int     `json:"speakerId,omitempty"`
+	Text        string   `json:"text"`
+	StartMS     *float64 `json:"startMs,omitempty"`
+	EndMS       *float64 `json:"endMs,omitempty"`
+	SpeakerID   *int     `json:"speakerId,omitempty"`
+	SpeakerName string   `json:"speakerName,omitempty"`
 }
 
 // ResultTranscript 是 result.write 写入的转写结果。
@@ -38,7 +40,9 @@ type ResultTranscript struct {
 	Brief       string                    `json:"brief,omitempty"`
 	Text        string                    `json:"text,omitempty"`
 	Segments    []ResultTranscriptSegment `json:"segments,omitempty"`
-	Markdown    string                    `json:"markdown,omitempty"`
+	// Markdown, when supplied, is authoritative to preserve App formatting.
+	// Callers changing segments/speaker names must regenerate it or omit it.
+	Markdown string `json:"markdown,omitempty"`
 }
 
 // ResultSummary 是 result.write 写入的总结结果。
@@ -53,6 +57,7 @@ type ResultSummary struct {
 type ResultWriteParams struct {
 	OssTaskID      *string           `json:"ossTaskId,omitempty"`
 	RecordingID    string            `json:"recordingId"`
+	SourceType     string            `json:"sourceType,omitempty"`
 	OssURL         string            `json:"ossUrl,omitempty"`
 	DurationMillis *float64          `json:"durationMillis,omitempty"`
 	Recording      *Metadata         `json:"recording,omitempty"`
@@ -74,6 +79,7 @@ type ResultWriteResult struct {
 	OssTaskID      string            `json:"ossTaskId,omitempty"`
 	OK             bool              `json:"ok"`
 	RecordingID    string            `json:"recordingId"`
+	SourceType     string            `json:"sourceType"`
 	TransferStatus string            `json:"transfer_status"`
 	AudioStatus    string            `json:"audio_status,omitempty"`
 	Stored         ResultWriteStored `json:"stored"`
@@ -92,15 +98,22 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	if !fsutil.IsSafeName(recordingID) {
 		return ResultWriteResult{}, errors.New("recordingId is invalid")
 	}
-	if params.Transcript == nil && params.Summary == nil {
+	oss := resultOssURL(params)
+	hasResult := params.Transcript != nil || params.Summary != nil
+	if !hasResult && (!storage.capture || oss == "") {
 		return ResultWriteResult{}, errors.New("transcript or summary is required")
 	}
 
 	taskID := ""
 	if params.OssTaskID != nil {
 		taskID = strings.TrimSpace(*params.OssTaskID)
-		if taskID == "" || len(taskID) > 256 || resultOssURL(params) == "" {
+		if taskID == "" || len(taskID) > 256 || oss == "" {
 			return ResultWriteResult{}, errors.New("ossTaskId requires a nonempty task ID (max 256 bytes) and ossUrl")
+		}
+	}
+	if params.Recording != nil {
+		if err := ValidateRecordingType(params.Recording.RecordingType); err != nil {
+			return ResultWriteResult{}, err
 		}
 	}
 	entry, found := storage.FindByID(recordingID)
@@ -165,12 +178,15 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		summaryText = st
 	}
 
-	updated, err := storage.MarkResultWritten(recordingID)
-	if err != nil {
-		return ResultWriteResult{}, err
+	updated := entry
+	if hasResult {
+		var err error
+		updated, err = storage.MarkResultWritten(recordingID)
+		if err != nil {
+			return ResultWriteResult{}, err
+		}
 	}
 
-	oss := resultOssURL(params)
 	if oss != "" {
 		if err := storage.SetResultAudioPending(recordingID, oss, taskID); err != nil {
 			return ResultWriteResult{}, err
@@ -194,6 +210,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	return ResultWriteResult{
 		OK:             true,
 		RecordingID:    recordingID,
+		SourceType:     updated.RecordingSource(),
 		TransferStatus: updated.Status,
 		AudioStatus:    updated.AudioStatus,
 		OssTaskID:      updated.OssTaskID,
@@ -278,6 +295,12 @@ func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, 
 		if value := strings.TrimSpace(incoming.OssSrtURL); value != "" && value != merged.OssSrtURL {
 			merged.OssSrtURL, changed = value, true
 		}
+		if incoming.RecordingType != nil {
+			value := *incoming.RecordingType
+			if merged.RecordingType == nil || *merged.RecordingType != value {
+				merged.RecordingType, changed = &value, true
+			}
+		}
 	}
 	if durationSec, ok := providedResultDurationSec(params); ok && durationSec != merged.DurationSec {
 		merged.DurationSec, changed = durationSec, true
@@ -346,7 +369,9 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 	if err := fsutil.WriteAtomic(filepath.Join(storage.TranscriptDataDir(), dataName), dataBytes, fsutil.ConfigFileMode); err != nil {
 		return "", nil, err
 	}
-	_ = storage.SetTranscriptDataFile(recordingID, dataName)
+	if err := storage.SetTranscriptDataFile(recordingID, dataName); err != nil {
+		return "", nil, err
+	}
 
 	markdown := normalizeMultiline(t.Markdown)
 	if strings.TrimSpace(markdown) == "" {
@@ -356,8 +381,12 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 	if err := fsutil.WriteAtomic(filepath.Join(storage.TranscriptsDir(), mdName), []byte(ensureTrailingNewline(markdown)), fsutil.ConfigFileMode); err != nil {
 		return "", nil, err
 	}
-	_ = storage.SetTranscriptFile(recordingID, mdName)
-	_ = storage.SetTitle(recordingID, title)
+	if err := storage.SetTranscriptFile(recordingID, mdName); err != nil {
+		return "", nil, err
+	}
+	if err := storage.SetTitle(recordingID, title); err != nil {
+		return "", nil, err
+	}
 	logger.Info("[recording-result] 转录文本已写入: " + recordingID)
 
 	return title, ExtractSourceTextListFromDocument(doc), nil
@@ -378,7 +407,9 @@ func writeResultSummary(recordingID string, sm ResultSummary, storage *Storage, 
 	if err := fsutil.WriteAtomic(filepath.Join(storage.SummariesDir(), name), []byte(ensureTrailingNewline(markdown)), fsutil.ConfigFileMode); err != nil {
 		return "", err
 	}
-	_ = storage.SetSummaryFile(recordingID, name)
+	if err := storage.SetSummaryFile(recordingID, name); err != nil {
+		return "", err
+	}
 	logger.Info("[recording-result] 总结已写入: " + recordingID)
 	return strings.TrimSpace(markdown), nil
 }
@@ -408,18 +439,32 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 	}
 	if entry.OssTaskID != "" && opts.URLRefresher != nil {
 		refresh := opts.URLRefresher(entry.ClientLabel, entry.OssTaskID)
-		downloadOpts.RefreshURL = func(ctx context.Context) (string, error) {
+		refreshLink := func(ctx context.Context) (DownloadLink, error) {
 			if !isCurrent() {
-				return "", errors.New("recording download superseded")
+				return DownloadLink{}, errors.New("recording download superseded")
 			}
 			next, err := refresh(ctx)
 			if err != nil {
-				return "", err
+				return DownloadLink{}, err
 			}
 			if !isCurrent() {
-				return "", errors.New("recording download superseded")
+				return DownloadLink{}, errors.New("recording download superseded")
 			}
 			return next, nil
+		}
+		downloadOpts.RefreshLink = refreshLink
+		// Fetch an initial link up front so the downloader knows the actual
+		// expiry and can refresh before a range fails, not only after a 403.
+		// If this lookup fails, keep the App-provided URL as fallback.
+		initialCtx, initialDone := context.WithTimeout(context.Background(), downloadLinkRefreshTimeout)
+		initial, initialErr := refreshLink(initialCtx)
+		initialDone()
+		if initialErr == nil && (initial.ExpiresAt.IsZero() || initial.ExpiresAt.After(time.Now().Add(downloadLinkRefreshWindow))) {
+			downloadOpts.InitialLink = &initial
+		} else if initialErr == nil {
+			logger.Warn("[recording-result] 初始签名链接有效期不足，使用原始链接: " + recordingID)
+		} else {
+			logger.Warn("[recording-result] 初始签名链接刷新失败，使用原始链接: " + safeDownloadError(initialErr) + ": " + recordingID)
 		}
 	}
 	result := DownloadFile(ossURL, staged, logger, downloadOpts)
@@ -429,7 +474,7 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 	if !result.OK {
 		message := "音频下载失败: " + result.Error
 		logger.Error("[recording-result] " + message + ": " + recordingID)
-		applied, setErr := storage.SetResultAudioFailed(recordingID, ossURL, message)
+		applied, setErr := storage.SetResultAudioFailedWithCode(recordingID, ossURL, message, result.ErrorCode)
 		if setErr != nil {
 			logger.Error("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID)
 			return
@@ -471,8 +516,12 @@ func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions
 			if ossURL == "" {
 				continue
 			}
-			if err := storage.SetResultAudioPending(entry.ID, ossURL); err != nil {
+			retry, err := storage.prepareResultAudioRecovery(entry)
+			if err != nil {
 				logger.Error("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error())
+				continue
+			}
+			if !retry {
 				continue
 			}
 			logger.Info("[recording-recovery] 补偿缺失音频: " + entry.ID)
@@ -504,6 +553,7 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 	}
 	event := StatusEvent{
 		RecordingID:        entry.ID,
+		SourceType:         entry.RecordingSource(),
 		OssTaskID:          entry.OssTaskID,
 		TransferStatus:     entry.Status,
 		AudioStatus:        entry.AudioStatus,
@@ -534,10 +584,11 @@ func normalizeResultSegments(segments []ResultTranscriptSegment) []TranscriptSeg
 			continue
 		}
 		out = append(out, TranscriptSegment{
-			Text:      text,
-			StartMS:   seg.StartMS,
-			EndMS:     seg.EndMS,
-			SpeakerID: seg.SpeakerID,
+			Text:        text,
+			StartMS:     seg.StartMS,
+			EndMS:       seg.EndMS,
+			SpeakerID:   seg.SpeakerID,
+			SpeakerName: strings.TrimSpace(seg.SpeakerName),
 		})
 	}
 	return out
@@ -570,6 +621,7 @@ func buildResultTranscriptMarkdown(meta Metadata, title, text string, segments [
 			if seg.StartMS != nil {
 				prefix = "[" + formatTimestamp(*seg.StartMS) + "] "
 			}
+			prefix += transcriptSpeakerPrefix(seg, false)
 			lines = append(lines, strings.TrimSpace(prefix+seg.Text), "")
 		}
 	} else {

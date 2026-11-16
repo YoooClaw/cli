@@ -7,7 +7,7 @@
 #   curl -fsSL .../install.sh | sh -s -- --dir ~/bin
 #
 # 选项：
-#   --version <v>   指定版本（默认最新正式版；预发布版只能由此显式指定）
+#   --version <v>   指定版本；macOS 默认及 latest 暂固定 0.16.2
 #   --dir <path>    安装目录（默认优先 ~/.local/bin，其次为可写的 /usr/local/bin）
 #   --force         覆盖已存在二进制
 #   --activate      安装后明确将 Relay owner 切换到 CLI（默认保留当前 owner）
@@ -17,7 +17,7 @@
 #   --no-modify-path 不修改 shell 配置（默认行为，兼容旧调用）
 #
 # 行为：
-#   - 不带 --version 时只解析正式版；beta/alpha/rc 必须显式 --version 才能安装
+#   - macOS 默认或 --version latest 暂固定 0.16.2；明确版本号不受影响
 #   - 检测 OS/Arch，下载 yoooclaw-<os>-<arch>（OSS 渲染版从 OSS 下载，源码版从 GitHub Release）
 #   - 校验 sha256（从同目录 checksums.txt 取）
 #   - 写入 <dir>/yoooclaw，并 symlink yc -> yoooclaw
@@ -28,7 +28,7 @@
 set -eu
 
 # 以下两个占位符由 tools/oss-upload 在发布时渲染。渲染后的脚本从阿里云 OSS
-# 解析版本并下载制品；未渲染的源码原版继续走 GitHub API + Release。
+# 解析版本并下载制品；未渲染的源码原版从生产 OSS 解析默认版本，再从 GitHub Release 下载。
 OSS_BASE_URL="__YOOOCLAW_CLI_OSS_BASE_URL__"
 OSS_RENDERED="__YOOOCLAW_CLI_TEMPLATE_RENDERED__"
 
@@ -97,8 +97,18 @@ ASSET="yoooclaw-${OS}-${ARCH}"
 need_cmd() { command -v "$1" >/dev/null 2>&1 || err "缺少依赖: $1"; }
 need_cmd curl
 
+# Temporary macOS hold: resolve both default and explicit latest before reading any pointer.
+if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+  if [ "$OS" = "darwin" ]; then
+    VERSION="0.16.2"
+    info "macOS 默认安装暂固定为 ${VERSION}"
+  else
+    VERSION=""
+  fi
+fi
+
 if [ "$OSS_RENDERED" = "1" ]; then
-  # OSS 渲染版：latest 标记文件里存的是纯版本号（只发布正式版）
+  # OSS 渲染版：latest 标记文件里存的是纯版本号（测试区也允许预发布版）
   if [ -z "$VERSION" ]; then
     info "查询 latest 版本…"
     VERSION=$(curl -fsSL "${OSS_BASE_URL}/latest" 2>/dev/null | tr -d '[:space:]' || true)
@@ -107,21 +117,9 @@ if [ "$OSS_RENDERED" = "1" ]; then
   BASE="${OSS_BASE_URL}/v${VERSION}"
 else
   if [ -z "$VERSION" ]; then
-    info "查询最新 release tag…"
-    # 优先用 GitHub API；不带 token 也能匿名用，但有 60 req/h 限制
-    api_url="https://api.github.com/repos/${REPO}/releases?per_page=100"
-    # 只截取 tag_name 字段，再用 cut 取 JSON 字符串值。这里刻意不用
-    # sed 的 \s：macOS 自带的 BSD sed 不支持它，解析失败时会把整行 JSON
-    # 原样传下去，最终污染下载 URL。
-    release_tags=$(curl -fsSL "$api_url" \
-      | grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"cli-v[^"]+"' \
-      | cut -d '"' -f 4 || true)
-    # 只认正式版 tag：预发布版必须由调用方显式 --version 指定
-    latest_tag=$(printf '%s\n' "$release_tags" \
-      | grep -Ev -- '-(beta|alpha|rc)([.-]|$)' \
-      | head -1 || true)
-    [ -z "$latest_tag" ] && err "无法解析最新正式版 tag（API 限流？请用 --version 显式指定）"
-    VERSION="${latest_tag#cli-v}"
+    info "查询生产 OSS latest 版本…"
+    VERSION=$(curl -fsSL "https://artifact.yoooclaw.com/cli/latest" 2>/dev/null | tr -d '[:space:]' || true)
+    [ -z "$VERSION" ] && err "无法解析生产 OSS latest（请用 --version 显式指定）"
   fi
   BASE="https://github.com/${REPO}/releases/download/cli-v${VERSION}"
 fi

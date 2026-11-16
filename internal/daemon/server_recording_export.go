@@ -1,0 +1,340 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/YoooClaw/cli/internal/clientlabel"
+	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/fsutil"
+	"github.com/YoooClaw/cli/internal/recording"
+	"github.com/YoooClaw/cli/internal/transfercloud"
+)
+
+// exportServiceFor returns the export service bound to one recording source.
+// Each source owns a separate index, so export records must stay in the same
+// store as the recording they belong to.
+func (s *server) exportServiceFor(store *recording.Storage) *recording.ExportService {
+	s.exportOnce.Do(func() {
+		if s.recordingStorage != nil {
+			s.recordingExports = recording.NewExportService(s.recordingStorage, s.logger)
+			s.recordingExports.RecoverInterrupted()
+		}
+		if s.captureRecordingStorage != nil {
+			s.captureRecordingExports = recording.NewExportService(s.captureRecordingStorage, s.logger)
+			s.captureRecordingExports.RecoverInterrupted()
+		}
+	})
+	if store != nil && store == s.captureRecordingStorage {
+		return s.captureRecordingExports
+	}
+	return s.recordingExports
+}
+
+func (s *server) initRecordingExports() {
+	_ = s.exportServiceFor(nil)
+}
+
+func (s *server) closeRecordingExports() {
+	for _, service := range []*recording.ExportService{s.recordingExports, s.captureRecordingExports} {
+		if service != nil {
+			service.Close()
+		}
+	}
+}
+
+func (s *server) recordingExportScope(auth authResult) string {
+	scope := strings.TrimSpace(auth.scope())
+	if scope == "" {
+		return "local"
+	}
+	return "label:" + scope
+}
+
+type boundRecordingExportCloud struct {
+	key, host string
+	valid     func() bool
+}
+
+func (c *boundRecordingExportCloud) UploadRecording(ctx context.Context, path string, onTask func(taskID, objectKey string) error) (recording.ExportUpload, error) {
+	if !c.valid() {
+		return recording.ExportUpload{}, errors.New("recording export credentials missing or changed")
+	}
+	receipt, err := transfercloud.New(c.key, c.host).UploadRecordingWithTask(ctx, path, onTask)
+	if !c.valid() {
+		return recording.ExportUpload{}, errors.New("recording export credentials changed")
+	}
+	if err != nil {
+		return recording.ExportUpload{}, err
+	}
+	return recording.ExportUpload{
+		TaskID: receipt.TaskID, ObjectKey: receipt.ObjectKey, SizeBytes: receipt.FileSize,
+		SignedURL: receipt.SignedURL, ExpiresAt: receipt.ExpiresAt,
+	}, nil
+}
+
+func (c *boundRecordingExportCloud) RecordingDownloadLink(ctx context.Context, taskID string) (recording.DownloadLink, error) {
+	if !c.valid() {
+		return recording.DownloadLink{}, errors.New("recording export credentials missing or changed")
+	}
+	next, err := transfercloud.New(c.key, c.host).RecordingDownloadLink(ctx, taskID)
+	if !c.valid() {
+		return recording.DownloadLink{}, errors.New("recording export credentials changed")
+	}
+	if err != nil {
+		// C-005 用 404/409 表示任务不存在或已删除；只把这个明确结果映射为
+		// expired，网络/HTTP 暂时失败仍保留 ready。
+		if transfercloud.IsTaskGone(err) {
+			return recording.DownloadLink{}, recording.ErrExportObjectGone
+		}
+		return recording.DownloadLink{}, err
+	}
+	return recording.DownloadLink{URL: next.URL, ExpiresAt: next.ExpiresAt}, nil
+}
+
+func (s *server) recordingExportCloud(label string) (recording.ExportCloud, error) {
+	if s.exportCloudFn != nil {
+		return s.exportCloudFn(label)
+	}
+	key := s.recordingKeyForLabel(label)
+	if key == "" {
+		return nil, errors.New("recording export credentials missing")
+	}
+	host := config.ResolveCloudHost(s.cfg)
+	valid := func() bool {
+		return key != "" && s.recordingKeyForLabel(label) == key && config.ResolveCloudHost(s.cfg) == host
+	}
+	return &boundRecordingExportCloud{key: key, host: host, valid: valid}, nil
+}
+
+// resolveRecordingExport prefers a retained task over UUID lookup so retries
+// remain bound to their source. An omitted sourceType selects mobile_app;
+// capture_app selects one store; all explicitly resolves across both stores.
+func (s *server) resolveRecordingExport(w http.ResponseWriter, auth authResult, source, id, requestID, exportID string) (*recording.Storage, recording.Entry, string, bool) {
+	sources, ok := s.recordingReadSources(w, source)
+	if !ok {
+		return nil, recording.Entry{}, "", false
+	}
+	var matched, task *recordingListSource
+	var matchedEntry, taskEntry recording.Entry
+	unavailable, duplicate := false, false
+	for _, candidate := range sources {
+		entry, found, err := candidate.store.LookupByID(id)
+		if err != nil {
+			unavailable = true
+			continue
+		}
+		if found && clientlabel.Visible(entry.ClientLabel, auth.scope()) {
+			if matched != nil {
+				duplicate = true
+			}
+			copy := candidate
+			matched = &copy
+			matchedEntry = entry
+		}
+		var existing recording.Entry
+		var record recording.ExportRecord
+		var retained bool
+		if requestID != "" {
+			existing, record, retained = candidate.store.FindExportByRequest(s.recordingExportScope(auth), requestID)
+		} else {
+			existing, record, retained = candidate.store.FindExport(id, exportID)
+		}
+		if !retained || record.ScopeKey != s.recordingExportScope(auth) || !clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+			continue
+		}
+		if existing.ID != id {
+			gatewayErr(w, "REQUEST_CONFLICT", "requestId already belongs to another recording")
+			return nil, recording.Entry{}, "", false
+		}
+		if task != nil {
+			gatewayErr(w, "SOURCE_CONFLICT", "export exists in multiple sources; specify sourceType")
+			return nil, recording.Entry{}, "", false
+		}
+		copy := candidate
+		task = &copy
+		taskEntry = existing
+	}
+	if task != nil {
+		return task.store, taskEntry, task.source, true
+	}
+	// 新建导出需要确认所选来源都未占用该请求键；来源不可用时不能断定任务不存在。
+	if unavailable {
+		gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
+		return nil, recording.Entry{}, "", false
+	}
+	if matched == nil {
+		gatewayErr(w, "NOT_FOUND", "Recording not found: "+id)
+		return nil, recording.Entry{}, "", false
+	}
+	if exportID != "" {
+		gatewayErr(w, "EXPORT_NOT_FOUND", "export not found")
+		return nil, recording.Entry{}, "", false
+	}
+	if duplicate {
+		gatewayErr(w, "SOURCE_CONFLICT", "recordingId exists in multiple sources; specify sourceType")
+		return nil, recording.Entry{}, "", false
+	}
+	return matched.store, matchedEntry, matched.source, true
+}
+
+func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Request, auth authResult, method string) {
+	var body struct {
+		RecordingID string `json:"recordingId"`
+		RequestID   string `json:"requestId"`
+		SourceType  string `json:"sourceType"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	recordingID := strings.TrimSpace(body.RecordingID)
+	requestID := strings.TrimSpace(body.RequestID)
+	if recordingID == "" || requestID == "" {
+		gatewayErr(w, "INVALID_PARAMS", "recordingId and requestId are required")
+		return
+	}
+	if len(requestID) > 256 || strings.ContainsAny(requestID, "\r\n\x00") {
+		gatewayErr(w, "INVALID_PARAMS", "requestId is invalid")
+		return
+	}
+	if !fsutil.IsSafeName(recordingID) {
+		gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符")
+		return
+	}
+	// Serialize source resolution and task creation across both stores.
+	s.recordingExportStartMu.Lock()
+	defer s.recordingExportStartMu.Unlock()
+	store, entry, sourceType, ok := s.resolveRecordingExport(w, auth, body.SourceType, recordingID, requestID, "")
+	if !ok {
+		return
+	}
+
+	scopeKey := s.recordingExportScope(auth)
+	// 幂等重放先于来源条件检查：首次受理回执丢失后，来源进入转写或变得
+	// 不可读时，同一 requestId 仍必须拿回原 exportId。
+	if existingEntry, record, found := store.FindExportByRequest(scopeKey, requestID); found {
+		if existingEntry.ID != recordingID {
+			gatewayErr(w, "REQUEST_CONFLICT", "requestId already belongs to another recording")
+			return
+		}
+		sizeBytes := record.SizeBytes
+		if sizeBytes <= 0 {
+			// 旧记录在导出开始时尚未持久化大小，补一个当前预估。
+			sizeBytes = store.ExportSourceSize(entry)
+		}
+		gatewayOK(w, recording.ExportStartResult{
+			RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State,
+			SourceType: sourceType, SizeBytes: sizeBytes,
+		})
+		return
+	}
+	if !store.Exportable(entry) {
+		code := "SOURCE_UNREADABLE"
+		if entry.Status == recording.StatusTranscribing || entry.AudioStatus == recording.AudioStatusPending || entry.AudioStatus == recording.AudioStatusDownloading {
+			code = "SOURCE_BUSY"
+		}
+		gatewayErr(w, code, "Recording is not ready for export")
+		return
+	}
+	cloud, err := s.recordingExportCloud(entry.ClientLabel)
+	if err != nil {
+		gatewayErr(w, "EXPORT_UPLOAD_FAILED", err.Error())
+		return
+	}
+	result, err := s.exportServiceFor(store).Start(r.Context(), recording.ExportStartRequest{
+		RecordingID: recordingID, RequestID: requestID, ScopeKey: scopeKey,
+	}, cloud)
+	if err != nil {
+		// 忙时把同 scope 已在进行中的导出交还给客户端：App 可以直接用它
+		// 的 exportId 转去轮询，而不是拿着一个无法续查的 BUSY 干等或换
+		// requestId 反复重试。跨 scope 的尝试不暴露（也不可见）。
+		if errors.Is(err, recording.ErrExportBusy) {
+			if active, ok := store.ActiveExport(recordingID, scopeKey); ok {
+				gatewayErrDetails(w, "EXPORT_BUSY", "another export is in progress for this recording", map[string]any{
+					"retryable":  true,
+					"sourceType": sourceType,
+					"exportId":   active.ExportID,
+					"state":      active.State,
+					"updatedAt":  active.UpdatedAt,
+					"sizeBytes":  active.SizeBytes,
+				})
+				return
+			}
+		}
+		writeRecordingExportError(w, err)
+		return
+	}
+	result.SourceType = sourceType
+	gatewayOK(w, result)
+}
+
+func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Request, auth authResult, method string) {
+	var body struct {
+		RecordingID string `json:"recordingId"`
+		ExportID    string `json:"exportId"`
+		SourceType  string `json:"sourceType"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	recordingID := strings.TrimSpace(body.RecordingID)
+	exportID := strings.TrimSpace(body.ExportID)
+	if recordingID == "" || exportID == "" {
+		gatewayErr(w, "INVALID_PARAMS", "recordingId and exportId are required")
+		return
+	}
+	if len(exportID) > 256 || strings.ContainsAny(exportID, "\r\n\x00") {
+		gatewayErr(w, "INVALID_PARAMS", "exportId is invalid")
+		return
+	}
+	if !fsutil.IsSafeName(recordingID) || !fsutil.IsSafeName(exportID) {
+		gatewayErr(w, "INVALID_PARAMS", "recordingId or exportId 含非法字符")
+		return
+	}
+	store, entry, sourceType, ok := s.resolveRecordingExport(w, auth, body.SourceType, recordingID, "", exportID)
+	if !ok {
+		return
+	}
+
+	cloud, err := s.recordingExportCloud(entry.ClientLabel)
+	if err != nil {
+		gatewayErr(w, "EXPORT_UPLOAD_FAILED", err.Error())
+		return
+	}
+	status, err := s.exportServiceFor(store).Status(r.Context(), recording.ExportStatusRequest{
+		RecordingID: recordingID, ExportID: exportID, ScopeKey: s.recordingExportScope(auth),
+	}, cloud)
+	if err != nil {
+		writeRecordingExportError(w, err)
+		return
+	}
+	status.SourceType = sourceType
+	gatewayOK(w, status)
+}
+
+func writeRecordingExportError(w http.ResponseWriter, err error) {
+	switch {
+	case recording.IsStorageFull(err):
+		// 受理阶段写索引/文件遇到 ENOSPC 时也必须返回契约里的 STORAGE_FULL，
+		// 否则 App 只会看到 INTERNAL_ERROR 并按可重试错误继续重试整批。
+		gatewayErr(w, "STORAGE_FULL", recording.StorageFullMessage)
+	case errors.Is(err, recording.ErrExportRequestConflict):
+		gatewayErr(w, "REQUEST_CONFLICT", "requestId already belongs to another recording")
+	case errors.Is(err, recording.ErrExportBusy):
+		gatewayErr(w, "EXPORT_BUSY", "another export is in progress for this recording")
+	case errors.Is(err, recording.ErrExportNotFound):
+		gatewayErr(w, "EXPORT_NOT_FOUND", "export not found")
+	case errors.Is(err, recording.ErrExportNotExportable):
+		gatewayErr(w, "SOURCE_UNREADABLE", "recording is not exportable")
+	case errors.Is(err, recording.ErrExportLinkUnavailable):
+		gatewayErr(w, "EXPORT_UPLOAD_FAILED", "download link temporarily unavailable")
+	case errors.Is(err, recording.ErrStorageUnavailable):
+		gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording storage unavailable")
+	case strings.HasPrefix(err.Error(), "Recording not found:"):
+		gatewayErr(w, "NOT_FOUND", err.Error())
+	default:
+		gatewayErr(w, "INTERNAL_ERROR", err.Error())
+	}
+}

@@ -14,6 +14,7 @@
 //	OSS_PUBLIC_URL        默认 https://artifact.yoooclaw.com
 //	OSS_PREFIX            默认 cli
 //	OSS_ENDPOINT          可选 endpoint 覆盖
+//	OSS_UPLOAD_CONCURRENCY 制品上传并发数，1–8，默认 4
 //	OSS_OBJECT_ACL        可选对象 ACL
 //	OSS_CACHE_CONTROL     默认 no-cache, no-store, max-age=0, must-revalidate
 //	DIST_DIR              默认 <repo>/dist-native
@@ -31,24 +32,28 @@
 //	<prefix>/latest                         正式版版本标记（纯版本号文本）
 //
 // 预发布版本只写 <prefix>/v<ver>/** 归档，不碰任何 live key、也不写渠道标记：
-// 默认安装路径永远解析到最新正式版，装 beta 必须显式指定版本号。
+// 生产默认安装解析平台指定的 latest，装 beta 必须显式指定版本号。
 //
 // --test-build 用于 release/** 分支推送后的测试环境发布：版本号由 CI 生成
 // （<目标版本>-alpha.<run>，不要求等于 package.json），并且无论是否预发布都刷新
-// live 安装脚本与 latest 标记，让测试桶里的一键安装始终指向最新测试构建。
+// live 安装脚本。两区 latest 均由灰度平台维护，上传器不写指针。
 // 该模式必须显式给出 OSS_BUCKET / OSS_PUBLIC_URL，且不能是正式环境默认值。
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
@@ -80,6 +85,10 @@ var nativeArtifacts = []string{
 	"yoooclaw-linux-x64",
 	"yoooclaw-win32-x64.exe",
 	"checksums.txt",
+}
+
+func linuxWindowsArtifacts() []string {
+	return []string{"yoooclaw-linux-arm64", "yoooclaw-linux-x64", "yoooclaw-win32-x64.exe", "checksums.txt"}
 }
 
 func logf(format string, args ...any) { fmt.Printf("\x1b[36m[upload]\x1b[0m "+format+"\n", args...) }
@@ -330,7 +339,7 @@ func renderWuyingInstaller(root, installBaseURL, version string) []byte {
 }
 
 // isPrerelease 判断版本号是否带 SemVer 预发布后缀（0.10.0-beta.1）。预发布版本
-// 不允许出现在任何默认安装路径上。
+// 测试环境可以把预发布版本设为默认版本。
 func isPrerelease(version string) bool {
 	return strings.Contains(version, "-")
 }
@@ -347,7 +356,7 @@ func installerUploadKeys(prefix, version, filename string, live bool) []string {
 }
 
 // validateTestTarget 确保测试构建只会写进显式配置的测试桶，绝不覆盖正式环境的
-// live 安装脚本与 latest 标记。
+// live 安装脚本。latest 由平台独立维护。
 func validateTestTarget(bucket, publicURL string) error {
 	bucket = strings.TrimSpace(bucket)
 	publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
@@ -360,12 +369,66 @@ func validateTestTarget(bucket, publicURL string) error {
 	return nil
 }
 
+// uploadArtifacts cancels peers on failure and waits for their cleanup before returning.
+func uploadArtifacts(artifacts []artifact, limit int, upload func(context.Context, artifact) error) error {
+	if limit < 1 {
+		return fmt.Errorf("upload concurrency must be positive, got %d", limit)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var failures []error
+	next := 0
+	var wg sync.WaitGroup
+	for worker := 0; worker < limit && worker < len(artifacts); worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				if ctx.Err() != nil || next >= len(artifacts) {
+					mu.Unlock()
+					return
+				}
+				a := artifacts[next]
+				next++
+				mu.Unlock()
+				if err := upload(ctx, a); err != nil {
+					mu.Lock()
+					failures = append(failures, fmt.Errorf("%s: %w", a.Filename, err))
+					cancel()
+					mu.Unlock()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(failures...)
+}
+
+func uploadConcurrency(only string, dryRun bool) (int, error) {
+	if only == "install" || dryRun {
+		return 1, nil
+	}
+	raw := envOr("OSS_UPLOAD_CONCURRENCY", "4")
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 8 {
+		return 0, fmt.Errorf("OSS_UPLOAD_CONCURRENCY must be an integer between 1 and 8, got %q", raw)
+	}
+	return limit, nil
+}
+
 func main() {
 	versionFlag := flag.String("version", "", "发布版本（默认读 package.json）")
 	only := flag.String("only", "", "只上传某类内容: install | artifacts")
 	dryRun := flag.Bool("dry-run", false, "只打印将要上传的内容，不实际上传")
-	testBuild := flag.Bool("test-build", false, "测试环境构建：版本号可不同于 package.json，始终刷新 live 安装脚本与 latest 标记")
+	testBuild := flag.Bool("test-build", false, "测试环境构建：版本号可不同于 package.json，刷新 live 安装脚本")
+	linuxWindows := flag.Bool("linux-windows", false, "仅发布 Linux 和 Windows 制品")
 	flag.Parse()
+	if *linuxWindows {
+		nativeArtifacts = linuxWindowsArtifacts()
+	}
 
 	if *only != "" && *only != "install" && *only != "artifacts" {
 		fatalf("--only 只能是 install 或 artifacts")
@@ -373,6 +436,10 @@ func main() {
 
 	root := findRepoRoot()
 	loadDotEnv(root)
+	concurrency, err := uploadConcurrency(*only, *dryRun)
+	if err != nil {
+		fatalf("%v", err)
+	}
 
 	version := *versionFlag
 	if version == "" {
@@ -394,7 +461,7 @@ func main() {
 	installBaseURL := publicURL + "/" + strings.Trim(prefix, "/")
 	distDir := envOr("DIST_DIR", filepath.Join(root, "dist-native"))
 	prerelease := isPrerelease(version)
-	// live 决定是否刷新 live 安装脚本与 latest 标记（安装脚本只认 latest）。
+	// live 只决定公共安装脚本；两区 latest 均由平台维护。
 	live := !prerelease || *testBuild
 	channel := "latest"
 	switch {
@@ -446,22 +513,30 @@ func main() {
 				rendered = renderInstaller(root, filename, installBaseURL)
 			}
 			for _, key := range installerUploadKeys(prefix, version, filename, live) {
-				u.put(key, rendered, contentTypeFor(filename), strings.TrimPrefix(key, prefix+"/"))
+				content := rendered
+				if filename == "install-wuying.sh" && key == joinKey(prefix, filename) {
+					// The public installer follows latest; version archives stay pinned.
+					content = renderWuyingInstaller(root, installBaseURL, "")
+				}
+				u.put(key, content, contentTypeFor(filename), strings.TrimPrefix(key, prefix+"/"))
 			}
 		}
 	}
 
 	if *only == "" || *only == "artifacts" {
 		artifacts := collectArtifacts(distDir, prefix, publicURL, version)
-		for _, a := range artifacts {
+		if err := uploadArtifacts(artifacts, concurrency, func(ctx context.Context, a artifact) error {
 			if u.dryRun {
 				logf("would upload %s -> %s", a.Filename, a.Key)
-				continue
+				return nil
 			}
-			if err := u.upload(a.Key, nil, a.localPath, a.ContentType, a.Filename); err != nil {
-				fatalf("%v", err)
+			if err := u.uploadContext(ctx, a.Key, nil, a.localPath, a.ContentType, a.Filename); err != nil {
+				return err
 			}
 			okf("done: %s", a.URL)
+			return nil
+		}); err != nil {
+			fatalf("%v", err)
 		}
 
 		var checksumsURL string
@@ -494,9 +569,6 @@ func main() {
 			contentTypeFor("oss-manifest.json"),
 			"oss-manifest.json",
 		)
-		if live {
-			u.put(joinKey(prefix, "latest"), []byte(version+"\n"), "text/plain; charset=utf-8", "latest")
-		}
 	}
 
 	fmt.Println()
@@ -509,9 +581,7 @@ func main() {
 		okf("Windows installer: %s", urlForKey(publicURL, joinKey(prefix, "install.ps1")))
 	}
 	okf("artifacts: %s/", urlForKey(publicURL, joinKey(prefix, "v"+version)))
-	if live {
-		okf("latest marker: %s", urlForKey(publicURL, joinKey(prefix, "latest")))
-	}
+	okf("latest 未改动；版本推进由灰度平台负责")
 	okf("OSS upload complete")
 	fmt.Println()
 }
