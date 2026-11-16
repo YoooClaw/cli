@@ -14,6 +14,7 @@
 - `internal/daemon/server.go`：通知写入后，`recordIngest` 只更新计数与最后接收时间。
 - `server_location.go`、`server_calendar.go`、`server_reminders.go`、`server_healthdata.go`：写入后记录日志并返回响应，没有统一事件。
 - `server_ingest.go`、`server_webpage.go`：图片、网页接收同样缺少统一事件；录音已有独立的 `recording.status`。
+- `server_data.go`、`server_data_records.go`、`server_data_import.go`：通用对象写入包括直接上传、分片提交和 OSS 导入；目前没有统一上下文事件。
 - `internal/daemon/egress.go`：standalone 走 Relay，proxied 回调宿主，direct 使用 `NoopEgress`。因此只调用 `PushEventTo` 无法满足本地订阅。
 - `internal/recording/events.go`：已有 JSONL 状态日志，但没有统一游标、订阅和恢复协议，不能直接当成可靠事件队列使用。
 
@@ -32,7 +33,19 @@
 | `web-pages` | `/web-pages` | 正文或可读取版本实际更新成功 |
 | `recordings` | 录音结果写入及后台转写的共同提交位置 | 正文或摘要可读内容提交成功；下载进度变化不发本事件 |
 
-全量迁移导入、通用 `/data` 写入、读取查询、memory 派生生成、录音重命名/删除等不属于本期“上下文下发”入口。迁移继续使用 `data.import.status`；之后如需统一纳入，增加明确的来源和语义，不从目录监听反推。
+| `data` | `POST /data`、`/gateway/data.write`、`data.upload.commit`、`/data/import` 与 `/gateway/data.import` 的最终对象提交路径 | 新对象记录及其内容成功提交并可读取；幂等重试返回已有对象不重复发 |
+
+通用 `/data` 写入属于本期范围，包括直接上传、分片上传最终提交、OSS 单对象导入完成。全量工作区迁移导入、读取查询、memory 派生生成、录音重命名/删除等仍不属于本期范围，不从目录监听反推事件。
+
+### 通用 data 写入的具体约定
+
+- 统一使用 `source=data`、`operation=append`、`committedCount=1`，`resourceIds` 包含已提交对象 ID。对象自带的 `Metadata.Source` 不覆盖事件来源分类；消费者按现有 data API 读取对象。
+- `Store.Put` 与 `Store.ImportFile` 共享底层 `put`；实现时在共同提交结果中显式区分“新建对象记录”和“返回已有对象”。当前 `PutResult.Deduped` 同时可能表示 blob 内容复用或幂等命中，不能直接用它决定是否派发：复用 blob 但新增对象 ID 仍然发事件；幂等命中已有对象不发。
+- 分片上传 begin/chunk/status/abort 不发；只有 commit 产生新的可读对象时发。重复 commit 返回已有回执不重复发。
+- OSS 导入受理返回 202、下载进度、失败和状态查询不发上下文事件；最终对象提交成功时发。保留现有 `data.import.status` 作为任务进度事件，两者语义独立。导入重试或重启恢复发现已有对象时，不当作新对象再次派发；数据提交与事件记录之间的崩溃窗口仍遵循第 7 节限制。
+- 事件可见范围取已提交对象的真实 `ClientLabel`，包括存储对空 label 归一化为 `local` 的行为；不能使用用户提供的 metadata 或 source 推导身份。
+- 通用 data 的删除、GC 与 retention 清理不触发本期“写入完成”事件。
+
 
 实现前需给尚未返回应用结果的 storage 补充 `Changed/Applied/CommittedCount` 等提交信息。不得把收到请求或输入条数当成成功写入数。多文件操作如可能部分提交，必须返回已提交部分的结果；不能仅凭最终 error 判定完全没有变化。
 
@@ -115,15 +128,16 @@ Egress 只是可选的实时快捷通道。`client` 事件使用 `PushEventTo`�
 
 1. 核定各来源提交结果与部分写入语义，补充必要的 storage 返回信息。
 2. 实现 `contextevent` 协议、日志、游标、恢复与保留清理。
-3. 在八类来源的共同提交位置接入发布器，保留已有业务响应和录音状态事件。
+3. 在九类来源的共同提交位置接入发布器，保留已有业务响应和录音状态事件。
 4. 实现鉴权后的查询与 SSE；补充事件 scope 映射和凭证撤销处理。
 5. 接入定向 Egress，补充消费者示例及 API 文档。
 6. 本地端到端验收；如需要宿主实际触发，再安排对应仓库适配及联调。
 
 ## 9. 验收标准
 
-- 八类来源分别验证：成功提交后可读事件、事件到达时数据已可读取。
+- 九类来源分别验证：成功提交后可读事件、事件到达时数据已可读取。
 - 同一通知走 HTTP/gateway 两种入口行为一致；重复通知、过期快照不发；空快照清空会发。
+- 通用 data 验证直接上传、gateway 写入、分片 commit、OSS 导入四条路径；提交时对象可读且 ID 对应，进度不误发，重复 commit/幂等重试不重复发，blob 去重但新对象仍发。
 - 部分成功只报告已提交部分；失败和计数不能伪装为整批成功。
 - 录音进度仍走 `recording.status`，正文/摘要提交才发 `context.updated`，无重复接线。
 - direct 模式能订阅；standalone/proxied 保留已有行为并验证新事件定向传输。
