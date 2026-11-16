@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -174,5 +175,28 @@ func TestRecordingStatusExposesClassifiedError(t *testing.T) {
 	detail = gatewayData(t, asClient(t, http.MethodPost, ts.URL+"/gateway/recordings.status", "phone-a", `{"recordingId":"rec_full"}`))
 	if detail["errorCode"] != nil {
 		t.Fatalf("detail=%+v", detail)
+	}
+}
+
+func TestRecordingReadPreservesExtensionsWithoutOverridingRuntime(t *testing.T) {
+	entry := recording.Entry{ID: "real-id", Metadata: recording.Metadata{Extra: map[string]json.RawMessage{
+		"future":      json.RawMessage(`{"nested":[1,true,null]}`),
+		"recordingId": json.RawMessage(`"spoofed"`),
+	}}}
+	for _, view := range []map[string]any{recordingListItem(entry, false), recordingDetail(entry)} {
+		if view["recordingId"] != "real-id" {
+			t.Fatal("metadata replaced runtime ID")
+		}
+		raw, err := json.Marshal(view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result["future"] == nil {
+			t.Fatal("missing extension in response")
+		}
 	}
 }

@@ -382,3 +382,36 @@ func TestBusinessRecordConflictsSkipWithoutOverwriting(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordingMetadataExtensionsRoundTrip(t *testing.T) {
+	src, dst := newEnv(t), newEnv(t)
+	seedSource(t, src.roots)
+	var index map[string]any
+	path := filepath.Join(src.roots[TypeRecordings], "index.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &index); err != nil {
+		t.Fatal(err)
+	}
+	meta := index["recordings"].([]any)[0].(map[string]any)["metadata"].(map[string]any)
+	meta["future"] = map[string]any{"items": []any{"value", true, nil}}
+	meta["recording_type"] = "call"
+	writeJSON(t, path, index)
+	result := runPlan(t, dst.svc, stagePlan(t, dst.svc, exportAll(t, src.roots)))
+	if result["state"] != "SUCCEEDED" {
+		t.Fatalf("import: %v", result)
+	}
+	entry, ok := dst.svc.Recordings.FindByID("r1")
+	if !ok {
+		t.Fatal("missing recording")
+	}
+	if string(entry.Metadata.Extra["future"]) != `{"items":["value",true,null]}` {
+		t.Fatalf("lost metadata: %s", entry.Metadata.Extra["future"])
+	}
+	pkg := exportAll(t, dst.roots)
+	if _, err := ReadPackage(pkg, ReadOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}

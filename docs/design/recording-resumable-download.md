@@ -171,3 +171,10 @@ transfercloud ──┘
 - 所选来源不可用且没有找到原任务时返回 `RECORDING_LIST_UNAVAILABLE`，避免误判旧任务不存在或重复创建。已有原任务在健康来源中命中则可以继续查询／重放。
 - 新任务来源解析及受理在 daemon 内串行，防止并发请求重复创建同一个请求键。后台上传仍异步执行。原有权限、上传流程和写入来源规则保持不变。
 - 同一录音已有其他 `requestId` 的导出处于 `preparing`/`uploading` 时，新的 start 返回 `EXPORT_BUSY`。忙碌任务属于当前客户端作用域时，错误体的 `details` 附带 `{exportId, state, sourceType, updatedAt, sizeBytes, retryable: true}`，App 可直接用该 `exportId` 调用 `recordings.export.status` 继续轮询，无需等待或更换 `requestId`。跨作用域的忙碌任务不返回 `details`：status 同样按作用域隔离，客户端本就不能续查，也不应借此推断其他客户端的状态。
+
+
+## 录音元数据扩展字段兼容
+
+App 的 `recording`（索引中的 `metadata`）支持未知扩展字段，不再因为增加字段而要求 CLI 同步更新白名单。扩展字段以原始 JSON 保存在原层级，支持对象、数组及 null；更新省略的扩展字段保留，显式携带的值覆盖旧值。列表/详情在不覆盖 CLI 管理字段的前提下返回扩展字段；单条导出与整包迁移均透传，并纳入导出版本判断。
+
+迁移仍重建签名音频/SRT URL、传输状态和本地文件大小展示，时长展示沿用现有规范化逻辑。记录层的文件路径、状态、ID 和已知字段类型仍按原契约处理；本次不放宽路径安全或文件完整性检查，不涉及通知、图片、网页的字段规则。旧版 CLI/插件未必接受新的扩展字段，接收端需要配套升级。

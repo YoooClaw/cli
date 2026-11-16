@@ -511,6 +511,11 @@ func recordingListItem(entry recording.Entry, exportable bool) map[string]any {
 		"error":              nilIfEmptyStr(entry.LastError),
 		"errorCode":          nilIfEmptyStr(entry.ErrorCode),
 	}
+	for key, value := range entry.Metadata.Extra {
+		if _, reserved := result[key]; !reserved && key != "ossTaskId" {
+			result[key] = value
+		}
+	}
 	if entry.OssTaskID != "" {
 		result["ossTaskId"] = entry.OssTaskID
 	}
@@ -544,6 +549,11 @@ func recordingDetail(entry recording.Entry) map[string]any {
 		"updatedAt":          entry.UpdatedAt,
 		"error":              nilIfEmptyStr(entry.LastError),
 		"errorCode":          nilIfEmptyStr(entry.ErrorCode),
+	}
+	for key, value := range entry.Metadata.Extra {
+		if _, reserved := result[key]; !reserved && key != "ossTaskId" {
+			result[key] = value
+		}
 	}
 	if entry.OssTaskID != "" {
 		result["ossTaskId"] = entry.OssTaskID
