@@ -1,4 +1,4 @@
-.PHONY: test test-race cover cover-gate cover-html test-int vet update-golden ci
+.PHONY: test-scale test test-race cover cover-gate cover-html test-int vet update-golden ci
 
 # 覆盖率门禁阈值（可在命令行覆盖：make cover-gate MIN_COVERAGE=60）
 MIN_COVERAGE ?= 55
@@ -36,5 +36,9 @@ update-golden:
 vet:
 	go vet ./...
 
-# 本地复刻 CI：vet + race + 覆盖率门禁
-ci: vet cover-gate
+# 不带竞态插桩的真实容量边界检查；禁止零用例通过。
+test-scale:
+	scripts/test-transfer-scale.sh
+
+# 本地 Go 门禁：vet + race + 覆盖率 + 容量回归
+ci: vet cover-gate test-scale

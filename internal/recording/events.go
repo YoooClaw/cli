@@ -12,6 +12,7 @@ import (
 type StatusEvent struct {
 	OssTaskID          string           `json:"ossTaskId,omitempty"`
 	RecordingID        string           `json:"recordingId"`
+	SourceType         string           `json:"sourceType,omitempty"`
 	TransferStatus     string           `json:"transfer_status"`
 	AudioStatus        string           `json:"audio_status,omitempty"`
 	AudioFile          string           `json:"audioFile,omitempty"`

@@ -69,6 +69,16 @@ func gatewayErr(w http.ResponseWriter, code, message string) {
 	writeJSON(w, 200, map[string]any{"ok": false, "error": map[string]any{"code": code, "message": message}})
 }
 
+// gatewayErrDetails 在标准错误外壳上附加可续查/可决策的上下文，例如导出
+// 忙时已经存在的 exportId。字段是增量契约，老客户端忽略即可。
+func gatewayErrDetails(w http.ResponseWriter, code, message string, details map[string]any) {
+	errBody := map[string]any{"code": code, "message": message}
+	if len(details) > 0 {
+		errBody["details"] = details
+	}
+	writeJSON(w, 200, map[string]any{"ok": false, "error": errBody})
+}
+
 func asString(v any) string {
 	s, _ := v.(string)
 	return s

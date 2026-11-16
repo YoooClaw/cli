@@ -270,6 +270,41 @@ func TestLoadIndexRecoversTranscribing(t *testing.T) {
 	}
 }
 
+func TestLoadIndexNormalizesMobileSourceType(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "recordings")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{
+	  "recordings": [
+	    {"id":"capture-tag","sourceType":"capture_app","status":"synced","metadata":{"name":"x","created_at":"2026-06-01T00:00:00Z"}},
+	    {"id":"unknown-tag","sourceType":"legacy","status":"synced","metadata":{"name":"y","created_at":"2026-06-01T00:00:00Z"}},
+	    {"id":"explicit-mobile","sourceType":"mobile_app","status":"synced","metadata":{"name":"z","created_at":"2026-06-01T00:00:00Z"}}
+	  ]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	storage := NewStorage(dir, testLogger{t})
+	if err := storage.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"capture-tag", "unknown-tag", "explicit-mobile"} {
+		entry, ok := storage.FindByID(id)
+		if !ok {
+			t.Fatalf("missing %s", id)
+		}
+		if got := entry.RecordingSource(); got != SourceMobileApp {
+			t.Fatalf("%s source = %s, want %s", id, got, SourceMobileApp)
+		}
+	}
+	for _, entry := range ReadIndex(dir) {
+		if entry.SourceType == SourceCaptureApp || entry.SourceType == "legacy" {
+			t.Fatalf("mislabeled sourceType not normalized on disk: %+v", entry)
+		}
+	}
+}
+
 func TestLoadIndexMarksMissingAudioForRecovery(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "recordings")
@@ -301,6 +336,25 @@ func TestLoadIndexMarksMissingAudioForRecovery(t *testing.T) {
 	}
 	if got := storage.ListMissingAudio(); len(got) != 1 || got[0].ID != "r1" {
 		t.Fatalf("missing audio list: %+v", got)
+	}
+}
+
+func TestInitDegradesWhenRecordingDirsCannotBeCreated(t *testing.T) {
+	dir := t.TempDir()
+	// 用普通文件占住音频目录，使 EnsureDir 失败；daemon 不应因录音域
+	// 目录问题整体退出，而是让录音读写返回不可用。
+	if err := os.WriteFile(filepath.Join(dir, "audio"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStorage(dir, testLogger{t})
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init should degrade instead of failing: %v", err)
+	}
+	if s.LoadError() == nil {
+		t.Fatal("expected storage load error")
+	}
+	if _, err := s.Ingest("r1", Metadata{Name: "x"}, "phone-a"); err != ErrStorageUnavailable {
+		t.Fatalf("ingest err=%v", err)
 	}
 }
 

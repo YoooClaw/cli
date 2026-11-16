@@ -218,6 +218,7 @@ func TestAssetsHTTPRejectMalformedParamsAndKeepRecordingRoute(t *testing.T) {
 		}
 	}
 	storage := withRecordings(t, s)
+	withCaptureRecordings(t, s)
 	if _, e := storage.Ingest("rec1", recording.Metadata{Name: "Original route"}, "phone-a"); e != nil {
 		t.Fatal(e)
 	}

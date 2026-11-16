@@ -67,7 +67,7 @@ func TestRecordingPayloadUsesDisplaySizeOnly(t *testing.T) {
 		},
 	}
 	for name, payload := range map[string]map[string]any{
-		"list":   recordingListItem(entry),
+		"list":   recordingListItem(entry, false),
 		"detail": recordingDetail(entry),
 	} {
 		if payload["file_size_display"] != "5.9 MB" {

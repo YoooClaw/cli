@@ -23,14 +23,23 @@ const (
 	defaultDownloadTimeout = 30 * time.Minute
 	defaultDownloadRetries = 8
 	defaultRetryBackoff    = 2 * time.Second
+
+	// Refresh signed links before they expire so a long download does not have
+	// to fail a range first. HTTP 403 remains a fallback for clock/edge cases.
+	downloadLinkRefreshWindow  = 5 * time.Minute
+	downloadLinkRefreshTimeout = 30 * time.Second
 )
+
+// DownloadLink 是带有效期的 OSS 签名下载地址。
+type DownloadLink = ossdownload.Link
 
 // DownloadOptions 控制 OSS 下载重试与超时。
 type DownloadOptions struct {
 	OverallTimeout time.Duration
 	HeaderTimeout  time.Duration
 	IdleTimeout    time.Duration
-	RefreshURL     func(context.Context) (string, error)
+	InitialLink    *DownloadLink
+	RefreshLink    func(context.Context) (DownloadLink, error)
 
 	Timeout      time.Duration
 	MaxRetries   int
@@ -44,6 +53,8 @@ type DownloadResult struct {
 	SizeBytes int64         `json:"sizeBytes,omitempty"`
 	Elapsed   time.Duration `json:"-"`
 	Error     string        `json:"error,omitempty"`
+	// ErrorCode 是可分类失败（当前仅 STORAGE_FULL），供 recordings.status 返回。
+	ErrorCode string `json:"errorCode,omitempty"`
 }
 
 type downloadHTTPStatusError struct {
@@ -53,6 +64,14 @@ type downloadHTTPStatusError struct {
 
 func (e *downloadHTTPStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d %s", e.Code, e.Status)
+}
+
+func newDownloadLinkRefresher(initial DownloadLink, refresh func(context.Context) (DownloadLink, error)) *ossdownload.LinkRefresher {
+	return ossdownload.NewLinkRefresher(initial, refresh, ossdownload.LinkRefresherOptions{
+		Window:          downloadLinkRefreshWindow,
+		Timeout:         downloadLinkRefreshTimeout,
+		ZeroExpiryValid: true,
+	})
 }
 
 // DownloadFile 从 URL 下载文件到 destPath。
@@ -82,21 +101,37 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 	parent, stop := context.WithTimeout(context.Background(), overall)
 	defer stop()
 	if err := fsutil.EnsureDir(filepath.Dir(destPath), fsutil.DirMode); err != nil {
-		return DownloadResult{Error: err.Error()}
+		return DownloadResult{Error: err.Error(), ErrorCode: storageErrorCode(err)}
 	}
 	checkpoint, err := os.MkdirTemp(filepath.Dir(destPath), ".audio-checkpoint-")
 	if err != nil {
-		return DownloadResult{Error: err.Error()}
+		return DownloadResult{Error: err.Error(), ErrorCode: storageErrorCode(err)}
 	}
 	defer os.RemoveAll(checkpoint)
 	staged := filepath.Join(checkpoint, "audio")
 	var lastErr error
-	refreshed := false
+	var linkState *ossdownload.LinkRefresher
+	if opts.InitialLink != nil || opts.RefreshLink != nil {
+		initial := ossdownload.Link{URL: rawURL}
+		if opts.InitialLink != nil {
+			initial = *opts.InitialLink
+		}
+		linkState = newDownloadLinkRefresher(initial, opts.RefreshLink)
+	}
+	forcedRefresh := false
 	for attempt := 1; attempt <= retries; attempt++ {
 		logger.Info(fmt.Sprintf("[downloader] 开始下载 %s (attempt %d/%d)", filepath.Base(destPath), attempt, retries))
 		ctx, cancel := context.WithTimeout(parent, timeout)
-		transport := &downloadClient{client: client, header: opts.HeaderTimeout, idle: opts.IdleTimeout, strict: refreshed}
-		err = ossdownload.Download(ctx, transport, rawURL, "audio", staged, checkpoint, maxAudioBytes, true)
+		transport := &downloadClient{client: client, header: opts.HeaderTimeout, idle: opts.IdleTimeout}
+		if linkState != nil {
+			linkState.ResetError()
+			transport.strictFn = linkState.HasRefreshed
+		}
+		var httpClient ossdownload.HTTPClient = transport
+		if linkState != nil {
+			httpClient = &ossdownload.RenewingClient{Refresher: linkState, Next: transport}
+		}
+		err = ossdownload.Download(ctx, httpClient, rawURL, "audio", staged, checkpoint, maxAudioBytes, true)
 		if errors.Is(err, ossdownload.ErrNoRange) {
 			logger.Info("[downloader] 源站不支持可靠分段下载，转为单流下载")
 			var req *http.Request
@@ -104,7 +139,7 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			if err == nil {
 				req.Header.Set("Accept-Encoding", "identity")
 				var resp *http.Response
-				resp, err = transport.Do(req)
+				resp, err = httpClient.Do(req)
 				if err == nil {
 					err = writeDownloadResponse(resp, staged)
 					resp.Body.Close()
@@ -121,25 +156,24 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 		if err == nil {
 			info, e := os.Stat(destPath)
 			if e != nil {
-				return DownloadResult{Error: e.Error()}
+				return DownloadResult{Error: e.Error(), ErrorCode: storageErrorCode(e)}
 			}
 			logger.Info(fmt.Sprintf("[downloader] 下载完成 %s (%d bytes, %s)", filepath.Base(destPath), info.Size(), time.Since(start)))
 			return DownloadResult{OK: true, SizeBytes: info.Size(), Elapsed: time.Since(start)}
 		}
 		lastErr = err
 		logger.Warn(fmt.Sprintf("[downloader] 下载失败 (attempt %d/%d): %s", attempt, retries, safeDownloadError(err)))
-		if downloadStatus(err) == 403 && !refreshed && opts.RefreshURL != nil && parent.Err() == nil {
-			refreshed = true
+		if downloadStatus(err) == 403 && !forcedRefresh && linkState != nil && linkState.CanRefresh() && parent.Err() == nil {
+			forcedRefresh = true
 			logger.Info("[downloader] HTTP 403，开始刷新签名链接（本轮最多一次）")
-			refreshCtx, done := context.WithTimeout(parent, 30*time.Second)
-			next, e := opts.RefreshURL(refreshCtx)
+			refreshCtx, done := context.WithTimeout(parent, downloadLinkRefreshTimeout)
+			_, e := linkState.ForceRefresh(refreshCtx)
 			done()
 			if e != nil {
 				lastErr = e
 				logger.Warn("[downloader] 签名链接刷新失败: " + safeDownloadError(e))
 				break
 			}
-			rawURL = next
 			logger.Info("[downloader] 签名链接已刷新，继续下载")
 			// The refresh retry is available even when the attempt budget was exhausted.
 			if attempt == retries {
@@ -166,7 +200,7 @@ func DownloadFile(rawURL, destPath string, logger Logger, opts DownloadOptions) 
 			}
 		}
 	}
-	return DownloadResult{Error: safeDownloadError(lastErr), Elapsed: time.Since(start)}
+	return DownloadResult{Error: safeDownloadError(lastErr), Elapsed: time.Since(start), ErrorCode: storageErrorCode(lastErr)}
 }
 
 const maxAudioBytes int64 = 5 << 30
@@ -200,7 +234,7 @@ func safeDownloadError(err error) string {
 type downloadClient struct {
 	client       *http.Client
 	header, idle time.Duration
-	strict       bool
+	strictFn     func() bool
 }
 
 func (d *downloadClient) Do(req *http.Request) (*http.Response, error) {
@@ -217,7 +251,7 @@ func (d *downloadClient) Do(req *http.Request) (*http.Response, error) {
 	deadline := &headerDeadline{cancel: cancel}
 	timer := time.AfterFunc(header, deadline.expire)
 	client := *d.client
-	if d.strict {
+	if d.strictFn != nil && d.strictFn() {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
 	resp, err := client.Do(req)

@@ -9,7 +9,12 @@ import (
 
 const dailyReadme = `# 健康数据（v3）
 
-根目录 YYYY-MM-DD.jsonl 是一份日期快照，重复同步覆盖更新，不可把不同版本累加。
+根目录 YYYY-MM-DD.jsonl 是一份日期快照，不可把不同版本累加。
+provider 去除首尾空白并转为小写；已有快照的来源判断也使用此规则。
+同一天优先采用 provider=healthkit 的整份快照，苹果可以覆盖非苹果来源，即使采集时间更早。
+该天已有苹果数据后，非苹果来源不再覆盖。此优先级不跨日期生效。
+所有非苹果来源（包括不同安卓厂商和鸿蒙）同属一类，可以相互覆盖。
+同类来源按 collectedAt 更新：更旧的忽略，相同时间由后处理的快照覆盖。
 第一行是 schemaVersion=3/date/timeZone/updatedAt/provider；后续行为：
 - 普通指标：metric/name/value/unit。步数、能量、心率等按当地自然日统计。
 - 睡眠：type=sleepSession，session 内保存一次完整睡眠的摘要与全部 segments。

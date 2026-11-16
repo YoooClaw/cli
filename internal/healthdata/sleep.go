@@ -188,6 +188,23 @@ func ReadSnapshot(raw []byte, date string) (DailySnapshot, dailyHeader, error) {
 	if err != nil {
 		return day, header, err
 	}
-	_, _, _, err = prepareDaily(payload)
-	return day, header, err
+	_, _, infos, _, err := prepareDaily(payload)
+	if err != nil {
+		return day, header, err
+	}
+	// Stored snapshots are read back strictly: ingest drops bad records, but a
+	// file that already contains them must not be silently re-interpreted.
+	for _, info := range infos {
+		if info.err != nil {
+			return day, header, info.err
+		}
+		if info.dropped > 0 || len(info.warnings) > 0 {
+			reason := fmt.Sprintf("%d invalid records", info.dropped)
+			if len(info.warnings) > 0 {
+				reason = info.warnings[0]
+			}
+			return day, header, fmt.Errorf("invalid stored health snapshot: %s", reason)
+		}
+	}
+	return day, header, nil
 }

@@ -273,3 +273,20 @@ tail -F /home/admin/.yoooclaw/profiles/default/logs/daemon.log | grep --line-buf
 CLI 云上传及完成回执不再限制 5 GiB。
 仍检查非空普通文件、任务身份、完成状态及回执大小一致性。
 服务端配额仍由服务端决定；本地测试不证明大文件生产上传成功。
+
+### 容量回归与竞态检查
+
+容量测试与小样本测试复用同一组断言。
+小样本参加 `-race` 和覆盖率检查。
+`TestTransferScale` 保留 100001 条记录和超过 64 MiB 的清单。
+该测试用 `!race` 构建条件排除竞态插桩。
+CI 单独执行容量回归，失败时阻止测试发布。
+正式发布的普通 `go test` 也包含容量回归。
+
+```sh
+go test -race -coverprofile=coverage.out ./internal/transfer
+make test-scale
+```
+
+容量用例输出独立耗时，便于定位回归。
+此拆分不修改业务逻辑或放宽数据边界断言。

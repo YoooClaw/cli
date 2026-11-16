@@ -39,3 +39,8 @@ test('rejects unsupported or malformed version formats', () => {
     assert.throws(() => draftPayload(version, 'https://prod.example/cli'), /Expected/);
   }
 });
+test('Linux/Windows release omits Mac artifacts and rejects unknown scopes', () => {
+  const p = draftPayload('0.17.1', 'https://test.example/cli', 'linux-windows');
+  assert.deepEqual(Object.keys(p.platformArtifacts).sort(), ['linux-arm64', 'linux-x64', 'windows-x64']);
+  assert.throws(() => draftPayload('0.17.1', 'https://test.example/cli', 'linux'), /scope/);
+});

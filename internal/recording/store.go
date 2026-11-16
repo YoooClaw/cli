@@ -5,6 +5,7 @@ package recording
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,6 +21,11 @@ import (
 )
 
 const (
+	SourceMobileApp  = "mobile_app"
+	SourceCaptureApp = "capture_app"
+	// SourceAll selects both stores for read and export methods. It is a query
+	// selector only and is never persisted on an entry.
+	SourceAll             = "all"
 	audioDirName          = "audio"
 	transcriptDataDirName = "transcript-data"
 	transcriptsDirName    = "transcripts"
@@ -40,6 +46,11 @@ type Marker struct {
 	TimestampMS float64 `json:"timestamp_ms"`
 }
 
+const (
+	RecordingTypeNormal = "normal"
+	RecordingTypeCall   = "call"
+)
+
 // Metadata 是录音元数据（index.json entry.metadata）。
 type Metadata struct {
 	Name            string   `json:"name"`
@@ -52,12 +63,78 @@ type Metadata struct {
 	OssAudioURL     string   `json:"oss_audio_url"`
 	OssSrtURL       string   `json:"oss_srt_url,omitempty"`
 	Markers         []Marker `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
+	// RecordingType 只在请求显式携带时写入。nil 表示未提供（历史数据或
+	// update 省略），读取时按 normal 输出；空串及其他值在写入入口拒绝。
+	RecordingType *string `json:"recording_type,omitempty"`
+}
+
+// NormalizeRecordingType 返回对外展示的类型；缺失或历史空值按 normal 兼容。
+func NormalizeRecordingType(value *string) string {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return RecordingTypeNormal
+	}
+	return *value
+}
+
+// ValidateRecordingType 校验显式传入的类型；nil 表示未提供，保留已有值。
+func ValidateRecordingType(value *string) error {
+	if value == nil {
+		return nil
+	}
+	if *value == RecordingTypeNormal || *value == RecordingTypeCall {
+		return nil
+	}
+	return errors.New("recording_type must be normal or call")
+}
+
+const (
+	ExportStatePreparing = "preparing"
+	ExportStateUploading = "uploading"
+	ExportStateReady     = "ready"
+	ExportStateFailed    = "failed"
+	ExportStateExpired   = "expired"
+
+	maxExportHistory = 8
+)
+
+// ExportRecord is one export attempt. Signed URLs and STS credentials are
+// intentionally absent: they are short-lived and live in memory only.
+type ExportRecord struct {
+	ExportID      string               `json:"exportId"`
+	RequestID     string               `json:"requestId"`
+	ScopeKey      string               `json:"scopeKey"`
+	State         string               `json:"state"`
+	CreatedAt     string               `json:"createdAt"`
+	UpdatedAt     string               `json:"updatedAt"`
+	SourceVersion string               `json:"sourceVersion,omitempty"`
+	TaskID        string               `json:"taskId,omitempty"`
+	ObjectKey     string               `json:"objectKey,omitempty"`
+	SizeBytes     int64                `json:"sizeBytes,omitempty"`
+	SHA256        string               `json:"sha256,omitempty"`
+	FileName      string               `json:"fileName,omitempty"`
+	MimeType      string               `json:"mimeType,omitempty"`
+	ErrorCode     string               `json:"errorCode,omitempty"`
+	ErrorMessage  string               `json:"errorMessage,omitempty"`
+	ErrorScope    string               `json:"errorScope,omitempty"`
+	ErrorSource   string               `json:"errorSource,omitempty"`
+	Retryable     bool                 `json:"retryable,omitempty"`
+	Audio         *ExportAudioIdentity `json:"audio,omitempty"`
+}
+
+// ExportAudioIdentity is the cheap file identity used to detect source
+// replacement without hashing a multi-gigabyte file on every status query.
+type ExportAudioIdentity struct {
+	Device  uint64 `json:"device,omitempty"`
+	Inode   uint64 `json:"inode,omitempty"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"mtime"`
 }
 
 // Entry 是一条录音索引项。
 type Entry struct {
 	OssTaskID          string   `json:"ossTaskId,omitempty"`
 	ID                 string   `json:"id"`
+	SourceType         string   `json:"sourceType,omitempty"`
 	ClientLabel        string   `json:"clientLabel,omitempty"`
 	Metadata           Metadata `json:"metadata"`
 	Status             string   `json:"status"`
@@ -70,10 +147,22 @@ type Entry struct {
 	SummaryFile        string   `json:"summaryFile,omitempty"`
 	Title              string   `json:"title,omitempty"`
 	LastError          string   `json:"lastError,omitempty"`
-	IngestedAt         string   `json:"ingestedAt"`
-	UpdatedAt          string   `json:"updatedAt"`
+	// ErrorCode 是可选的可分类错误；成功或新尝试开始时清除，旧客户端可忽略。
+	ErrorCode  string `json:"errorCode,omitempty"`
+	IngestedAt string `json:"ingestedAt"`
+	UpdatedAt  string `json:"updatedAt"`
 	// Transfer 只在经 `yoooclaw transfer import` 迁入的录音上出现，记录原始来源。
 	Transfer *TransferMark `json:"transfer,omitempty"`
+	// Exports 保留有限次导出尝试；最新一次在末尾。导出不得改写 Entry.UpdatedAt。
+	Exports []ExportRecord `json:"exports,omitempty"`
+}
+
+// RecordingSource defaults legacy index entries to the mobile source.
+func (e Entry) RecordingSource() string {
+	if e.SourceType == SourceCaptureApp {
+		return SourceCaptureApp
+	}
+	return SourceMobileApp
 }
 
 // TransferMark 记录迁入条目的原始来源（与 phone-notifications 插件字段一致）。
@@ -95,10 +184,23 @@ type Storage struct {
 	transcriptsDir    string
 	summariesDir      string
 	indexPath         string
+	capture           bool
 	logger            Logger
 	mu                sync.Mutex
 	index             indexWrapper
+	loadErr           error
 	audioLocks        map[string]*sync.Mutex
+	// indexStamp 记录 daemon 上次读写 index.json 时的文件身份。写操作前用它
+	// 发现外部进程（人工修复、迁移脚本等）对索引的修改，避免用内存快照覆盖。
+	indexStamp    indexStamp
+	indexStampSet bool
+	// writeIndex 是索引原子写边界；测试可注入磁盘错误，生产保持 nil。
+	writeIndex func(path string, v any, mode os.FileMode) error
+}
+
+type indexStamp struct {
+	modTime time.Time
+	size    int64
 }
 
 // NewStorage 构造录音存储；dir 为 recordings 目录。
@@ -116,32 +218,109 @@ func NewStorage(dir string, logger Logger) *Storage {
 	}
 }
 
-// Init 准备目录并加载索引。
+// NewCaptureStorage uses a separate index and artifact root for Capture uploads.
+func NewCaptureStorage(dir string, logger Logger) *Storage {
+	s := NewStorage(dir, logger)
+	s.capture = true
+	return s
+}
+
+// Init 准备目录并加载索引。索引损坏时只降级录音域，不阻止 daemon 其他域启动。
 func (s *Storage) Init() error {
 	for _, dir := range []string{s.audioDir, s.transcriptDataDir, s.transcriptsDir, s.summariesDir} {
 		if err := fsutil.EnsureDir(dir, fsutil.DirMode); err != nil {
-			return err
+			// 录音目录不可用时只降级录音域，不阻断其他 daemon 域启动。
+			s.loadErr = err
+			s.logger.Error("录音目录初始化失败，录音域降级: " + err.Error())
+			return nil
 		}
 	}
-	s.loadIndex()
+	if err := s.loadIndex(); err != nil {
+		s.loadErr = err
+		s.logger.Error("录音索引读取失败，录音域降级: " + err.Error())
+		return nil
+	}
 	s.logger.Info("录音存储已初始化: " + s.dir)
 	return nil
 }
 
+// LoadError 返回启动时发现的录音索引错误；非 nil 时录音域进入降级模式。
+func (s *Storage) LoadError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadErr
+}
+
+func (s *Storage) ensureWritableLocked() error {
+	if s.loadErr != nil {
+		return ErrStorageUnavailable
+	}
+	return nil
+}
+
+// ErrStorageUnavailable 表示录音索引损坏/缺失且有实际资产，录音域拒绝改写。
+var ErrStorageUnavailable = errors.New("recording storage unavailable")
+
 // Close 当前无需额外清理。
 func (s *Storage) Close() error { return nil }
 
-func (s *Storage) loadIndex() {
-	var wrapper indexWrapper
-	exists, err := fsutil.ReadJSON(s.indexPath, &wrapper)
-	if err != nil || !exists || wrapper.Recordings == nil {
+func (s *Storage) loadIndex() error {
+	wrapper, exists, err := readRecordingIndex(s.indexPath)
+	if err != nil {
 		s.index = indexWrapper{Recordings: []Entry{}}
-		return
+		return err
 	}
+	if !exists {
+		s.index = indexWrapper{Recordings: []Entry{}}
+		if s.hasRecordingAssets() {
+			return errors.New("recording index missing but recording assets exist")
+		}
+		s.rememberIndexStampLocked()
+		return nil
+	}
+	needsRewrite := s.normalizeIndexLocked(&wrapper)
+	s.index = wrapper
+	s.rememberIndexStampLocked()
+	if needsRewrite {
+		return s.saveIndexLocked()
+	}
+	return nil
+}
+
+// readRecordingIndex 读取磁盘索引，不修改内存状态。exists=false 表示文件不存在。
+func readRecordingIndex(path string) (indexWrapper, bool, error) {
+	var wrapper indexWrapper
+	exists, err := fsutil.ReadJSON(path, &wrapper)
+	if err != nil {
+		return indexWrapper{}, false, err
+	}
+	if !exists {
+		return indexWrapper{Recordings: []Entry{}}, false, nil
+	}
+	if wrapper.Recordings == nil {
+		return indexWrapper{}, true, errors.New("invalid recording index")
+	}
+	return wrapper, true, nil
+}
+
+// normalizeIndexLocked 把旧版/异常条目归一到当前语义，返回是否需要写回磁盘。
+func (s *Storage) normalizeIndexLocked(wrapper *indexWrapper) bool {
 	needsRewrite := false
 	now := nowISO()
 	for i := range wrapper.Recordings {
 		entry := &wrapper.Recordings[i]
+		// 条目来源由所在索引决定：Capture 索引归一到 capture_app；移动端索引
+		// 出现 capture_app 或未知值时清空，由 RecordingSource 回落 mobile_app，
+		// 避免列表/状态/事件路由/导出载荷读到与存储位置不符的来源。
+		if s.capture {
+			if entry.SourceType != SourceCaptureApp {
+				entry.SourceType = SourceCaptureApp
+				needsRewrite = true
+			}
+		} else if entry.SourceType != "" && entry.SourceType != SourceMobileApp {
+			entry.SourceType = ""
+			needsRewrite = true
+		}
 		durationSec := normalizeDurationSeconds(entry.Metadata.DurationSec)
 		durationDisplay := FormatDurationDisplay(durationSec)
 		if entry.Metadata.DurationSec != durationSec || entry.Metadata.DurationDisplay != durationDisplay {
@@ -180,7 +359,7 @@ func (s *Storage) loadIndex() {
 					needsRewrite = true
 				}
 			} else {
-				// 索引不能继续声称一个不存在的文件可用。保留 OSS URL，启动后的
+				// 索引不能继续声称一个不存在的文件可用。保留 OSS URL，
 				// recovery 会重新下载。
 				entry.AudioFile = ""
 				entry.AudioSourceURL = ""
@@ -198,14 +377,104 @@ func (s *Storage) loadIndex() {
 			needsRewrite = true
 		}
 	}
-	s.index = wrapper
-	if needsRewrite {
-		_ = s.saveIndexLocked()
+	return needsRewrite
+}
+
+func (s *Storage) currentIndexStampLocked() (indexStamp, bool) {
+	info, err := os.Stat(s.indexPath)
+	if err != nil || info.IsDir() {
+		return indexStamp{}, false
+	}
+	return indexStamp{modTime: info.ModTime(), size: info.Size()}, true
+}
+
+func (s *Storage) rememberIndexStampLocked() {
+	if stamp, ok := s.currentIndexStampLocked(); ok {
+		s.indexStamp = stamp
+		s.indexStampSet = true
 	}
 }
 
+// refreshIndexLocked 在读写前对齐磁盘索引：若 index.json 在本次进程上次读写
+// 之后被其他进程修改，先按磁盘内容重新加载，避免随后的整份写回用旧内存快照
+// 覆盖外部变更（例如人工修复或删除），也让 status 与直接读盘的 list 一致。
+// 解析失败或文件消失时保留内存索引并记录错误，既不丢数据，也不把无法理解的
+// 外写当成删除。
+func (s *Storage) refreshIndexLocked() {
+	stamp, ok := s.currentIndexStampLocked()
+	if !ok {
+		return
+	}
+	if !s.indexStampSet {
+		s.indexStamp, s.indexStampSet = stamp, true
+		return
+	}
+	if stamp == s.indexStamp {
+		return
+	}
+	wrapper, exists, err := readRecordingIndex(s.indexPath)
+	if err != nil {
+		s.logger.Error("录音索引被外部修改后无法解析，保留内存索引: " + err.Error())
+		return
+	}
+	if !exists {
+		s.logger.Error("录音索引被外部删除，保留内存索引等待重建: " + s.indexPath)
+		return
+	}
+	needsRewrite := s.normalizeIndexLocked(&wrapper)
+	s.index = wrapper
+	s.rememberIndexStampLocked()
+	s.logger.Info("检测到录音索引被外部修改，已按磁盘内容重新加载: " + s.indexPath)
+	if needsRewrite {
+		if err := s.saveIndexLocked(); err != nil {
+			s.logger.Error("重新加载后规范化录音索引失败: " + err.Error())
+		}
+	}
+}
+
+// prepareWriteLocked 是所有写操作的统一入口：先对齐外部修改，再检查存储可用性。
+func (s *Storage) prepareWriteLocked() error {
+	s.refreshIndexLocked()
+	return s.ensureWritableLocked()
+}
+
+// hasRecordingAssets 区分“首次使用的空目录”与“索引丢失但仍有真实资产”。
+// 只有实际普通文件才算资产，空目录不触发降级。
+func (s *Storage) hasRecordingAssets() bool {
+	dirs := []string{s.audioDir, s.transcriptDataDir, s.transcriptsDir, s.summariesDir, filepath.Join(s.dir, "files")}
+	for _, dir := range dirs {
+		found := false
+		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d == nil {
+				return nil
+			}
+			if path != dir && d.Type().IsRegular() {
+				found = true
+				return fs.SkipAll
+			}
+			return nil
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Storage) saveIndexLocked() error {
-	return fsutil.WriteJSON(s.indexPath, s.index, fsutil.ConfigFileMode)
+	if err := s.ensureWritableLocked(); err != nil {
+		return err
+	}
+	var err error
+	if s.writeIndex != nil {
+		err = s.writeIndex(s.indexPath, s.index, fsutil.ConfigFileMode)
+	} else {
+		err = fsutil.WriteJSON(s.indexPath, s.index, fsutil.ConfigFileMode)
+	}
+	if err == nil {
+		s.rememberIndexStampLocked()
+	}
+	return err
 }
 
 func nowISO() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -227,14 +496,23 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	if clientLabel == "" {
 		clientLabel = "default"
 	}
+	if err := ValidateRecordingType(metadata.RecordingType); err != nil {
+		return Entry{}, err
+	}
 	metadata.DurationSec = normalizeDurationSeconds(metadata.DurationSec)
 	metadata.DurationDisplay = FormatDurationDisplay(metadata.DurationSec)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return Entry{}, err
+	}
 
 	now := nowISO()
 	if idx := s.findIndexLocked(recordingID); idx >= 0 {
 		entry := &s.index.Recordings[idx]
+		if metadata.RecordingType == nil {
+			metadata.RecordingType = entry.Metadata.RecordingType
+		}
 		canPreserveState := entry.Metadata.OssAudioURL == metadata.OssAudioURL && entry.AudioFile != ""
 		if canPreserveState {
 			entry.Metadata = metadata
@@ -283,8 +561,12 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		IngestedAt: now,
 		UpdatedAt:  now,
 	}
+	if s.capture {
+		entry.SourceType = SourceCaptureApp
+	}
 	s.index.Recordings = append(s.index.Recordings, entry)
 	if err := s.saveIndexLocked(); err != nil {
+		s.index.Recordings = s.index.Recordings[:len(s.index.Recordings)-1]
 		return Entry{}, err
 	}
 	s.logger.Info("录音元数据已入库: " + recordingID)
@@ -300,13 +582,28 @@ func (s *Storage) removeRelativeLocked(rel string) {
 
 // FindByID 查询单条录音，返回副本。
 func (s *Storage) FindByID(id string) (Entry, bool) {
+	entry, found, _ := s.LookupByID(id)
+	return entry, found
+}
+
+// LookupByID checks availability and searches under the same lock.
+// A missing or degraded store is not an empty, healthy index.
+func (s *Storage) LookupByID(id string) (Entry, bool, error) {
+	if s == nil {
+		return Entry{}, false, ErrStorageUnavailable
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 读取前对齐外部修改，使 status 与直接读盘的 list 看到同一份索引。
+	s.refreshIndexLocked()
+	if s.loadErr != nil {
+		return Entry{}, false, ErrStorageUnavailable
+	}
 	idx := s.findIndexLocked(id)
 	if idx < 0 {
-		return Entry{}, false
+		return Entry{}, false, nil
 	}
-	return s.index.Recordings[idx], true
+	return s.index.Recordings[idx], true, nil
 }
 
 func (s *Storage) findIndexLocked(id string) int {
@@ -318,10 +615,79 @@ func (s *Storage) findIndexLocked(id string) int {
 	return -1
 }
 
+// Exportable 报告该条目是否具备导出条件：稳定状态、音频已落盘，且索引
+// 指向的音频仍是录音根目录内可读的普通文件。
+func (s *Storage) Exportable(entry Entry) bool {
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	return exportableWithRoot(root, entry)
+}
+
+// ExportSourceSize 返回源音频当前字节数，供 export.start 与 preparing/
+// uploading 状态的预估字段使用。它只做一次 stat，不计算 SHA-256；文件
+// 不可读或超过导出上限时返回 0，由异步导出给出最终状态。导出就绪后以
+// 记录中重新 stat 的 result.transfer.sizeBytes 为准。
+func (s *Storage) ExportSourceSize(entry Entry) int64 {
+	if entry.AudioFile == "" || entry.AudioStatus != AudioStatusDownloaded {
+		return 0
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return 0
+	}
+	defer root.Close()
+	f, err := root.Open(entry.AudioFile)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxAudioExportBytes {
+		return 0
+	}
+	return info.Size()
+}
+
+// ExportableEntries 计算整页列表的导出条件，只打开一次录音根目录。
+func (s *Storage) ExportableEntries(entries []Entry) map[string]bool {
+	out := make(map[string]bool, len(entries))
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return out
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		out[entry.ID] = exportableWithRoot(root, entry)
+	}
+	return out
+}
+
+func exportableWithRoot(root *os.Root, entry Entry) bool {
+	switch entry.Status {
+	case StatusSynced, StatusTranscribed, StatusTranscribeFailed:
+	default:
+		return false
+	}
+	if entry.AudioStatus != AudioStatusDownloaded || entry.AudioFile == "" {
+		return false
+	}
+	f, err := root.Open(entry.AudioFile)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	return err == nil && info.Mode().IsRegular()
+}
+
 // ListAll 返回按 created_at 倒序排列的录音副本。
 func (s *Storage) ListAll() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshIndexLocked()
 	out := append([]Entry(nil), s.index.Recordings...)
 	SortByCreatedDesc(out)
 	return out
@@ -343,22 +709,29 @@ func (s *Storage) ListByStatus(status string) []Entry {
 func (s *Storage) Rename(recordingID, name string) (Entry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return Entry{}, false, err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return Entry{}, false, nil
 	}
-	s.index.Recordings[idx].Metadata.Name = name
-	s.index.Recordings[idx].UpdatedAt = nowISO()
-	if err := s.saveIndexLocked(); err != nil {
+	entry := s.index.Recordings[idx]
+	entry.Metadata.Name = name
+	entry.UpdatedAt = nowISO()
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, false, err
 	}
-	return s.index.Recordings[idx], true, nil
+	return entry, true, nil
 }
 
 // Delete 删除录音。localOnly 为 true 时保留索引，仅清掉本地文件引用。
 func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return false, err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return false, nil
@@ -394,21 +767,24 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 func (s *Storage) UpdateStatus(recordingID, newStatus string) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return Entry{}, err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return Entry{}, os.ErrNotExist
 	}
-	entry := &s.index.Recordings[idx]
+	entry := s.index.Recordings[idx]
 	if err := ValidateTransition(entry.Status, newStatus); err != nil {
 		return Entry{}, err
 	}
 	entry.Status = newStatus
 	entry.UpdatedAt = nowISO()
-	if err := s.saveIndexLocked(); err != nil {
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, err
 	}
 	s.logger.Info("录音状态更新: " + recordingID + " -> " + newStatus)
-	return *entry, nil
+	return entry, nil
 }
 
 // MarkResultWritten 在外部结果（result.write）写入后直接置为 transcribed。
@@ -417,21 +793,25 @@ func (s *Storage) UpdateStatus(recordingID, newStatus string) (Entry, error) {
 func (s *Storage) MarkResultWritten(recordingID string) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return Entry{}, err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return Entry{}, os.ErrNotExist
 	}
-	entry := &s.index.Recordings[idx]
+	entry := s.index.Recordings[idx]
 	entry.Status = StatusTranscribed
 	if entry.AudioStatus != AudioStatusFailed {
 		entry.LastError = ""
+		entry.ErrorCode = ""
 	}
 	entry.UpdatedAt = nowISO()
-	if err := s.saveIndexLocked(); err != nil {
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, err
 	}
 	s.logger.Info("录音结果已写入: " + recordingID)
-	return *entry, nil
+	return entry, nil
 }
 
 // SetAudioFile 记录本地音频文件。
@@ -450,6 +830,7 @@ func (s *Storage) SetAudioFile(recordingID, filename string) error {
 		entry.AudioStatus = AudioStatusDownloaded
 		entry.Metadata.FileSizeDisplay = display
 		entry.LastError = ""
+		entry.ErrorCode = ""
 	})
 }
 
@@ -461,23 +842,51 @@ func (s *Storage) SetResultAudioPending(recordingID, ossURL string, taskID ...st
 		if len(taskID) > 0 {
 			entry.OssTaskID = taskID[0]
 		}
-		nextURL := strings.TrimSpace(ossURL)
-		entry.Metadata.OssAudioURL = nextURL
-		if entry.AudioFile != "" {
-			if info, err := os.Stat(filepath.Join(s.dir, entry.AudioFile)); err == nil && !info.IsDir() && info.Size() > 0 {
-				entry.AudioSourceURL = nextURL
-				entry.AudioStatus = AudioStatusDownloaded
-				entry.Metadata.FileSizeDisplay = FormatShortFileSize(info.Size())
-				entry.LastError = ""
-				return
-			}
-		}
-		entry.AudioStatus = AudioStatusPending
-		if strings.HasPrefix(entry.LastError, "音频下载失败:") ||
-			entry.LastError == "本地音频文件缺失，等待重新下载" {
-			entry.LastError = ""
-		}
+		s.markResultAudioPending(entry, strings.TrimSpace(ossURL))
 	})
+}
+
+func (s *Storage) markResultAudioPending(entry *Entry, nextURL string) {
+	entry.Metadata.OssAudioURL = nextURL
+	entry.ErrorCode = ""
+	if entry.AudioFile != "" {
+		if info, err := os.Stat(filepath.Join(s.dir, entry.AudioFile)); err == nil && !info.IsDir() && info.Size() > 0 {
+			entry.AudioSourceURL = nextURL
+			entry.AudioStatus = AudioStatusDownloaded
+			entry.Metadata.FileSizeDisplay = FormatShortFileSize(info.Size())
+			entry.LastError = ""
+			return
+		}
+	}
+	entry.AudioStatus = AudioStatusPending
+	if strings.HasPrefix(entry.LastError, "音频下载失败:") ||
+		entry.LastError == "本地音频文件缺失，等待重新下载" {
+		entry.LastError = ""
+	}
+}
+
+// Recovery starts from a snapshot. Only retry if an upload has not since replaced it.
+func (s *Storage) prepareResultAudioRecovery(snapshot Entry) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return false, err
+	}
+	idx := s.findIndexLocked(snapshot.ID)
+	if idx < 0 {
+		return false, nil
+	}
+	entry := s.index.Recordings[idx]
+	if entry.Metadata.OssAudioURL != snapshot.Metadata.OssAudioURL ||
+		entry.OssTaskID != snapshot.OssTaskID || entry.ClientLabel != snapshot.ClientLabel {
+		return false, nil
+	}
+	s.markResultAudioPending(&entry, strings.TrimSpace(entry.Metadata.OssAudioURL))
+	entry.UpdatedAt = nowISO()
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
+		return false, err
+	}
+	return entry.AudioStatus != AudioStatusDownloaded, nil
 }
 
 // SetResultAudioDownloading 标记当前 OSS URL 正在下载。URL 已被更新时忽略旧任务，
@@ -485,11 +894,14 @@ func (s *Storage) SetResultAudioPending(recordingID, ossURL string, taskID ...st
 func (s *Storage) SetResultAudioDownloading(recordingID, ossURL string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return false, err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return false, os.ErrNotExist
 	}
-	entry := &s.index.Recordings[idx]
+	entry := s.index.Recordings[idx]
 	if strings.TrimSpace(entry.Metadata.OssAudioURL) != strings.TrimSpace(ossURL) {
 		return false, nil
 	}
@@ -499,8 +911,9 @@ func (s *Storage) SetResultAudioDownloading(recordingID, ossURL string) (bool, e
 		}
 	}
 	entry.AudioStatus = AudioStatusDownloading
+	entry.ErrorCode = ""
 	entry.UpdatedAt = nowISO()
-	if err := s.saveIndexLocked(); err != nil {
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -508,20 +921,35 @@ func (s *Storage) SetResultAudioDownloading(recordingID, ossURL string) (bool, e
 
 // SetResultAudioFailed 只更新仍指向同一个 OSS URL 的任务，避免旧请求覆盖新状态。
 func (s *Storage) SetResultAudioFailed(recordingID, ossURL, message string) (bool, error) {
+	return s.SetResultAudioFailedWithCode(recordingID, ossURL, message, "")
+}
+
+// SetResultAudioFailedWithCode 在失败状态上保存可分类错误码。
+func (s *Storage) SetResultAudioFailedWithCode(recordingID, ossURL, message, code string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return false, err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return false, os.ErrNotExist
 	}
-	entry := &s.index.Recordings[idx]
+	entry := s.index.Recordings[idx]
 	if strings.TrimSpace(entry.Metadata.OssAudioURL) != strings.TrimSpace(ossURL) {
 		return false, nil
 	}
 	entry.AudioStatus = AudioStatusFailed
 	entry.LastError = strings.TrimSpace(message)
+	entry.ErrorCode = strings.TrimSpace(code)
 	entry.UpdatedAt = nowISO()
-	if err := s.saveIndexLocked(); err != nil {
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
+		// 磁盘满时索引通常也写不进去，replaceEntryLocked 会回滚到 downloading。
+		// 但本次失败状态就是 App 停止同步的依据，必须保留在当前进程内存中；
+		// 持久化仍失败，返回错误由调用方记录。
+		if storageErrorCode(err) != "" {
+			s.index.Recordings[idx] = entry
+		}
 		return false, err
 	}
 	return true, nil
@@ -532,11 +960,14 @@ func (s *Storage) SetResultAudioFailed(recordingID, ossURL, message string) (boo
 func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, filename string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return false, err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return false, os.ErrNotExist
 	}
-	entry := &s.index.Recordings[idx]
+	entry := s.index.Recordings[idx]
 	if strings.TrimSpace(entry.Metadata.OssAudioURL) != strings.TrimSpace(ossURL) {
 		return false, nil
 	}
@@ -553,6 +984,18 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 	next := audioDirName + "/" + filename
 	destPath := filepath.Join(s.audioDir, filename)
 	if err := os.Rename(stagedPath, destPath); err != nil {
+		// 空间不足时状态落盘可能也失败；先改内存索引，保证当前进程查询能
+		// 看到 audio_status=failed/errorCode=STORAGE_FULL。
+		entry.AudioStatus = AudioStatusFailed
+		entry.LastError = "音频保存失败: " + err.Error()
+		entry.ErrorCode = storageErrorCode(err)
+		entry.UpdatedAt = nowISO()
+		// entry 是索引条目的值拷贝，必须先写回内存索引再持久化，
+		// 否则查询仍会看到 downloading。
+		s.index.Recordings[idx] = entry
+		if saveErr := s.saveIndexLocked(); saveErr != nil {
+			s.logger.Error("录音音频失败状态写入失败: " + saveErr.Error())
+		}
 		return false, err
 	}
 	_ = os.Chmod(destPath, 0o600)
@@ -562,8 +1005,16 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 	entry.AudioStatus = AudioStatusDownloaded
 	entry.Metadata.FileSizeDisplay = FormatShortFileSize(info.Size())
 	entry.LastError = ""
+	entry.ErrorCode = ""
 	entry.UpdatedAt = nowISO()
-	if err := s.saveIndexLocked(); err != nil {
+	if err := s.replaceEntryLocked(idx, entry); err != nil {
+		if code := storageErrorCode(err); code != "" {
+			entry.AudioStatus = AudioStatusFailed
+			entry.LastError = "音频状态保存失败: " + err.Error()
+			entry.ErrorCode = code
+			// 状态落盘失败时也先更新内存索引，保证当前进程查询可见。
+			s.index.Recordings[idx] = entry
+		}
 		return false, err
 	}
 	if previous != "" && previous != next {
@@ -579,6 +1030,9 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 func (s *Storage) ImportEntry(recordingID string, merge func(current *Entry) (*Entry, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return err
+	}
 	idx := s.findIndexLocked(recordingID)
 	var current *Entry
 	if idx >= 0 {
@@ -590,6 +1044,12 @@ func (s *Storage) ImportEntry(recordingID string, merge func(current *Entry) (*E
 	}
 	next, err := merge(current)
 	if err != nil || next == nil {
+		return err
+	}
+	if current != nil && next.Metadata.RecordingType == nil {
+		next.Metadata.RecordingType = current.Metadata.RecordingType
+	}
+	if err := ValidateRecordingType(next.Metadata.RecordingType); err != nil {
 		return err
 	}
 	previous := append([]Entry(nil), s.index.Recordings...)
@@ -683,23 +1143,48 @@ func (s *Storage) SetTitle(recordingID, title string) error {
 	})
 }
 
-// SetLastError 记录或清除最近错误。
+// SetLastError 记录或清除最近错误；错误码随消息一起清除，调用方需用
+// SetLastErrorCode 写入可分类错误。
 func (s *Storage) SetLastError(recordingID, message string) error {
 	return s.updateEntry(recordingID, func(entry *Entry) {
 		entry.LastError = strings.TrimSpace(message)
+		entry.ErrorCode = ""
+	})
+}
+
+// SetLastErrorCode 记录可分类错误；磁盘满等失败即使状态落盘失败也先更新
+// 内存索引，保证当前进程查询可见。
+func (s *Storage) SetLastErrorCode(recordingID, code, message string) error {
+	return s.updateEntry(recordingID, func(entry *Entry) {
+		entry.LastError = strings.TrimSpace(message)
+		entry.ErrorCode = strings.TrimSpace(code)
 	})
 }
 
 func (s *Storage) updateEntry(recordingID string, mutate func(*Entry)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.prepareWriteLocked(); err != nil {
+		return err
+	}
 	idx := s.findIndexLocked(recordingID)
 	if idx < 0 {
 		return os.ErrNotExist
 	}
-	mutate(&s.index.Recordings[idx])
-	s.index.Recordings[idx].UpdatedAt = nowISO()
-	return s.saveIndexLocked()
+	entry := s.index.Recordings[idx]
+	mutate(&entry)
+	entry.UpdatedAt = nowISO()
+	return s.replaceEntryLocked(idx, entry)
+}
+
+func (s *Storage) replaceEntryLocked(idx int, entry Entry) error {
+	previous := s.index.Recordings[idx]
+	s.index.Recordings[idx] = entry
+	if err := s.saveIndexLocked(); err != nil {
+		s.index.Recordings[idx] = previous
+		return err
+	}
+	return nil
 }
 
 // AudioFilename 生成音频文件名。
