@@ -101,7 +101,7 @@ var indexKeys = map[string]string{TypeRecordings: "recordings", TypeWebPages: "p
 // 显式的元数据白名单：本地路径、签名 URL、凭据都不能进入包。
 var allowedKeys = map[string][]string{
 	TypeNotifications: {"clientLabel", "appName", "appDisplayName", "title", "content", "timestamp", "senderName", "conversationType", "conversationName"},
-	TypeRecordings:    {"id", "clientLabel", "title", "metadata"},
+	TypeRecordings:    {"id", "clientLabel", "title", "metadata", "resultExtra", "summaryData"},
 	TypeWebPages:      {"urlHash", "canonicalUrl", "url", "title", "siteName", "capturedAt", "firstCapturedAt", "captureCount", "contentHash", "clientLabel"},
 	TypeImages:        {"imageId", "clientLabel", "metadata"},
 }
@@ -175,6 +175,10 @@ func portable(typ string, input map[string]any) map[string]any {
 	for _, key := range allowedKeys[typ] {
 		value, present := input[key]
 		if !present {
+			continue
+		}
+		if typ == TypeRecordings && (key == "resultExtra" || key == "summaryData") {
+			out[key] = value
 			continue
 		}
 		if key != "metadata" {
@@ -409,11 +413,7 @@ func readJSONFile(path string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return decodeTransferValue(raw)
 }
 
 // entries 读取某类数据的已落盘记录（原始 JSON 对象）。

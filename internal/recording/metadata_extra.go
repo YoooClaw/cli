@@ -1,6 +1,7 @@
 package recording
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -79,6 +80,17 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 	}
 	*m = Metadata(typed)
 	m.Extra = extra
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if raw, ok := fields["location"]; ok {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&m.Location); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 func (m Metadata) MarshalJSON() ([]byte, error) {

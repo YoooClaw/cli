@@ -42,8 +42,9 @@ type Logger interface {
 
 // Marker 是录音关键点标记。
 type Marker struct {
-	Index       int     `json:"index"`
-	TimestampMS float64 `json:"timestamp_ms"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Index       int                        `json:"index"`
+	TimestampMS float64                    `json:"timestamp_ms"`
 }
 
 const (
@@ -134,22 +135,24 @@ type ExportAudioIdentity struct {
 // Entry 是一条录音索引项。
 type Entry struct {
 	// ContextRevision is populated only for the committed-content callback.
-	ContextRevision    string   `json:"-"`
-	OssTaskID          string   `json:"ossTaskId,omitempty"`
-	ID                 string   `json:"id"`
-	SourceType         string   `json:"sourceType,omitempty"`
-	ClientLabel        string   `json:"clientLabel,omitempty"`
-	Metadata           Metadata `json:"metadata"`
-	Status             string   `json:"status"`
-	AudioStatus        string   `json:"audioStatus,omitempty"`
-	AudioSourceURL     string   `json:"audioSourceUrl,omitempty"`
-	AudioFile          string   `json:"audioFile,omitempty"`
-	SrtFile            string   `json:"srtFile,omitempty"`
-	TranscriptDataFile string   `json:"transcriptDataFile,omitempty"`
-	TranscriptFile     string   `json:"transcriptFile,omitempty"`
-	SummaryFile        string   `json:"summaryFile,omitempty"`
-	Title              string   `json:"title,omitempty"`
-	LastError          string   `json:"lastError,omitempty"`
+	ContextRevision    string                     `json:"-"`
+	ResultExtra        map[string]json.RawMessage `json:"resultExtra,omitempty"`
+	SummaryData        *ResultSummary             `json:"summaryData,omitempty"`
+	OssTaskID          string                     `json:"ossTaskId,omitempty"`
+	ID                 string                     `json:"id"`
+	SourceType         string                     `json:"sourceType,omitempty"`
+	ClientLabel        string                     `json:"clientLabel,omitempty"`
+	Metadata           Metadata                   `json:"metadata"`
+	Status             string                     `json:"status"`
+	AudioStatus        string                     `json:"audioStatus,omitempty"`
+	AudioSourceURL     string                     `json:"audioSourceUrl,omitempty"`
+	AudioFile          string                     `json:"audioFile,omitempty"`
+	SrtFile            string                     `json:"srtFile,omitempty"`
+	TranscriptDataFile string                     `json:"transcriptDataFile,omitempty"`
+	TranscriptFile     string                     `json:"transcriptFile,omitempty"`
+	SummaryFile        string                     `json:"summaryFile,omitempty"`
+	Title              string                     `json:"title,omitempty"`
+	LastError          string                     `json:"lastError,omitempty"`
 	// ErrorCode 是可选的可分类错误；成功或新尝试开始时清除，旧客户端可忽略。
 	ErrorCode  string `json:"errorCode,omitempty"`
 	IngestedAt string `json:"ingestedAt"`
@@ -541,6 +544,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
+		entry.SummaryData = nil
 		entry.Title = ""
 		entry.LastError = ""
 		entry.UpdatedAt = now
@@ -757,6 +761,7 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
+		entry.SummaryData = nil
 		entry.UpdatedAt = nowISO()
 	} else {
 		s.index.Recordings = append(s.index.Recordings[:idx], s.index.Recordings[idx+1:]...)

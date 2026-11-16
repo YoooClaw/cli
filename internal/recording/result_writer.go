@@ -16,10 +16,11 @@ import (
 
 // ResultTranscriptSource 是 result.write 入参里转写的上游来源。
 type ResultTranscriptSource struct {
-	Provider  string `json:"provider,omitempty"`
-	TaskID    string `json:"taskId,omitempty"`
-	RequestID string `json:"requestId,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Extra     map[string]json.RawMessage `json:"-"`
+	Provider  string                     `json:"provider,omitempty"`
+	TaskID    string                     `json:"taskId,omitempty"`
+	RequestID string                     `json:"requestId,omitempty"`
+	Status    string                     `json:"status,omitempty"`
 }
 
 // ResultTranscriptSegment 是 result.write 入参里的转写分段。
@@ -34,13 +35,14 @@ type ResultTranscriptSegment struct {
 
 // ResultTranscript 是 result.write 写入的转写结果。
 type ResultTranscript struct {
-	GeneratedAt string                    `json:"generatedAt,omitempty"`
-	Source      *ResultTranscriptSource   `json:"source,omitempty"`
-	Title       string                    `json:"title,omitempty"`
-	Category    string                    `json:"category,omitempty"`
-	Brief       string                    `json:"brief,omitempty"`
-	Text        string                    `json:"text,omitempty"`
-	Segments    []ResultTranscriptSegment `json:"segments,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	GeneratedAt string                     `json:"generatedAt,omitempty"`
+	Source      *ResultTranscriptSource    `json:"source,omitempty"`
+	Title       string                     `json:"title,omitempty"`
+	Category    string                     `json:"category,omitempty"`
+	Brief       string                     `json:"brief,omitempty"`
+	Text        string                     `json:"text,omitempty"`
+	Segments    []ResultTranscriptSegment  `json:"segments,omitempty"`
 	// Markdown, when supplied, is authoritative to preserve App formatting.
 	// Callers changing segments/speaker names must regenerate it or omit it.
 	Markdown string `json:"markdown,omitempty"`
@@ -48,24 +50,26 @@ type ResultTranscript struct {
 
 // ResultSummary 是 result.write 写入的总结结果。
 type ResultSummary struct {
-	GeneratedAt string          `json:"generatedAt,omitempty"`
-	Format      string          `json:"format,omitempty"`
-	Markdown    string          `json:"markdown,omitempty"`
-	Structured  json.RawMessage `json:"structured,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	GeneratedAt string                     `json:"generatedAt,omitempty"`
+	Format      string                     `json:"format,omitempty"`
+	Markdown    string                     `json:"markdown,omitempty"`
+	Structured  json.RawMessage            `json:"structured,omitempty"`
 }
 
 // ResultWriteParams 是 recordings.result.write 的入参。
 type ResultWriteParams struct {
-	OssTaskID      *string           `json:"ossTaskId,omitempty"`
-	RecordingID    string            `json:"recordingId"`
-	SourceType     string            `json:"sourceType,omitempty"`
-	OssURL         string            `json:"ossUrl,omitempty"`
-	DurationMillis *float64          `json:"durationMillis,omitempty"`
-	Recording      *Metadata         `json:"recording,omitempty"`
-	CreatedAt      string            `json:"createdAt,omitempty"`
-	CreatedAtSnake string            `json:"created_at,omitempty"`
-	Transcript     *ResultTranscript `json:"transcript,omitempty"`
-	Summary        *ResultSummary    `json:"summary,omitempty"`
+	Extra          map[string]json.RawMessage `json:"-"`
+	OssTaskID      *string                    `json:"ossTaskId,omitempty"`
+	RecordingID    string                     `json:"recordingId"`
+	SourceType     string                     `json:"sourceType,omitempty"`
+	OssURL         string                     `json:"ossUrl,omitempty"`
+	DurationMillis *float64                   `json:"durationMillis,omitempty"`
+	Recording      *Metadata                  `json:"recording,omitempty"`
+	CreatedAt      string                     `json:"createdAt,omitempty"`
+	CreatedAtSnake string                     `json:"created_at,omitempty"`
+	Transcript     *ResultTranscript          `json:"transcript,omitempty"`
+	Summary        *ResultSummary             `json:"summary,omitempty"`
 }
 
 // ResultWriteStored 记录 result.write 落盘的相对路径。
@@ -180,6 +184,17 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 			return ResultWriteResult{}, err
 		}
 		summaryText = st
+	}
+
+	if len(params.Extra) > 0 || params.Summary != nil {
+		if err := storage.updateEntry(recordingID, func(current *Entry) {
+			current.ResultExtra = mergeMetadataExtra(current.ResultExtra, params.Extra)
+			if params.Summary != nil {
+				current.SummaryData = mergeSummaryData(current.SummaryData, params.Summary)
+			}
+		}); err != nil {
+			return ResultWriteResult{}, err
+		}
 	}
 
 	updated := entry
@@ -360,12 +375,14 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 		if p := strings.TrimSpace(t.Source.Provider); p != "" {
 			source.Provider = p
 		}
+		source.Extra = mergeMetadataExtra(nil, t.Source.Extra)
 		source.TaskID = strings.TrimSpace(t.Source.TaskID)
 		source.RequestID = strings.TrimSpace(t.Source.RequestID)
 		source.Status = strings.TrimSpace(t.Source.Status)
 	}
 
-	doc := BuildTranscriptDocument(recordingID, source, title, strings.TrimSpace(t.Category), normalizeMultiline(t.Brief), text, segments, t)
+	doc := BuildTranscriptDocument(recordingID, source, title, strings.TrimSpace(t.Category), normalizeMultiline(t.Brief), text, segments, nil)
+	doc.ResultExtra = mergeMetadataExtra(nil, t.Extra)
 	if g := strings.TrimSpace(t.GeneratedAt); g != "" {
 		doc.GeneratedAt = g
 	}
@@ -588,13 +605,9 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 func normalizeResultSegments(segments []ResultTranscriptSegment) []TranscriptSegment {
 	out := make([]TranscriptSegment, 0, len(segments))
 	for _, seg := range segments {
-		text := strings.TrimSpace(seg.Text)
-		if text == "" {
-			continue
-		}
 		out = append(out, TranscriptSegment{
 			Extra:       mergeMetadataExtra(nil, seg.Extra),
-			Text:        text,
+			Text:        strings.TrimSpace(seg.Text),
 			StartMS:     seg.StartMS,
 			EndMS:       seg.EndMS,
 			SpeakerID:   seg.SpeakerID,
