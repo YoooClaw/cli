@@ -212,10 +212,14 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		summary = &value
 		summaryPresent = summaryPresent || len(value.Structured) > 0
 	}
-	if transcript == nil && summary == nil {
+	if !transcriptPresent && !summaryPresent {
 		// Audio-only compatibility: old DTOs carry empty objects.
-		transcript = &ResultTranscript{Segments: []ResultTranscriptSegment{}}
-		summary = &ResultSummary{Format: "markdown", Markdown: ""}
+		if transcript == nil {
+			transcript = &ResultTranscript{Segments: []ResultTranscriptSegment{}}
+		}
+		if summary == nil {
+			summary = &ResultSummary{Format: "markdown", Markdown: ""}
+		}
 	}
 	markers := entry.Metadata.Markers
 	if markers == nil {

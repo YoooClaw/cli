@@ -88,9 +88,6 @@ func ExtractSourceTextListFromDocument(doc TranscriptDocument) []TranscriptItem 
 	if len(doc.Normalized.Segments) > 0 {
 		out := make([]TranscriptItem, 0, len(doc.Normalized.Segments))
 		for _, seg := range doc.Normalized.Segments {
-			if strings.TrimSpace(seg.Text) == "" {
-				continue
-			}
 			out = append(out, TranscriptItem{
 				Extra:       mergeMetadataExtra(nil, seg.Extra),
 				Content:     seg.Text,

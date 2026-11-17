@@ -90,8 +90,8 @@ func TestResultExtensionsStorageAndExport(t *testing.T) {
 	if string(next.payload.Extra["future"]) != `[]` {
 		t.Fatal("array not replaced")
 	}
-	if !strings.Contains(next.payload.Summary.Markdown, "updated") || len(next.payload.Summary.Extra) == 0 {
-		t.Fatal("summary update lost extensions")
+	if !strings.Contains(next.payload.Summary.Markdown, "updated") || len(next.payload.Summary.Extra) != 0 {
+		t.Fatal("new summary retained stale extensions or lost Markdown")
 	}
 	files, err := filepath.Glob(filepath.Join(storage.dir, "transcript-data", "*.app-result.json"))
 	if err != nil || len(files) > 0 {

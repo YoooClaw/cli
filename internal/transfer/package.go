@@ -106,6 +106,8 @@ var allowedKeys = map[string][]string{
 	TypeImages:        {"imageId", "clientLabel", "metadata"},
 }
 
+var recordingRuntimeMetadataFields = []string{"oss_audio_url", "oss_srt_url", "file_size_display", "transfer_status", "ossTaskId"}
+
 var metadataKeys = []string{"name", "created_at", "duration_sec", "duration_display", "size_bytes", "mime_type", "width", "height", "source_app", "caption"}
 
 var (
@@ -149,11 +151,6 @@ func isScalar(v any) bool {
 	return false
 }
 
-func isFiniteNumber(v any) bool {
-	f, ok := v.(float64)
-	return ok && f-f == 0
-}
-
 func formatDurationDisplay(total int64) string {
 	h, m, s := total/3600, (total%3600)/60, total%60
 	switch {
@@ -195,7 +192,7 @@ func portable(typ string, input map[string]any) map[string]any {
 			}
 			// Runtime URLs/status and local size display are regenerated on the target.
 			// Keep all other App metadata, including unknown nested extensions.
-			for _, key := range []string{"oss_audio_url", "oss_srt_url", "file_size_display", "transfer_status"} {
+			for _, key := range recordingRuntimeMetadataFields {
 				delete(meta, key)
 			}
 			sec := 0.0
@@ -263,7 +260,8 @@ func safeStorageID(v string) error {
 func validateData(typ string, d map[string]any) error {
 	projected := portable(typ, d)
 	if typ == TypeRecordings && d != nil {
-		// App metadata is extensible; record-level runtime fields are not.
+		// Preserve the original metadata for source hash validation. materialize
+		// strips runtime fields before a new recording is persisted.
 		projected["metadata"] = d["metadata"]
 	}
 	if d == nil || canonical(projected) != canonical(d) {
