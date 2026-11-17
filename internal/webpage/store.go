@@ -81,6 +81,8 @@ type Payload struct {
 
 // Entry 是 index.json 里的一条网页记录。字段与 TS / Python 两端严格对齐。
 type Entry struct {
+	// ContextRevision is populated only for the committed-content callback.
+	ContextRevision string `json:"-"`
 	URLHash         string `json:"urlHash"`
 	CanonicalURL    string `json:"canonicalUrl"`
 	URL             string `json:"url,omitempty"`
@@ -183,7 +185,7 @@ func invalid(format string, args ...any) *Error {
 //
 // 存档解压/校验失败时 Markdown 照常落盘并返回成功，只是不回 archivePath——
 // 存档是重处理原料，永远不能让一次收藏失败（§4.1）。
-func Ingest(dir string, payload Payload, clientLabel string, logger Logger) (IngestResult, error) {
+func Ingest(dir string, payload Payload, clientLabel string, logger Logger, onCommit ...func(Entry, bool)) (result IngestResult, err error) {
 	source := strings.TrimSpace(payload.CanonicalURL)
 	if source == "" {
 		source = strings.TrimSpace(payload.URL)
@@ -223,6 +225,22 @@ func Ingest(dir string, payload Payload, clientLabel string, logger Logger) (Ing
 
 	entries := ReadIndex(dir)
 	previous, previousIdx := findByHash(entries, urlHash)
+	before := contextContentHash(dir, previous)
+	defer func() {
+		if err == nil && result.Unchanged != nil && *result.Unchanged {
+			return
+		}
+		rows := ReadIndex(dir)
+		current, _ := findByHash(rows, urlHash)
+		after := contextContentHash(dir, current)
+		if current != nil && after != "" && before != after {
+			for _, notify := range onCommit {
+				entry := *current
+				entry.ContextRevision = after
+				notify(entry, err != nil)
+			}
+		}
+	}()
 
 	filesDir := filepath.Join(dir, filesDirName)
 	if err := fsutil.EnsureDir(filesDir, fsutil.DirMode); err != nil {
@@ -307,7 +325,7 @@ func Ingest(dir string, payload Payload, clientLabel string, logger Logger) (Ing
 	}
 
 	logger.Info(fmt.Sprintf("web-page[%s] 已落盘：%s（第 %d 次收藏）", urlHash[:8], relativePath, entry.CaptureCount))
-	result := IngestResult{
+	result = IngestResult{
 		OK:           true,
 		URLHash:      urlHash,
 		RelativePath: relativePath,
@@ -547,4 +565,16 @@ func safeRelative(dir, relative string) (string, bool) {
 		return "", false
 	}
 	return resolved, true
+}
+
+func contextContentHash(dir string, entry *Entry) string {
+	if entry == nil || entry.RelativePath == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, entry.RelativePath))
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }

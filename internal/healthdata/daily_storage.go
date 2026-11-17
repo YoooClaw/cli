@@ -146,8 +146,11 @@ func (s *Storage) replaceDay(day DailySnapshot, daily *DailyBatch, collected tim
 	if out.Len() > MaxDayBytes {
 		return DayWriteResult{Date: day.Date}, fmt.Errorf("health day exceeds 4 MiB")
 	}
+	if bytes.Equal(prior, out.Bytes()) {
+		return DayWriteResult{Date: day.Date, Applied: true}, nil
+	}
 	if err := fsutil.WriteAtomic(path, out.Bytes(), fsutil.SecretFileMode); err != nil {
 		return DayWriteResult{Date: day.Date}, err
 	}
-	return DayWriteResult{Date: day.Date, Applied: true}, nil
+	return DayWriteResult{Date: day.Date, Applied: true, Changed: true}, nil
 }

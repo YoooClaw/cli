@@ -130,6 +130,7 @@ func (s *Storage) Replace(p Payload) (Result, error) {
 	if err != nil {
 		return result, err
 	}
+	result.Changed = idx.Revision != next.Revision || indexErr != nil
 	result.Applied, result.Ingested, result.Revision = true, len(p.Items), next.Revision
 	return result, nil
 }

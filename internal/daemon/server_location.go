@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"net/http"
 
 	"github.com/YoooClaw/cli/internal/location"
@@ -24,7 +25,9 @@ func (s *server) handleLocationIngest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.locationStorage.Append(body.Items); err != nil {
+	result, err := s.locationStorage.AppendDetails(body.Items)
+	s.publishContext("locations", "append", "", result.Committed, err != nil, "records", contextevent.Details{ChangedDates: result.ChangedDates})
+	if err != nil {
 		s.logger.Error(fmt.Sprintf("[locations] requestId=%s write failed: %v", r.Header.Get(relay.InternalRequestIDHeader), err))
 		writeJSON(w, http.StatusInternalServerError, errBody("LOCATION_WRITE_FAILED", "位置数据保存失败"))
 		return

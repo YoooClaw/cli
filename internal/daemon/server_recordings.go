@@ -23,8 +23,9 @@ func (s *server) recoverRecordingAudio() int {
 	for _, store := range []*recording.Storage{s.recordingStorage, s.captureRecordingStorage} {
 		if store != nil {
 			count += recording.RecoverMissingResultAudio(store, s.logger, recording.SyncOptions{
-				NotifyStatus: s.notifyRecordingStatus,
-				URLRefresher: s.recordingURLRefresher,
+				OnContentCommit: s.notifyRecordingContent,
+				NotifyStatus:    s.notifyRecordingStatus,
+				URLRefresher:    s.recordingURLRefresher,
 			})
 		}
 	}
@@ -144,9 +145,10 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		}
 		body.RecordingID = recordingID
 		result, err := recording.HandleRecordingResultWrite(body, store, s.logger, recording.SyncOptions{
-			NotifyStatus: s.notifyRecordingStatus,
-			URLRefresher: s.recordingURLRefresher,
-			ClientLabel:  label,
+			OnContentCommit: s.notifyRecordingContent,
+			NotifyStatus:    s.notifyRecordingStatus,
+			URLRefresher:    s.recordingURLRefresher,
+			ClientLabel:     label,
 		})
 		if err != nil {
 			s.logRecordingWriteFailure(recordingID, r.Header.Get(relay.InternalRequestIDHeader), err)
@@ -225,7 +227,8 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		go func() {
 			defer finishRecording()
 			if err := recording.TriggerTranscription(recordingID, store, *asr, s.logger, recording.SyncOptions{
-				NotifyStatus: s.notifyRecordingStatus,
+				OnContentCommit: s.notifyRecordingContent,
+				NotifyStatus:    s.notifyRecordingStatus,
 			}); err != nil {
 				s.logger.Error("[recording-retranscribe] 重试转写失败: " + recordingID + ", " + err.Error())
 			}

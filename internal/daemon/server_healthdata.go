@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"net/http"
 	"strings"
 
@@ -28,6 +29,13 @@ func (s *server) handleHealthDataIngest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	days, err := s.healthDataStorage.Append(batch)
+	changedDates := []string{}
+	for _, day := range days {
+		if day.Changed {
+			changedDates = append(changedDates, day.Date)
+		}
+	}
+	s.publishContext("health-data", "replace", "", len(changedDates), err != nil, "days", contextevent.Details{ChangedDates: changedDates})
 	rejected, dropped := 0, 0
 	for _, day := range days {
 		dropped += day.Dropped

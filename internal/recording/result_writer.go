@@ -90,6 +90,9 @@ type ResultWriteResult struct {
 // 找不到录音时按占位元数据 upsert 新建；
 // 可选 ossUrl 时在后台下载并覆盖本地音频。不触发插件侧 ASR。
 func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logger Logger, opts SyncOptions) (ResultWriteResult, error) {
+	finish := observeContent(storage, params.RecordingID, opts.OnContentCommit)
+	success := false
+	defer func() { finish(success) }()
 	recordingID := strings.TrimSpace(params.RecordingID)
 	if recordingID == "" {
 		return ResultWriteResult{}, errors.New("recordingId is required")
@@ -207,6 +210,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		}()
 	}
 
+	success = true
 	return ResultWriteResult{
 		OK:             true,
 		RecordingID:    recordingID,

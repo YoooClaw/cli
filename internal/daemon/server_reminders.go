@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/YoooClaw/cli/internal/contextevent"
 	"io"
 	"net/http"
 	"net/url"
@@ -33,6 +34,9 @@ func (s *server) handleReminderIngest(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error(fmt.Sprintf("[reminders] snapshot write failed: %v", err))
 		writeJSON(w, 500, errBody("REMINDERS_WRITE_FAILED", "提醒事项保存失败"))
 		return
+	}
+	if result.Applied && result.Changed {
+		s.publishContext("reminders", "replace", "", 1, false, "snapshots", contextevent.Details{ReadScope: "snapshot", Revision: result.Revision})
 	}
 	s.logger.Info(fmt.Sprintf("[reminders] ingested=%d applied=%t bytes=%d", result.Ingested, result.Applied, len(raw)))
 	writeJSON(w, 200, result)

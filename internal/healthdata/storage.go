@@ -18,6 +18,7 @@ func NewStorage(dir string) *Storage { return &Storage{dir: dir} }
 // appear when the rest of the day was still written.
 type DayWriteResult struct {
 	Date     string   `json:"date"`
+	Changed  bool     `json:"-"`
 	Applied  bool     `json:"applied"`
 	Reason   string   `json:"reason,omitempty"`
 	Message  string   `json:"message,omitempty"`

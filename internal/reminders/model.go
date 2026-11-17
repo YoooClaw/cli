@@ -90,6 +90,7 @@ type State struct {
 }
 
 type Result struct {
+	Changed  bool   `json:"-"`
 	OK       bool   `json:"ok"`
 	Applied  bool   `json:"applied"`
 	Ingested int    `json:"ingested"`
