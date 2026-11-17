@@ -104,3 +104,29 @@ func TestReplacementSummaryFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestAppExportFiltersOnlyBlankSegments(t *testing.T) {
+	for _, fullText := range []string{"", "fallback body"} {
+		t.Run(fullText, func(t *testing.T) {
+			doc := TranscriptDocument{}
+			doc.Normalized.Text = fullText
+			doc.Normalized.Segments = []TranscriptSegment{{Text: ""}, {Text: " \t\n"}}
+			out, present := buildExportTranscript(&doc, "", "")
+			if len(out.Segments) != 0 || present != (fullText != "") || out.Text != fullText {
+				t.Fatalf("unexpected blank-only export: %+v, present=%v", out, present)
+			}
+			if len(doc.Normalized.Segments) != 2 {
+				t.Fatal("source segments mutated")
+			}
+		})
+	}
+	doc := TranscriptDocument{}
+	doc.Normalized.Segments = []TranscriptSegment{
+		{Text: "first", Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"vp-1"`)}},
+		{Text: " \t"}, {Text: "second"},
+	}
+	out, present := buildExportTranscript(&doc, "", "")
+	if !present || len(out.Segments) != 2 || out.Segments[0].Text != "first" || out.Segments[1].Text != "second" || string(out.Segments[0].Extra["voiceprintId"]) != `"vp-1"` {
+		t.Fatalf("nonblank segment order or extras lost: %+v", out)
+	}
+}

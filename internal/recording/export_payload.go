@@ -296,6 +296,11 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 	if doc != nil {
 		segments := make([]ResultTranscriptSegment, 0, len(doc.Normalized.Segments))
 		for _, segment := range doc.Normalized.Segments {
+			// App import requires nonblank text. Keep the original document and
+			// migration assets intact; filter only this App-facing projection.
+			if strings.TrimSpace(segment.Text) == "" {
+				continue
+			}
 			segments = append(segments, ResultTranscriptSegment{
 				Extra: mergeMetadataExtra(nil, segment.Extra),
 				Text:  segment.Text, StartMS: segment.StartMS, EndMS: segment.EndMS, SpeakerID: segment.SpeakerID, SpeakerName: strings.TrimSpace(segment.SpeakerName),
