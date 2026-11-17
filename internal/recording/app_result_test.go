@@ -61,8 +61,15 @@ func TestResultExtensionsStorageAndExport(t *testing.T) {
 	if compactSegmentJSON(t, exported.Transcript.Source.Extra["future"]) != `{"list":[2,1]}` {
 		t.Fatal("source extras changed")
 	}
-	if len(exported.Transcript.Segments) != 3 || compactSegmentJSON(t, exported.Transcript.Segments[2].Extra["extra"]) != `[3,2,1]` {
-		t.Fatal("empty segment lost")
+	if len(exported.Transcript.Segments) != 2 {
+		t.Fatal("App export retained empty segment")
+	}
+	if len(doc.Normalized.Segments) != 3 || compactSegmentJSON(t, doc.Normalized.Segments[2].Extra["extra"]) != `[3,2,1]` {
+		t.Fatal("stored empty segment lost")
+	}
+	afterExport, err := os.ReadFile(filepath.Join(storage.dir, entry.TranscriptDataFile))
+	if err != nil || string(afterExport) != string(docRaw) {
+		t.Fatal("App export modified stored transcript")
 	}
 	if exported.Transcript.Segments[0].Text != "second" || exported.Transcript.Segments[1].Text != "first" {
 		t.Fatal("segment order changed")

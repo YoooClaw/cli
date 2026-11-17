@@ -104,3 +104,54 @@ func TestReplacementSummaryFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestAppExportFiltersOnlyBlankSegments(t *testing.T) {
+	for _, fullText := range []string{"", "fallback body"} {
+		t.Run(fullText, func(t *testing.T) {
+			doc := TranscriptDocument{}
+			doc.Normalized.Text = fullText
+			doc.Normalized.Segments = []TranscriptSegment{{Text: ""}, {Text: " \t\n"}}
+			out, present := buildExportTranscript(&doc, "", "")
+			out, present = appExportTranscript(out, present)
+			if len(out.Segments) != 0 || present != (fullText != "") || out.Text != fullText {
+				t.Fatalf("unexpected blank-only export: %+v, present=%v", out, present)
+			}
+			if len(doc.Normalized.Segments) != 2 {
+				t.Fatal("source segments mutated")
+			}
+		})
+	}
+	doc := TranscriptDocument{}
+	doc.Normalized.Segments = []TranscriptSegment{
+		{Text: "first", Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"vp-1"`)}},
+		{Text: " \t", Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"filtered-id"`), "onlyBlank": json.RawMessage(`true`)}}, {Text: "second"},
+	}
+	out, present := buildExportTranscript(&doc, "", "")
+	out, present = appExportTranscript(out, present)
+	if !present || len(out.Segments) != 2 || out.Segments[0].Text != "first" || out.Segments[1].Text != "second" || string(out.Segments[0].Extra["voiceprintId"]) != `"vp-1"` {
+		t.Fatalf("nonblank segment order or extras lost: %+v", out)
+	}
+}
+
+func TestAppExportWhitespaceForBothSources(t *testing.T) {
+	for _, blank := range []string{"", " ", "\t\r\n", "\u001c\u001d\u001e\u001f", "\uFEFF", "\u00a0\u2003"} {
+		t.Run(blank, func(t *testing.T) {
+			storage, _ := seedExportPayloadRecording(t, &ResultTranscript{Text: "body", Segments: []ResultTranscriptSegment{
+				{Text: "body", Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"kept-id"`)}}, {Text: blank, Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"filtered-id"`)}},
+			}}, nil)
+			for _, sourceType := range []string{SourceMobileApp, SourceCaptureApp} {
+				if err := storage.updateEntry("rec_payload", func(e *Entry) { e.SourceType = sourceType }); err != nil {
+					t.Fatal(err)
+				}
+				source, err := prepareExportSource(storage, "rec_payload", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				segments := source.payload.Transcript.Segments
+				if len(segments) != 1 || string(segments[0].Extra["voiceprintId"]) != `"kept-id"` || len(segments[0].Extra) != 1 {
+					t.Fatalf("%s: normal voiceprint lost or blank extras leaked: %+v", sourceType, segments)
+				}
+			}
+		})
+	}
+}

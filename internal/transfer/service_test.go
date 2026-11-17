@@ -419,7 +419,7 @@ func TestRecordingMetadataExtensionsRoundTrip(t *testing.T) {
 func TestRecordingExtensionsMigrationRoundTrip(t *testing.T) {
 	src, dst := newEnv(t), newEnv(t)
 	var params recording.ResultWriteParams
-	raw := []byte(`{"recordingId":"raw-roundtrip","recording":{"name":"raw","created_at":"2026-11-16T00:00:00Z","future":{"large":9007199254740993}},"future":[9007199254740993,[3,1,2],null],"transcript":{"text":"body","source":{"future":[2,1]},"future":[9007199254740993]},"summary":{"markdown":"summary","structured":{"items":[3,2,1,9007199254740993]}}}`)
+	raw := []byte(`{"recordingId":"raw-roundtrip","recording":{"name":"raw","created_at":"2026-11-16T00:00:00Z","future":{"large":9007199254740993}},"future":[9007199254740993,[3,1,2],null],"transcript":{"text":"body","segments":[{"text":"body"},{"text":"","voiceprintId":"vp-empty","future":[3,1]}],"source":{"future":[2,1]},"future":[9007199254740993]},"summary":{"markdown":"summary","structured":{"items":[3,2,1,9007199254740993]}}}`)
 	if err := json.Unmarshal(raw, &params); err != nil {
 		t.Fatal(err)
 	}
@@ -449,6 +449,13 @@ func TestRecordingExtensionsMigrationRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(transcript), "9007199254740993") {
 		t.Fatal("transcript lost number")
+	}
+	var migratedDoc recording.TranscriptDocument
+	if err := json.Unmarshal(transcript, &migratedDoc); err != nil {
+		t.Fatal(err)
+	}
+	if len(migratedDoc.Normalized.Segments) != 2 || migratedDoc.Normalized.Segments[1].Text != "" || string(migratedDoc.Normalized.Segments[1].Extra["voiceprintId"]) != `"vp-empty"` {
+		t.Fatal("migration lost blank segment or voiceprint")
 	}
 	// No whole-request copy or duplicate summary Markdown in the index.
 	index, err := os.ReadFile(filepath.Join(dst.roots[TypeRecordings], "index.json"))
