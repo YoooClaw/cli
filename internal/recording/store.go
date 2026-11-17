@@ -543,6 +543,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
 		entry.SummaryData = nil
+		entry.ResultExtra = nil
 		entry.Title = ""
 		entry.LastError = ""
 		entry.UpdatedAt = now
@@ -760,6 +761,7 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
 		entry.SummaryData = nil
+		entry.ResultExtra = nil
 		entry.UpdatedAt = nowISO()
 	} else {
 		s.index.Recordings = append(s.index.Recordings[:idx], s.index.Recordings[idx+1:]...)

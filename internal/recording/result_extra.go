@@ -132,7 +132,7 @@ func (v Marker) MarshalJSON() ([]byte, error) {
 // without an existing storage location are kept in the index.
 func mergeSummaryData(current, incoming *ResultSummary) *ResultSummary {
 	var out ResultSummary
-	if current != nil {
+	if current != nil && incoming.Markdown == "" && incoming.Structured == nil {
 		out = *current
 	}
 	out.Extra = mergeMetadataExtra(out.Extra, incoming.Extra)

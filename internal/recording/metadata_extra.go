@@ -114,3 +114,25 @@ func (m *ExportRecording) UnmarshalJSON(data []byte) error {
 func (m ExportRecording) MarshalJSON() ([]byte, error) {
 	return encodeMetadataExtra(exportRecordingJSON(m), m.Extra, exportRecordingJSONNames)
 }
+
+// Compare JSON values rather than indentation left by index.json serialization.
+func metadataExtrasEqual(a, b map[string]json.RawMessage) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, raw := range a {
+		other, ok := b[key]
+		if !ok {
+			return false
+		}
+		var x, y any
+		dx := json.NewDecoder(bytes.NewReader(raw))
+		dx.UseNumber()
+		dy := json.NewDecoder(bytes.NewReader(other))
+		dy.UseNumber()
+		if dx.Decode(&x) != nil || dy.Decode(&y) != nil || !reflect.DeepEqual(x, y) {
+			return false
+		}
+	}
+	return true
+}

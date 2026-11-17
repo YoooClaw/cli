@@ -298,7 +298,7 @@ func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, 
 	if incoming := params.Recording; incoming != nil {
 		if len(incoming.Extra) > 0 {
 			merged.Extra = mergeMetadataExtra(current.Extra, incoming.Extra)
-			changed = true
+			changed = !metadataExtrasEqual(current.Extra, merged.Extra)
 		}
 		if value := strings.TrimSpace(incoming.Name); value != "" && value != merged.Name {
 			merged.Name, changed = value, true

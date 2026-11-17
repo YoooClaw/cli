@@ -118,6 +118,18 @@ func materialize(ctx context.Context, r Record, root, packageRoot string, curren
 	for k, v := range base {
 		entry[k] = v
 	}
+	if r.Type == TypeRecordings && current == nil {
+		if metadata, ok := entry["metadata"].(map[string]any); ok {
+			clean := make(map[string]any, len(metadata))
+			for key, value := range metadata {
+				clean[key] = value
+			}
+			for _, key := range recordingRuntimeMetadataFields {
+				delete(clean, key)
+			}
+			entry["metadata"] = clean
+		}
+	}
 	// 只有真正新增的记录才打迁移标记；补附件时不能把本地产生的记录标成迁入的。
 	if current == nil {
 		entry["transfer"] = map[string]any{"origin": r.Origin, "recordId": r.RecordID}
