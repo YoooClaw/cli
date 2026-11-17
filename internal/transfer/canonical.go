@@ -37,6 +37,9 @@ func writeCanonical(b *strings.Builder, value any) {
 		} else {
 			b.WriteString("false")
 		}
+	case json.Number:
+		f, _ := v.Float64()
+		b.WriteString(jsNumber(f))
 	case float64:
 		b.WriteString(jsNumber(v))
 	case int:
@@ -82,10 +85,7 @@ func toAny(v any) any {
 	if err != nil {
 		return nil
 	}
-	var out any
-	if json.Unmarshal(raw, &out) != nil {
-		return nil
-	}
+	out, _ := decodeTransferValue(raw)
 	return out
 }
 

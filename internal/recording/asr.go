@@ -274,11 +274,12 @@ type recordResult struct {
 }
 
 type sourceTextItem struct {
-	Content     string   `json:"content,omitempty"`
-	SpeakerID   *int     `json:"speakerId,omitempty"`
-	SpeakerName string   `json:"speakerName,omitempty"`
-	StartTime   *float64 `json:"startTime,omitempty"`
-	EndTime     *float64 `json:"endTime,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Content     string                     `json:"content,omitempty"`
+	SpeakerID   *int                       `json:"speakerId,omitempty"`
+	SpeakerName string                     `json:"speakerName,omitempty"`
+	StartTime   *float64                   `json:"startTime,omitempty"`
+	EndTime     *float64                   `json:"endTime,omitempty"`
 }
 
 type responseEnvelope struct {
@@ -440,7 +441,8 @@ func extractTextAndSegments(result *recordResult, finalFallbackEndMS float64) (s
 			end = start
 		}
 		segments = append(segments, TranscriptSegment{
-			Text: content, StartMS: &start, EndMS: &end, SpeakerID: item.SpeakerID, SpeakerName: strings.TrimSpace(item.SpeakerName),
+			Extra: mergeMetadataExtra(nil, item.Extra),
+			Text:  content, StartMS: &start, EndMS: &end, SpeakerID: item.SpeakerID, SpeakerName: strings.TrimSpace(item.SpeakerName),
 		})
 		parts = append(parts, content)
 	}

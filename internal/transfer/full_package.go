@@ -172,8 +172,9 @@ func readFullPackageForPlatform(root string, raw []byte, opts ReadOptions, windo
 			if isDay && strings.HasSuffix(f.Path, ".jsonl") && len(strings.TrimSpace(string(rawRow))) == 0 {
 				continue
 			}
-			var r map[string]any
-			if json.Unmarshal(rawRow, &r) != nil || r == nil {
+			decoded, decodeErr := decodeTransferValue(rawRow)
+			r, _ := decoded.(map[string]any)
+			if decodeErr != nil || r == nil {
 				warn(f, fmt.Sprintf("row %d", rowNo+1), "INVALID_INDEX")
 				continue
 			}

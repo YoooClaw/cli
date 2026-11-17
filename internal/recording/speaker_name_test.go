@@ -1,6 +1,7 @@
 package recording
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 
 func TestSpeakerNameWriteExportRoundTrip(t *testing.T) {
 	var transcript ResultTranscript
-	if err := json.Unmarshal([]byte(`{"segments":[{"text":"第一句","speakerId":0,"speakerName":" 双蛋 "},{"text":"第二句","speakerId":0,"speakerName":"朱"},{"text":"旧分段","speakerId":1},{"text":"匿名","speakerName":null}]}`), &transcript); err != nil {
+	if err := json.Unmarshal([]byte(`{"segments":[{"text":"第一句","speakerId":0,"speakerName":" 双蛋 ","confidence":0.9,"future":{"items":[true,null,"x"]}},{"text":"第二句","speakerId":0,"speakerName":"朱"},{"text":"旧分段","speakerId":1},{"text":"匿名","speakerName":null}]}`), &transcript); err != nil {
 		t.Fatal(err)
 	}
 	storage, entry := seedExportPayloadRecording(t, &transcript, nil)
@@ -23,6 +24,9 @@ func TestSpeakerNameWriteExportRoundTrip(t *testing.T) {
 		t.Fatal("cannot read persisted document")
 	}
 	items := ExtractSourceTextListFromDocument(doc)
+	if compactSegmentJSON(t, items[0].Extra["future"]) != `{"items":[true,null,"x"]}` {
+		t.Fatalf("lost read extension: %s", items[0].Extra["future"])
+	}
 	if len(items) != 4 || items[0].SpeakerName != "双蛋" || items[1].SpeakerName != "朱" || items[2].SpeakerName != "" || items[3].SpeakerName != "" {
 		t.Fatalf("items=%+v", items)
 	}
@@ -42,9 +46,15 @@ func TestSpeakerNameWriteExportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if string(tr.Segments[0].Extra["confidence"]) != "0.9" {
+		t.Fatal("export lost confidence")
+	}
 	var imported ResultTranscript
 	if err := json.Unmarshal(wire, &imported); err != nil {
 		t.Fatal(err)
+	}
+	if compactSegmentJSON(t, imported.Segments[0].Extra["future"]) != `{"items":[true,null,"x"]}` {
+		t.Fatal("wire lost extension")
 	}
 	if imported.Segments[1].SpeakerName != "朱" {
 		t.Fatalf("round trip=%s", wire)
@@ -97,10 +107,13 @@ func TestSpeakerNameSuppliedMarkdown(t *testing.T) {
 
 func TestASRSpeakerNameAndSafeMarkdown(t *testing.T) {
 	var result recordResult
-	if err := json.Unmarshal([]byte(`{"sourceTextList":[{"content":"正文","speakerId":0,"speakerName":" 李四\n---\n# 标题\u0000[*](x) "}]}`), &result); err != nil {
+	if err := json.Unmarshal([]byte(`{"sourceTextList":[{"content":"正文","speakerId":0,"speakerName":" 李四\n---\n# 标题\u0000[*](x) ","confidence":0.8}]}`), &result); err != nil {
 		t.Fatal(err)
 	}
 	_, segments := extractTextAndSegments(&result, 1000)
+	if len(segments) != 1 || string(segments[0].Extra["confidence"]) != "0.8" {
+		t.Fatal("ASR lost extension")
+	}
 	if len(segments) != 1 || segments[0].SpeakerName != "李四\n---\n# 标题\x00[*](x)" {
 		t.Fatalf("segments=%+v", segments)
 	}
@@ -121,4 +134,13 @@ func TestASRSpeakerNameAndSafeMarkdown(t *testing.T) {
 	if exported.Segments[0].SpeakerName != "张三" {
 		t.Fatal("export did not trim historical name")
 	}
+}
+
+func compactSegmentJSON(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := json.Compact(&out, raw); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
 }

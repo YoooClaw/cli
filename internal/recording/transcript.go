@@ -11,38 +11,42 @@ const transcriptDocumentSchemaVersion = 1
 
 // TranscriptSource 是 transcript-data 的来源信息。
 type TranscriptSource struct {
-	Provider  string `json:"provider"`
-	TaskID    string `json:"taskId,omitempty"`
-	RequestID string `json:"requestId,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Extra     map[string]json.RawMessage `json:"-"`
+	Provider  string                     `json:"provider"`
+	TaskID    string                     `json:"taskId,omitempty"`
+	RequestID string                     `json:"requestId,omitempty"`
+	Status    string                     `json:"status,omitempty"`
 	// Delivery 标记结果写入通道，例如 result.write 写入时为 "result-write"。
 	Delivery string `json:"delivery,omitempty"`
 }
 
 // TranscriptSegment 是 transcript-data normalized.segments 的单段。
 type TranscriptSegment struct {
-	Text        string   `json:"text"`
-	StartMS     *float64 `json:"startMs,omitempty"`
-	EndMS       *float64 `json:"endMs,omitempty"`
-	SpeakerID   *int     `json:"speakerId,omitempty"`
-	SpeakerName string   `json:"speakerName,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Text        string                     `json:"text"`
+	StartMS     *float64                   `json:"startMs,omitempty"`
+	EndMS       *float64                   `json:"endMs,omitempty"`
+	SpeakerID   *int                       `json:"speakerId,omitempty"`
+	SpeakerName string                     `json:"speakerName,omitempty"`
 }
 
 // TranscriptItem 是对客户端展示的 sourceTextList 形状。
 type TranscriptItem struct {
-	Content     string   `json:"content"`
-	SpeakerID   *int     `json:"speakerId,omitempty"`
-	SpeakerName string   `json:"speakerName,omitempty"`
-	StartTime   *float64 `json:"startTime,omitempty"`
-	EndTime     *float64 `json:"endTime,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Content     string                     `json:"content"`
+	SpeakerID   *int                       `json:"speakerId,omitempty"`
+	SpeakerName string                     `json:"speakerName,omitempty"`
+	StartTime   *float64                   `json:"startTime,omitempty"`
+	EndTime     *float64                   `json:"endTime,omitempty"`
 }
 
 // TranscriptDocument 是转写结构化主存储。
 type TranscriptDocument struct {
-	SchemaVersion int              `json:"schemaVersion"`
-	RecordingID   string           `json:"recordingId"`
-	GeneratedAt   string           `json:"generatedAt"`
-	Source        TranscriptSource `json:"source"`
+	ResultExtra   map[string]json.RawMessage `json:"resultExtra,omitempty"`
+	SchemaVersion int                        `json:"schemaVersion"`
+	RecordingID   string                     `json:"recordingId"`
+	GeneratedAt   string                     `json:"generatedAt"`
+	Source        TranscriptSource           `json:"source"`
 	Normalized    struct {
 		Title    string              `json:"title,omitempty"`
 		Category string              `json:"category,omitempty"`
@@ -84,10 +88,8 @@ func ExtractSourceTextListFromDocument(doc TranscriptDocument) []TranscriptItem 
 	if len(doc.Normalized.Segments) > 0 {
 		out := make([]TranscriptItem, 0, len(doc.Normalized.Segments))
 		for _, seg := range doc.Normalized.Segments {
-			if strings.TrimSpace(seg.Text) == "" {
-				continue
-			}
 			out = append(out, TranscriptItem{
+				Extra:       mergeMetadataExtra(nil, seg.Extra),
 				Content:     seg.Text,
 				SpeakerID:   seg.SpeakerID,
 				SpeakerName: strings.TrimSpace(seg.SpeakerName),

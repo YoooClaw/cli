@@ -42,8 +42,9 @@ type Logger interface {
 
 // Marker 是录音关键点标记。
 type Marker struct {
-	Index       int     `json:"index"`
-	TimestampMS float64 `json:"timestamp_ms"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Index       int                        `json:"index"`
+	TimestampMS float64                    `json:"timestamp_ms"`
 }
 
 const (
@@ -53,16 +54,17 @@ const (
 
 // Metadata 是录音元数据（index.json entry.metadata）。
 type Metadata struct {
-	Name            string   `json:"name"`
-	DurationSec     float64  `json:"duration_sec"`
-	DurationDisplay string   `json:"duration_display"`
-	FileSizeDisplay string   `json:"file_size_display,omitempty"`
-	CreatedAt       string   `json:"created_at"`
-	Status          string   `json:"transfer_status,omitempty"`
-	Location        any      `json:"location,omitempty"`
-	OssAudioURL     string   `json:"oss_audio_url"`
-	OssSrtURL       string   `json:"oss_srt_url,omitempty"`
-	Markers         []Marker `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
+	Extra           map[string]json.RawMessage `json:"-"`
+	Name            string                     `json:"name"`
+	DurationSec     float64                    `json:"duration_sec"`
+	DurationDisplay string                     `json:"duration_display"`
+	FileSizeDisplay string                     `json:"file_size_display,omitempty"`
+	CreatedAt       string                     `json:"created_at"`
+	Status          string                     `json:"transfer_status,omitempty"`
+	Location        any                        `json:"location,omitempty"`
+	OssAudioURL     string                     `json:"oss_audio_url"`
+	OssSrtURL       string                     `json:"oss_srt_url,omitempty"`
+	Markers         []Marker                   `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
 	// RecordingType 只在请求显式携带时写入。nil 表示未提供（历史数据或
 	// update 省略），读取时按 normal 输出；空串及其他值在写入入口拒绝。
 	RecordingType *string `json:"recording_type,omitempty"`
@@ -133,22 +135,24 @@ type ExportAudioIdentity struct {
 // Entry 是一条录音索引项。
 type Entry struct {
 	// ContextRevision is populated only for the committed-content callback.
-	ContextRevision    string   `json:"-"`
-	OssTaskID          string   `json:"ossTaskId,omitempty"`
-	ID                 string   `json:"id"`
-	SourceType         string   `json:"sourceType,omitempty"`
-	ClientLabel        string   `json:"clientLabel,omitempty"`
-	Metadata           Metadata `json:"metadata"`
-	Status             string   `json:"status"`
-	AudioStatus        string   `json:"audioStatus,omitempty"`
-	AudioSourceURL     string   `json:"audioSourceUrl,omitempty"`
-	AudioFile          string   `json:"audioFile,omitempty"`
-	SrtFile            string   `json:"srtFile,omitempty"`
-	TranscriptDataFile string   `json:"transcriptDataFile,omitempty"`
-	TranscriptFile     string   `json:"transcriptFile,omitempty"`
-	SummaryFile        string   `json:"summaryFile,omitempty"`
-	Title              string   `json:"title,omitempty"`
-	LastError          string   `json:"lastError,omitempty"`
+	ContextRevision    string                     `json:"-"`
+	ResultExtra        map[string]json.RawMessage `json:"resultExtra,omitempty"`
+	SummaryData        *ResultSummary             `json:"summaryData,omitempty"`
+	OssTaskID          string                     `json:"ossTaskId,omitempty"`
+	ID                 string                     `json:"id"`
+	SourceType         string                     `json:"sourceType,omitempty"`
+	ClientLabel        string                     `json:"clientLabel,omitempty"`
+	Metadata           Metadata                   `json:"metadata"`
+	Status             string                     `json:"status"`
+	AudioStatus        string                     `json:"audioStatus,omitempty"`
+	AudioSourceURL     string                     `json:"audioSourceUrl,omitempty"`
+	AudioFile          string                     `json:"audioFile,omitempty"`
+	SrtFile            string                     `json:"srtFile,omitempty"`
+	TranscriptDataFile string                     `json:"transcriptDataFile,omitempty"`
+	TranscriptFile     string                     `json:"transcriptFile,omitempty"`
+	SummaryFile        string                     `json:"summaryFile,omitempty"`
+	Title              string                     `json:"title,omitempty"`
+	LastError          string                     `json:"lastError,omitempty"`
 	// ErrorCode 是可选的可分类错误；成功或新尝试开始时清除，旧客户端可忽略。
 	ErrorCode  string `json:"errorCode,omitempty"`
 	IngestedAt string `json:"ingestedAt"`
@@ -512,6 +516,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	now := nowISO()
 	if idx := s.findIndexLocked(recordingID); idx >= 0 {
 		entry := &s.index.Recordings[idx]
+		metadata.Extra = mergeMetadataExtra(entry.Metadata.Extra, metadata.Extra)
 		if metadata.RecordingType == nil {
 			metadata.RecordingType = entry.Metadata.RecordingType
 		}
@@ -539,6 +544,8 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
+		entry.SummaryData = nil
+		entry.ResultExtra = nil
 		entry.Title = ""
 		entry.LastError = ""
 		entry.UpdatedAt = now
@@ -755,6 +762,8 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
+		entry.SummaryData = nil
+		entry.ResultExtra = nil
 		entry.UpdatedAt = nowISO()
 	} else {
 		s.index.Recordings = append(s.index.Recordings[:idx], s.index.Recordings[idx+1:]...)
@@ -1047,6 +1056,9 @@ func (s *Storage) ImportEntry(recordingID string, merge func(current *Entry) (*E
 	next, err := merge(current)
 	if err != nil || next == nil {
 		return err
+	}
+	if current != nil {
+		next.Metadata.Extra = mergeMetadataExtra(current.Metadata.Extra, next.Metadata.Extra)
 	}
 	if current != nil && next.Metadata.RecordingType == nil {
 		next.Metadata.RecordingType = current.Metadata.RecordingType
