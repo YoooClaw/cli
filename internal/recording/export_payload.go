@@ -202,8 +202,8 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		doc = &parsed
 	}
 	transcript, transcriptPresent := buildExportTranscript(doc, string(transcriptMD), string(srtRaw))
-	if entry.RecordingSource() == SourceMobileApp && transcript != nil {
-		transcript, transcriptPresent = mobileExportTranscript(transcript, transcriptPresent)
+	if transcript != nil {
+		transcript, transcriptPresent = appExportTranscript(transcript, transcriptPresent)
 	}
 	summary, summaryPresent := buildExportSummary(string(summaryMD))
 	if entry.SummaryData != nil {
@@ -329,24 +329,24 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 	return nil, false
 }
 
-// Only mobile App export filters blank segments; Capture and migration keep them.
-func mobileExportTranscript(transcript *ResultTranscript, present bool) (*ResultTranscript, bool) {
+// App export filters blank segments from either source; stored data and migration keep them.
+func appExportTranscript(transcript *ResultTranscript, present bool) (*ResultTranscript, bool) {
 	out := *transcript
 	out.Segments = make([]ResultTranscriptSegment, 0, len(transcript.Segments))
 	for _, segment := range transcript.Segments {
-		if !mobileBlankText(segment.Text) {
+		if !appBlankText(segment.Text) {
 			out.Segments = append(out.Segments, segment)
 		}
 	}
 	// Preserve the existing Markdown-only fallback, but don't classify text
 	// rejected by Kotlin/JS whitespace rules as transcript content.
 	if len(transcript.Segments) > 0 || transcript.Text != "" {
-		present = len(out.Segments) > 0 || !mobileBlankText(out.Text)
+		present = len(out.Segments) > 0 || !appBlankText(out.Text)
 	}
 	return &out, present
 }
 
-func mobileBlankText(text string) bool {
+func appBlankText(text string) bool {
 	return strings.TrimFunc(text, func(r rune) bool {
 		return unicode.IsSpace(r) || r <= 0x20 || r == '\uFEFF'
 	}) == ""
