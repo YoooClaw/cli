@@ -112,6 +112,7 @@ func TestAppExportFiltersOnlyBlankSegments(t *testing.T) {
 			doc.Normalized.Text = fullText
 			doc.Normalized.Segments = []TranscriptSegment{{Text: ""}, {Text: " \t\n"}}
 			out, present := buildExportTranscript(&doc, "", "")
+			out, present = mobileExportTranscript(out, present)
 			if len(out.Segments) != 0 || present != (fullText != "") || out.Text != fullText {
 				t.Fatalf("unexpected blank-only export: %+v, present=%v", out, present)
 			}
@@ -123,10 +124,38 @@ func TestAppExportFiltersOnlyBlankSegments(t *testing.T) {
 	doc := TranscriptDocument{}
 	doc.Normalized.Segments = []TranscriptSegment{
 		{Text: "first", Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"vp-1"`)}},
-		{Text: " \t"}, {Text: "second"},
+		{Text: " \t", Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"filtered-id"`), "onlyBlank": json.RawMessage(`true`)}}, {Text: "second"},
 	}
 	out, present := buildExportTranscript(&doc, "", "")
+	out, present = mobileExportTranscript(out, present)
 	if !present || len(out.Segments) != 2 || out.Segments[0].Text != "first" || out.Segments[1].Text != "second" || string(out.Segments[0].Extra["voiceprintId"]) != `"vp-1"` {
 		t.Fatalf("nonblank segment order or extras lost: %+v", out)
+	}
+}
+
+func TestMobileExportWhitespaceAndCaptureCompatibility(t *testing.T) {
+	for _, blank := range []string{"", " ", "\t\r\n", "\u001c\u001d\u001e\u001f", "\uFEFF", "\u00a0\u2003"} {
+		t.Run(blank, func(t *testing.T) {
+			storage, _ := seedExportPayloadRecording(t, &ResultTranscript{Text: "body", Segments: []ResultTranscriptSegment{
+				{Text: "body"}, {Text: blank, Extra: map[string]json.RawMessage{"voiceprintId": json.RawMessage(`"filtered-id"`)}},
+			}}, nil)
+			for _, sourceType := range []string{SourceMobileApp, SourceCaptureApp} {
+				if err := storage.updateEntry("rec_payload", func(e *Entry) { e.SourceType = sourceType }); err != nil {
+					t.Fatal(err)
+				}
+				source, err := prepareExportSource(storage, "rec_payload", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				segments := source.payload.Transcript.Segments
+				if sourceType == SourceMobileApp {
+					if len(segments) != 1 || len(segments[0].Extra) != 0 {
+						t.Fatalf("blank extras leaked to App: %+v", segments)
+					}
+				} else if len(segments) != 2 || string(segments[1].Extra["voiceprintId"]) != `"filtered-id"` {
+					t.Fatalf("Capture payload changed: %+v", segments)
+				}
+			}
+		})
 	}
 }

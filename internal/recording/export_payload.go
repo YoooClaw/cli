@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const maxExportTextBytes int64 = 64 << 20
@@ -201,6 +202,9 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		doc = &parsed
 	}
 	transcript, transcriptPresent := buildExportTranscript(doc, string(transcriptMD), string(srtRaw))
+	if entry.RecordingSource() == SourceMobileApp && transcript != nil {
+		transcript, transcriptPresent = mobileExportTranscript(transcript, transcriptPresent)
+	}
 	summary, summaryPresent := buildExportSummary(string(summaryMD))
 	if entry.SummaryData != nil {
 		value := *entry.SummaryData
@@ -296,11 +300,6 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 	if doc != nil {
 		segments := make([]ResultTranscriptSegment, 0, len(doc.Normalized.Segments))
 		for _, segment := range doc.Normalized.Segments {
-			// App import requires nonblank text. Keep the original document and
-			// migration assets intact; filter only this App-facing projection.
-			if strings.TrimSpace(segment.Text) == "" {
-				continue
-			}
 			segments = append(segments, ResultTranscriptSegment{
 				Extra: mergeMetadataExtra(nil, segment.Extra),
 				Text:  segment.Text, StartMS: segment.StartMS, EndMS: segment.EndMS, SpeakerID: segment.SpeakerID, SpeakerName: strings.TrimSpace(segment.SpeakerName),
@@ -328,6 +327,29 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 		return parsed, hasTranscriptContent(parsed)
 	}
 	return nil, false
+}
+
+// Only mobile App export filters blank segments; Capture and migration keep them.
+func mobileExportTranscript(transcript *ResultTranscript, present bool) (*ResultTranscript, bool) {
+	out := *transcript
+	out.Segments = make([]ResultTranscriptSegment, 0, len(transcript.Segments))
+	for _, segment := range transcript.Segments {
+		if !mobileBlankText(segment.Text) {
+			out.Segments = append(out.Segments, segment)
+		}
+	}
+	// Preserve the existing Markdown-only fallback, but don't classify text
+	// rejected by Kotlin/JS whitespace rules as transcript content.
+	if len(transcript.Segments) > 0 || transcript.Text != "" {
+		present = len(out.Segments) > 0 || !mobileBlankText(out.Text)
+	}
+	return &out, present
+}
+
+func mobileBlankText(text string) bool {
+	return strings.TrimFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || r <= 0x20 || r == '\uFEFF'
+	}) == ""
 }
 
 func hasTranscriptContent(t *ResultTranscript) bool {

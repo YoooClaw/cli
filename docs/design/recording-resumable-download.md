@@ -179,7 +179,7 @@ App 的 `recording`（索引中的 `metadata`）支持未知扩展字段，不�
 
 迁移仍重建签名音频/SRT URL、传输状态和本地文件大小展示，时长展示沿用现有规范化逻辑。记录层的文件路径、状态、ID 和已知字段类型仍按原契约处理；本次不放宽路径安全或文件完整性检查，不涉及通知、图片、网页的字段规则。旧版 CLI/插件未必接受新的扩展字段，接收端需要配套升级。
 
-转写分段同样保留未知扩展字段：`result.write`、ASR `sourceTextList`、`normalized.segments`、分段读取与单条导出均透传。`speakerName` 沿用去首尾空白及 Markdown 安全展示；未知扩展字段只保存在结构化 JSON 中，不自动拼入 Markdown。
+转写分段同样保留未知扩展字段：`result.write`、ASR `sourceTextList`、`normalized.segments`、分段读取保留全部分段；单条导出仅 mobile_app 过滤空文本分段，其余分段的扩展字段透传。`speakerName` 沿用去首尾空白及 Markdown 安全展示；未知扩展字段只保存在结构化 JSON 中，不自动拼入 Markdown。
 
 ### 扩展字段的重置与迁移边界
 
@@ -192,6 +192,6 @@ App 的 `recording`（索引中的 `metadata`）支持未知扩展字段，不�
 
 ### App 导出空文本分段兼容
 
-`recordings.export.start/status` 的 `writePayload.transcript.segments` 过滤文本为空或仅含空白的分段，避免 Android／鸿蒙的逐段非空校验拒绝整条录音。其余分段的顺序、声纹和扩展字段保留；全部分段为空时仍可使用非空全文，无任何正文则不标记转写内容存在。
+`recordings.export.start/status` 对 mobile_app 的 `writePayload.transcript.segments` 过滤文本为空或仅含空白的分段（含 Kotlin／JS 的控制字符和 BOM 空白边界），capture_app 保持原样，避免 Android／鸿蒙的逐段非空校验拒绝整条录音。其余分段的顺序、声纹和扩展字段保留；全部分段为空时仍可使用非空全文，没有有效全文或分段时沿用既有内容判定；本次不改变 transcript-data 与独立 Markdown 的优先关系。
 
 过滤仅发生在 App 导出载荷组装阶段，不修改原始转写文件、结构化读取或迁移包；空分段携带的业务字段仍随迁移包保留。
