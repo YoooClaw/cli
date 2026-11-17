@@ -1,0 +1,582 @@
+package recording
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/YoooClaw/cli/internal/ossdownload"
+)
+
+const (
+	defaultExportTimeout = 2 * time.Hour
+	exportIDBytes        = 16
+)
+
+var (
+	ErrExportNotExportable   = errors.New("recording is not exportable")
+	ErrExportLinkUnavailable = errors.New("export download link unavailable")
+	// ErrExportObjectGone means the file service explicitly reports that the
+	// export task/object no longer exists (for example 404/409 from C-005).
+	// It is different from a transient signing/network failure.
+	ErrExportObjectGone = errors.New("export object no longer exists")
+)
+
+type ExportStartRequest struct {
+	RecordingID string
+	RequestID   string
+	ScopeKey    string
+}
+
+type ExportStatusRequest struct {
+	RecordingID string
+	ExportID    string
+	ScopeKey    string
+}
+
+type ExportStartResult struct {
+	RecordingID string `json:"recordingId"`
+	RequestID   string `json:"requestId"`
+	ExportID    string `json:"exportId"`
+	State       string `json:"state"`
+	SourceType  string `json:"sourceType"`
+	// SizeBytes 是源音频当前大小的预估，供客户端规划轮询/下载预算；
+	// ready 后以 result.transfer.sizeBytes 为准，不能用于校验。
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
+}
+
+type ExportFailure struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Scope     string `json:"scope"`
+	Retryable bool   `json:"retryable"`
+	// Source 标识失败对应哪一类源文件（audio/transcriptData/transcript/
+	// summary/srt），便于客户端按类别提示；永远不包含本地路径。
+	Source string `json:"source,omitempty"`
+}
+
+type ExportTransfer struct {
+	ExpiresAt int64  `json:"expiresAt"`
+	FileName  string `json:"fileName"`
+	MimeType  string `json:"mimeType"`
+	SizeBytes int64  `json:"sizeBytes"`
+	SHA256    string `json:"sha256"`
+}
+
+type ExportResult struct {
+	SourceVersion  string               `json:"sourceVersion"`
+	WritePayload   ExportPayload        `json:"writePayload"`
+	Transfer       ExportTransfer       `json:"transfer"`
+	ContentPresent ExportContentPresent `json:"contentPresent"`
+}
+
+type ExportStatus struct {
+	RecordingID string `json:"recordingId"`
+	ExportID    string `json:"exportId"`
+	State       string `json:"state"`
+	UpdatedAt   string `json:"updatedAt"`
+	SourceType  string `json:"sourceType"`
+	// SizeBytes 与 ready 后的 result.transfer.sizeBytes 同值，preparing/
+	// uploading 阶段先给出预估，让客户端全流程读同一字段。
+	SizeBytes int64          `json:"sizeBytes,omitempty"`
+	Result    *ExportResult  `json:"result"`
+	Error     *ExportFailure `json:"error"`
+}
+
+// ExportUpload is what a file-service adapter reports after uploading.
+type ExportUpload struct {
+	TaskID    string
+	ObjectKey string
+	SizeBytes int64
+	SignedURL string
+	ExpiresAt time.Time
+}
+
+// ExportCloud is the file-service boundary. onTask is called once a task has
+// been created so the export record can persist taskId/objectKey before bytes
+// are uploaded.
+type ExportCloud interface {
+	UploadRecording(ctx context.Context, path string, onTask func(taskID, objectKey string) error) (ExportUpload, error)
+	RecordingDownloadLink(ctx context.Context, taskID string) (DownloadLink, error)
+}
+
+// ExportService owns the asynchronous export state machine. It never holds the
+// index lock across network or OSS operations.
+type ExportService struct {
+	storage *Storage
+	logger  Logger
+	timeout time.Duration
+	now     func() time.Time
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	linkMu sync.Mutex
+	links  map[string]*ossdownload.LinkRefresher
+}
+
+func NewExportService(storage *Storage, logger Logger) *ExportService {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &ExportService{
+		storage: storage, logger: logger, timeout: defaultExportTimeout, now: time.Now,
+		ctx: ctx, cancel: cancel, links: map[string]*ossdownload.LinkRefresher{},
+	}
+}
+
+// Close cancels background exports. Interrupted records are marked by Recover
+// on the next daemon startup.
+func (s *ExportService) Close() {
+	if s == nil || s.cancel == nil {
+		return
+	}
+	s.cancel()
+}
+
+// RecoverInterrupted marks attempts left by a previous process.
+func (s *ExportService) RecoverInterrupted() int {
+	count, err := s.storage.RecoverInterruptedExports(s.stamp())
+	if err != nil {
+		s.logger.Error("[recording-export] 中断导出恢复失败: " + err.Error())
+		return 0
+	}
+	if count > 0 {
+		s.logger.Info(fmt.Sprintf("[recording-export] 已标记 %d 个中断导出", count))
+	}
+	return count
+}
+
+func (s *ExportService) stamp() string { return s.now().UTC().Format(time.RFC3339Nano) }
+
+func (s *ExportService) Start(ctx context.Context, req ExportStartRequest, cloud ExportCloud) (ExportStartResult, error) {
+	recordingID := strings.TrimSpace(req.RecordingID)
+	requestID := strings.TrimSpace(req.RequestID)
+	if recordingID == "" || requestID == "" || len(requestID) > 256 || strings.ContainsAny(requestID, "\r\n\x00") {
+		return ExportStartResult{}, errors.New("recordingId and requestId are required")
+	}
+	if err := s.storage.LoadError(); err != nil {
+		return ExportStartResult{}, ErrStorageUnavailable
+	}
+	entry, ok := s.storage.FindByID(recordingID)
+	if !ok {
+		return ExportStartResult{}, errors.New("Recording not found: " + recordingID)
+	}
+	// 幂等重放先于来源状态检查：来源后来不可读时，同一 requestId 仍应返回
+	// 原 exportId 及当前状态，而不是把重试变成一次新失败。
+	if existingEntry, record, found := s.storage.FindExportByRequest(req.ScopeKey, requestID); found {
+		if existingEntry.ID != recordingID {
+			return ExportStartResult{}, ErrExportRequestConflict
+		}
+		sizeBytes := record.SizeBytes
+		if sizeBytes <= 0 {
+			// 旧记录在导出开始时尚未持久化大小，补一个当前预估。
+			sizeBytes = s.storage.ExportSourceSize(entry)
+		}
+		return ExportStartResult{RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State, SizeBytes: sizeBytes}, nil
+	}
+	if !s.storage.Exportable(entry) {
+		// 导出前置条件失败发生在状态机之前，原先没有任何日志；这里记录索引
+		// 里的音频状态和相对路径，便于区分"还没下载"和"文件被删"。
+		s.logger.Warn("[recording-export] 录音不可导出: recording=" + recordingID + ", status=" + entry.Status +
+			", audioStatus=" + entry.AudioStatus + ", audioFile=" + entry.AudioFile)
+		return ExportStartResult{}, ErrExportNotExportable
+	}
+	if cloud == nil {
+		return ExportStartResult{}, errors.New("export cloud is unavailable")
+	}
+	exportID, err := newExportID()
+	if err != nil {
+		return ExportStartResult{}, err
+	}
+	// 在受理时 stat 一次源音频，让 start 和 preparing/uploading 的 status
+	// 立刻有大小可读；导出就绪时会重新 stat 并以记录中的值为准。
+	sizeBytes := s.storage.ExportSourceSize(entry)
+	_, record, created, err := s.storage.BeginExport(recordingID, requestID, req.ScopeKey, exportID, s.stamp(), sizeBytes)
+	if err != nil {
+		return ExportStartResult{}, err
+	}
+	if created {
+		s.wg.Add(1)
+		go s.runExport(recordingID, exportID, cloud)
+	}
+	return ExportStartResult{RecordingID: recordingID, RequestID: requestID, ExportID: record.ExportID, State: record.State, SizeBytes: record.SizeBytes}, nil
+}
+
+func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, cloud ExportCloud) (ExportStatus, error) {
+	recordingID := strings.TrimSpace(req.RecordingID)
+	exportID := strings.TrimSpace(req.ExportID)
+	if recordingID == "" || exportID == "" {
+		return ExportStatus{}, errors.New("recordingId and exportId are required")
+	}
+	if err := s.storage.LoadError(); err != nil {
+		return ExportStatus{}, ErrStorageUnavailable
+	}
+	_, record, ok := s.storage.FindExport(recordingID, exportID)
+	if !ok || record.ScopeKey != req.ScopeKey {
+		return ExportStatus{}, ErrExportNotFound
+	}
+	status := exportStatus(recordingID, record)
+	switch record.State {
+	case ExportStatePreparing, ExportStateUploading:
+		return status, nil
+	case ExportStateFailed, ExportStateExpired:
+		status.Error = failureOf(record)
+		return status, nil
+	case ExportStateReady:
+	default:
+		return status, nil
+	}
+
+	source, err := prepareExportSource(s.storage, recordingID, false)
+	if err != nil {
+		// ready 之后来源从可读变为不可读，按来源变化处理；只有明确删除才报 NOT_FOUND。
+		return s.failReadySource(recordingID, exportID, err), nil
+	}
+	if source.sourceVersion != record.SourceVersion {
+		return s.failSourceChanged(recordingID, exportID), nil
+	}
+	if cloud == nil {
+		return status, ErrExportLinkUnavailable
+	}
+	linkState := s.linkState(record.ExportID, record.TaskID, cloud)
+	// 每次 status 都是独立的刷新尝试：上一次失败不应让 ready 导出永久不可用。
+	linkState.ResetError()
+	link, err := linkState.Current(ctx)
+	if err != nil {
+		if errors.Is(err, ErrExportObjectGone) {
+			return s.expireStatus(recordingID, exportID), nil
+		}
+		s.logger.Warn("[recording-export] 签名链接刷新失败: " + exportErrorLog(err) + ": " + exportID)
+		return status, ErrExportLinkUnavailable
+	}
+	// 刷新签名可能耗时，返回前再复核一次来源；仍使用廉价文件身份和文本
+	// hash，不重新计算整段音频。
+	current, err := prepareExportSource(s.storage, recordingID, false)
+	if err != nil {
+		return s.failReadySource(recordingID, exportID, err), nil
+	}
+	if current.sourceVersion != record.SourceVersion {
+		return s.failSourceChanged(recordingID, exportID), nil
+	}
+	payload := current.payload
+	payload.OssTaskID = record.TaskID
+	payload.OssURL = link.URL
+	status.Result = &ExportResult{
+		SourceVersion:  record.SourceVersion,
+		WritePayload:   payload,
+		Transfer:       ExportTransfer{ExpiresAt: link.ExpiresAt.UnixMilli(), FileName: record.FileName, MimeType: record.MimeType, SizeBytes: record.SizeBytes, SHA256: record.SHA256},
+		ContentPresent: current.contentPresent,
+	}
+	return status, nil
+}
+
+func exportStatus(recordingID string, record ExportRecord) ExportStatus {
+	return ExportStatus{RecordingID: recordingID, ExportID: record.ExportID, State: record.State, UpdatedAt: record.UpdatedAt, SizeBytes: record.SizeBytes}
+}
+
+func failureOf(record ExportRecord) *ExportFailure {
+	return &ExportFailure{
+		Code: record.ErrorCode, Message: record.ErrorMessage, Scope: record.ErrorScope,
+		Retryable: record.Retryable, Source: record.ErrorSource,
+	}
+}
+
+func (s *ExportService) failStatus(recordingID, exportID, code, message, scope string, retryable bool) ExportStatus {
+	return s.failStatusWithSource(recordingID, exportID, code, message, "", scope, retryable)
+}
+
+func (s *ExportService) failStatusWithSource(recordingID, exportID, code, message, source, scope string, retryable bool) ExportStatus {
+	s.failWithSource(recordingID, exportID, code, message, source, scope, retryable)
+	entry, record, ok := s.storage.FindExport(recordingID, exportID)
+	if !ok {
+		return ExportStatus{RecordingID: recordingID, ExportID: exportID, State: ExportStateFailed}
+	}
+	status := exportStatus(entry.ID, record)
+	status.Error = failureOf(record)
+	return status
+}
+
+// failReadySource 处理 ready 之后来源变得不可读的情况，并记录具体文件类别和
+// 相对路径。状态一旦落为 failed，后续 status 会走早返回，不会重复刷日志。
+func (s *ExportService) failReadySource(recordingID, exportID string, err error) ExportStatus {
+	code := readySourceFailureCode(err)
+	s.logger.Warn("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
+		", code=" + code + ", err=" + exportErrorLog(err))
+	return s.failStatusWithSource(recordingID, exportID, code, readySourceFailureMessage(err),
+		string(exportSourceKindOf(err)), "item", false)
+}
+
+func (s *ExportService) failSourceChanged(recordingID, exportID string) ExportStatus {
+	s.logger.Warn("[recording-export] 导出源已变化: " + exportID + ", recording=" + recordingID)
+	return s.failStatus(recordingID, exportID, "SOURCE_CHANGED", "Recording source changed", "item", false)
+}
+
+func (s *ExportService) expireStatus(recordingID, exportID string) ExportStatus {
+	_, _, err := s.storage.UpdateExport(recordingID, exportID, s.stamp(), func(record *ExportRecord) bool {
+		record.State = ExportStateExpired
+		record.ErrorCode = "EXPORT_EXPIRED"
+		record.ErrorMessage = "Export object no longer exists"
+		record.ErrorScope = "item"
+		record.Retryable = false
+		return true
+	})
+	if err != nil {
+		s.logger.Error("[recording-export] 导出过期状态写入失败: " + err.Error() + ": " + exportID)
+	}
+	entry, record, ok := s.storage.FindExport(recordingID, exportID)
+	if !ok {
+		return ExportStatus{RecordingID: recordingID, ExportID: exportID, State: ExportStateExpired}
+	}
+	status := exportStatus(entry.ID, record)
+	status.Error = failureOf(record)
+	return status
+}
+
+func (s *ExportService) fail(recordingID, exportID, code, message, scope string, retryable bool) {
+	s.failWithSource(recordingID, exportID, code, message, "", scope, retryable)
+}
+
+func (s *ExportService) failWithSource(recordingID, exportID, code, message, source, scope string, retryable bool) {
+	if message == "" {
+		message = "Recording export failed"
+	}
+	_, _, err := s.storage.UpdateExport(recordingID, exportID, s.stamp(), func(record *ExportRecord) bool {
+		record.State = ExportStateFailed
+		record.ErrorCode, record.ErrorMessage, record.ErrorScope, record.Retryable = code, message, scope, retryable
+		record.ErrorSource = source
+		return true
+	})
+	if err != nil {
+		s.logger.Error("[recording-export] 导出失败状态写入失败: " + err.Error() + ": " + exportID)
+	}
+}
+
+func (s *ExportService) linkState(exportID, taskID string, cloud ExportCloud) *ossdownload.LinkRefresher {
+	s.linkMu.Lock()
+	defer s.linkMu.Unlock()
+	if state := s.links[exportID]; state != nil {
+		return state
+	}
+	refresh := func(ctx context.Context) (DownloadLink, error) {
+		return cloud.RecordingDownloadLink(ctx, taskID)
+	}
+	state := newDownloadLinkRefresher(DownloadLink{}, refresh)
+	s.links[exportID] = state
+	return state
+}
+
+func (s *ExportService) setInitialLink(exportID string, link DownloadLink, cloud ExportCloud, taskID string) {
+	s.linkMu.Lock()
+	defer s.linkMu.Unlock()
+	refresh := func(ctx context.Context) (DownloadLink, error) {
+		return cloud.RecordingDownloadLink(ctx, taskID)
+	}
+	s.links[exportID] = newDownloadLinkRefresher(link, refresh)
+}
+
+func (s *ExportService) runExport(recordingID, exportID string, cloud ExportCloud) {
+	defer s.wg.Done()
+	ctx, cancel := context.WithTimeout(s.ctx, s.timeout)
+	defer cancel()
+
+	source, err := prepareExportSource(s.storage, recordingID, true)
+	if err != nil {
+		s.failSource(recordingID, exportID, err)
+		return
+	}
+	_, updated, err := s.storage.UpdateExport(recordingID, exportID, s.stamp(), func(record *ExportRecord) bool {
+		if record.State != ExportStatePreparing {
+			return false
+		}
+		record.SourceVersion = source.sourceVersion
+		record.SizeBytes = source.sizeBytes
+		record.SHA256 = source.sha256
+		record.FileName = source.fileName
+		record.MimeType = source.mimeType
+		identity := source.identity
+		record.Audio = &identity
+		return true
+	})
+	if err != nil || !updated {
+		code, message, scope, retryable := exportPersistFailure(err)
+		s.fail(recordingID, exportID, code, message, scope, retryable)
+		return
+	}
+
+	var taskID string
+	upload, err := cloud.UploadRecording(ctx, source.audioPath, func(id, key string) error {
+		taskID = id
+		_, _, updateErr := s.storage.UpdateExport(recordingID, exportID, s.stamp(), func(record *ExportRecord) bool {
+			if record.State != ExportStatePreparing {
+				return false
+			}
+			record.State = ExportStateUploading
+			record.TaskID, record.ObjectKey = id, key
+			return true
+		})
+		return updateErr
+	})
+	if err != nil {
+		code, message, scope, retryable := exportRunFailure(err)
+		s.fail(recordingID, exportID, code, message, scope, retryable)
+		s.logger.Warn("[recording-export] 导出失败: " + exportID + ", " + exportErrorLog(err))
+		return
+	}
+	if upload.TaskID == "" || upload.ObjectKey == "" || (taskID != "" && upload.TaskID != taskID) {
+		s.fail(recordingID, exportID, "EXPORT_UPLOAD_FAILED", "Recording export returned an invalid task", "item", true)
+		return
+	}
+	if upload.SizeBytes != source.sizeBytes {
+		s.fail(recordingID, exportID, "EXPORT_SIZE_MISMATCH", "Uploaded audio size does not match source", "item", false)
+		return
+	}
+	current, verifyErr := prepareExportSource(s.storage, recordingID, false)
+	if verifyErr != nil {
+		s.failSource(recordingID, exportID, verifyErr)
+		return
+	}
+	if current.sourceVersion != source.sourceVersion {
+		s.failSourceChanged(recordingID, exportID)
+		return
+	}
+	_, updated, err = s.storage.UpdateExport(recordingID, exportID, s.stamp(), func(record *ExportRecord) bool {
+		if record.State != ExportStateUploading && record.State != ExportStatePreparing {
+			return false
+		}
+		record.State = ExportStateReady
+		record.TaskID, record.ObjectKey = upload.TaskID, upload.ObjectKey
+		record.SizeBytes, record.ErrorCode, record.ErrorMessage, record.ErrorScope, record.Retryable = upload.SizeBytes, "", "", "", false
+		return true
+	})
+	if err != nil || !updated {
+		code, message, scope, retryable := exportPersistFailure(err)
+		s.fail(recordingID, exportID, code, message, scope, retryable)
+		return
+	}
+	s.setInitialLink(exportID, DownloadLink{URL: upload.SignedURL, ExpiresAt: upload.ExpiresAt}, cloud, upload.TaskID)
+	s.logger.Info("[recording-export] 导出就绪: " + exportID + ", recording=" + recordingID + ", bytes=" + fmt.Sprint(upload.SizeBytes))
+}
+
+func (s *ExportService) failSource(recordingID, exportID string, err error) {
+	code := sourceFailureCode(err)
+	// 源文件错误以前完全静默，线上只能看到 SOURCE_NOT_FOUND；这里把类别、
+	// 相对路径和底层错误写进本地日志，便于定位是哪个文件被删/被改。
+	// 先写日志再落状态，避免轮询方先看到 failed 而日志尚未输出。
+	s.logger.Warn("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
+		", code=" + code + ", err=" + exportErrorLog(err))
+	s.failWithSource(recordingID, exportID, code, sourceFailureMessage(err), string(exportSourceKindOf(err)), "item", false)
+}
+
+func sourceFailureCode(err error) string {
+	if errors.Is(err, ErrExportSourceNotFound) {
+		return "SOURCE_NOT_FOUND"
+	}
+	if errors.Is(err, ErrExportSourceChanged) {
+		return "SOURCE_CHANGED"
+	}
+	return "SOURCE_UNREADABLE"
+}
+
+func sourceFailureMessage(err error) string {
+	switch sourceFailureCode(err) {
+	case "SOURCE_NOT_FOUND":
+		return sourceNotFoundMessage(err)
+	case "SOURCE_CHANGED":
+		return "Recording source changed"
+	default:
+		return "Recording source cannot be read"
+	}
+}
+
+// sourceNotFoundMessage 把缺失的源文件类别透出给客户端，让用户在 App 里能直接
+// 看到"是转写、总结还是字幕文件没了"；本地路径只进 daemon 日志。
+func sourceNotFoundMessage(err error) string {
+	switch exportSourceKindOf(err) {
+	case ExportSourceAudio:
+		return "Recording audio file no longer exists"
+	case ExportSourceTranscriptData:
+		return "Transcript data file no longer exists"
+	case ExportSourceTranscript:
+		return "Transcript file no longer exists"
+	case ExportSourceSummary:
+		return "Summary file no longer exists"
+	case ExportSourceSrt:
+		return "Subtitle file no longer exists"
+	default:
+		return "Source file no longer exists"
+	}
+}
+
+func readySourceFailureCode(err error) string {
+	if errors.Is(err, ErrExportSourceNotFound) {
+		return "SOURCE_NOT_FOUND"
+	}
+	return "SOURCE_CHANGED"
+}
+
+func readySourceFailureMessage(err error) string {
+	if errors.Is(err, ErrExportSourceNotFound) {
+		return sourceNotFoundMessage(err)
+	}
+	return "Recording source changed"
+}
+
+func exportPersistFailure(err error) (code, message, scope string, retryable bool) {
+	if isStorageFullError(err) {
+		return "STORAGE_FULL", StorageFullMessage, "batch", false
+	}
+	return "EXPORT_UPLOAD_FAILED", "Recording export could not be persisted", "item", true
+}
+
+func exportRunFailure(err error) (code, message, scope string, retryable bool) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "EXPORT_INTERRUPTED", "Recording export interrupted", "item", true
+	}
+	if isStorageFullError(err) {
+		// 本地空间不足按契约停止整批，而不是只结算当前项。
+		return "STORAGE_FULL", StorageFullMessage, "batch", false
+	}
+	return "EXPORT_UPLOAD_FAILED", safeExportError(err), "item", true
+}
+
+// exportErrorLog 把失败原因和只进本地日志的服务端响应摘要拼在一起。摘要可
+// 能包含服务端回显内容，因此只用于 daemon 日志，不写入导出记录或返回客户端。
+func exportErrorLog(err error) string {
+	text := safeExportError(err)
+	var detail interface{ Diagnostic() string }
+	if errors.As(err, &detail) {
+		if d := detail.Diagnostic(); d != "" {
+			text += " | " + d
+		}
+	}
+	return text
+}
+
+// maxExportErrorMessage 限制落盘并返回客户端的失败信息长度。迁移服务的失败
+// 信息已带上方法、主机、路径和 Retry-After，需要比旧文案更宽的上限，但仍
+// 不能在索引里塞进无界内容。
+const maxExportErrorMessage = 500
+
+func safeExportError(err error) string {
+	if err == nil {
+		return "export failed"
+	}
+	text := err.Error()
+	if runes := []rune(text); len(runes) > maxExportErrorMessage {
+		text = string(runes[:maxExportErrorMessage]) + "…"
+	}
+	return text
+}
+
+func newExportID() (string, error) {
+	raw := make([]byte, exportIDBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "export-" + hex.EncodeToString(raw), nil
+}

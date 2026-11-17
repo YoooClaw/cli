@@ -18,10 +18,12 @@ MODULE="github.com/YoooClaw/cli"
 
 # 解析参数：可选 --current，以及可选 version。
 CURRENT_ONLY=0
+LINUX_WINDOWS_ONLY=0
 VERSION=""
 for arg in "$@"; do
   case "$arg" in
     --current) CURRENT_ONLY=1 ;;
+    --linux-windows) LINUX_WINDOWS_ONLY=1 ;;
     *) VERSION="$arg" ;;
   esac
 done
@@ -31,6 +33,12 @@ LDFLAGS="-s -w -X ${MODULE}/internal/version.Version=${VERSION}"
 
 # 目标矩阵： GOOS:GOARCH:npmOs:npmCpu
 ALL_TARGETS="darwin:arm64:darwin:arm64 darwin:amd64:darwin:x64 linux:amd64:linux:x64 linux:arm64:linux:arm64 windows:amd64:win32:x64"
+if [ "$CURRENT_ONLY" -eq 1 ] && [ "$LINUX_WINDOWS_ONLY" -eq 1 ]; then
+  echo "--current and --linux-windows cannot be combined" >&2; exit 1
+fi
+if [ "$LINUX_WINDOWS_ONLY" -eq 1 ]; then
+  ALL_TARGETS="linux:amd64:linux:x64 linux:arm64:linux:arm64 windows:amd64:win32:x64"
+fi
 if [ "$CURRENT_ONLY" -eq 1 ]; then
   goos="$(go env GOOS)"; goarch="$(go env GOARCH)"
   npmcpu="$goarch"; [ "$goarch" = "amd64" ] && npmcpu="x64"
@@ -74,7 +82,9 @@ cp npm/cli/bin/yc.js "$maindir/bin/yc.js"
 cp npm/cli/bin/prepare-owner.js "$maindir/bin/prepare-owner.js"
 cp npm/cli/bin/activate-owner.js "$maindir/bin/activate-owner.js"
 cp npm/cli/README.md "$maindir/README.md"
-node scripts/gen-pkg.mjs main "$maindir" "$VERSION" "$PLATFORM_PKGS"
+MAC_FALLBACK=""
+[ "$LINUX_WINDOWS_ONLY" -eq 0 ] || MAC_FALLBACK="0.16.2"
+node scripts/gen-pkg.mjs main "$maindir" "$VERSION" "$PLATFORM_PKGS" "$MAC_FALLBACK"
 
 echo
 echo "完成 v${VERSION}："

@@ -18,7 +18,7 @@ Do not infer reply language from previous messages, source content, command outp
 - Add `--format json` for structured objects and `--format ndjson` only for intentional row streaming.
 - Add `--profile <name>` when the user selects a non-default profile.
 - Query the selected source on every invocation (local synchronized data or the App todo service). Do not reuse an earlier answer or memory as current data.
-- Treat queries as read-only. Do not modify indexes or synchronized source files.
+- Treat queries as read-only. Do not modify indexes or synchronized source files. The only mutation this Skill may perform is recording deletion, and only through `yoooclaw recording delete` (see `references/recordings.md`).
 - Most local query commands read disk without the daemon. System `reminders` queries use the daemon API for a consistent snapshot; the daemon must already be running. YoooClaw App `todo` queries call the cloud service using existing credentials and do not require the daemon.
 
 ## Steps

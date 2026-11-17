@@ -479,9 +479,9 @@ started_at DESC, voice_id DESC
 | 来源 | `source_type` | `source_name` | 数据位置 |
 |---|---|---|---|
 | 电脑端输入法会议录音 | `capture_app` | `YoooClaw Capture` | `<profile>/voice/recordings-jsonl` |
-| 原有录音 | `smart_hardware` | `YoooClaw 智能硬件` | `<profile>/recordings` |
+| 原有录音 | `mobile_app` | `YoooClaw 智能硬件` | `<profile>/recordings` |
 
-`source_type` 是脚本、过滤和 Agent 判断使用的稳定枚举；`source_name` 是面向用户的展示名称。原有录音中的 `clientLabel` 继续表示具体硬件/客户端实例，不能代替来源类型，也不能把 YoooClaw Capture 伪装成某个硬件 client。
+`source_type` 是脚本、过滤和 Agent 判断使用的稳定枚举；`source_name` 是面向用户的展示名称。`mobile_app` 对应 App 连接的 YoooClaw 智能硬件，用户口语称“YoooClaw 硬件”“智能硬件”或具体硬件设备时仍使用 `mobile_app`；`smart_hardware` 只作为 `--source` 的兼容输入别名，输出统一为 `mobile_app`。原有录音中的 `clientLabel` 继续表示具体硬件/客户端实例，不能代替来源类型，也不能把 YoooClaw Capture 伪装成某个硬件 client。
 
 混合列表中的每条记录都必须同时返回 `source_type` 和 `source_name`。Agent 在列出、比较或引用录音时必须带来源名称，例如：
 
@@ -493,17 +493,17 @@ started_at DESC, voice_id DESC
 建议查询接口：
 
 ```bash
-yoooclaw recording list [--source all|capture_app|smart_hardware]
-yoooclaw recording status <recording-id> [--source capture_app|smart_hardware]
-yoooclaw recording +latest [--source all|capture_app|smart_hardware]
-yoooclaw recording +today [--source all|capture_app|smart_hardware]
+yoooclaw recording list [--source all|mobile_app|capture_app]
+yoooclaw recording status <recording-id> [--source mobile_app|capture_app]
+yoooclaw recording +latest [--source all|mobile_app|capture_app]
+yoooclaw recording +today [--source all|mobile_app|capture_app]
 ```
 
 默认 `--source all`，使 Agent 查询“会议录音”时同时覆盖 YoooClaw Capture 和 YoooClaw 智能硬件。两类结果映射到统一发生时间后全局倒序；Capture 录音使用 `recorded_at`，硬件录音使用现有 effective `created_at`，并遵循相同的 `[from, to)` 时间边界。
 
 如果同一个字符串 ID 同时存在于两个来源，`recording status <id>` 不得静默任选一条；未传 `--source` 时返回歧义错误并列出两个来源，调用方必须补充来源类型。
 
-现有 `recording setup-asr`、`recording events` 等操作能力仍只属于 `smart_hardware` 来源，不作用于 `capture_app`。查询层统一不意味着两种生产端状态机合并。
+现有 `recording setup-asr` 等配置能力仍只属于 `mobile_app`（智能硬件）来源，不作用于 `capture_app`；`recording events` 默认合并两份事件流，按事件时间排序返回，事件自带 `sourceType`，可在合并结果中区分来源。查询层统一不意味着两种生产端状态机合并。
 
 读取录音内容时：
 
@@ -536,7 +536,7 @@ yoooclaw recording +today [--source all|capture_app|smart_hardware]
 - `YOOOCLAW_INVALID_ARGUMENT`：时间、ID、limit 等参数不合法。
 - `YOOOCLAW_NOT_FOUND`：`voice show <voice_id>` 或 `recording status <recording-id>` 未命中。
 
-YoooClaw Capture 的 `recordings-jsonl` 不存在时，统一录音查询把 `capture_app` 来源视为空，不影响 `smart_hardware` 结果；索引存在但不可读时返回存储不可用错误。单个已声明产物缺失不是命令级错误，而是通过 `has_*` 和 `missing_artifacts` 暴露。
+YoooClaw Capture 的 `recordings-jsonl` 不存在时，统一录音查询把 `capture_app` 来源视为空，不影响 `mobile_app` 结果；索引存在但不可读时返回存储不可用错误。单个已声明产物缺失不是命令级错误，而是通过 `has_*` 和 `missing_artifacts` 暴露。
 
 删除只服务于 SQLite schema 的：
 
@@ -731,8 +731,8 @@ YoooClaw Capture 会议录音与现有智能硬件侧 `internal/recording.Storag
 - 列表只检查文件事实，不读取转写和摘要正文。
 - 内容请求按时间顺序拼接 `transcripts[].sentences[]`，并保留 `speaker_id`。
 - ASR `task_id` 与录音 ID 不相等时仍可正常读取。
-- `recording --source all` 合并 `capture_app` 和 `smart_hardware`，每条记录都带稳定类型和展示名称，并保持全局时间倒序。
-- `recording --source capture_app|smart_hardware` 能准确过滤对应来源。
+- `recording --source all` 合并 `capture_app` 和 `mobile_app`，每条记录都带稳定类型和展示名称，并保持全局时间倒序。
+- `recording --source capture_app|mobile_app` 能准确过滤对应来源。
 - 两个来源出现相同字符串 ID 时，未指定来源的单条查询返回歧义错误。
 - `recording setup-asr/events` 不作用于 `capture_app` 来源。
 

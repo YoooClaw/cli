@@ -728,6 +728,9 @@ func TestWuyingRecoveryWithoutWorkingOldCLI(t *testing.T) {
 			}
 			s := string(data)
 			start := strings.Index(s, "stop_broken_cli_service() {")
+			if start < 0 {
+				t.Fatal("missing installer resolution block")
+			}
 			end := strings.Index(s[start:], "\n# Stop an older") + start
 			cmd := exec.Command("sh", "-c", "warn() { :; }; "+s[start:end]+"\nstop_broken_cli_service")
 			cmd.Env = append(os.Environ(), "HOME="+root, "XDG_CONFIG_HOME="+filepath.Join(root, ".config"), "YOOOCLAW_HOME=", "CLI="+cli, "PATH="+bin+":"+os.Getenv("PATH"))
@@ -741,4 +744,31 @@ func TestWuyingRecoveryWithoutWorkingOldCLI(t *testing.T) {
 
 func TestWuyingReinstallBrokenCLI(t *testing.T) {
 	testWuyingCredentials(t, false, true)
+}
+
+func TestWuyingVersionSelection(t *testing.T) {
+	raw, err := os.ReadFile(mustAbs(t, "install-wuying.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	start := strings.Index(s, "if [ \"$OSS_RENDERED\" = \"1\" ]; then")
+	if start < 0 {
+		t.Fatal("missing installer resolution block")
+	}
+	end := strings.Index(s[start:], "info \"下载 YoooClaw CLI 基础安装器")
+	if start < 0 || end < 0 {
+		t.Fatal("missing installer resolution block")
+	}
+	fragment := s[start:start+end] + "\nprintf '%s' \"$VERSION\"\n"
+	for _, tc := range []struct{ name, release, explicit, want string }{{"public follows latest", "", "", ""}, {"archive pinned", "1.2.3", "", "1.2.3"}, {"explicit wins", "1.2.3", "1.2.4", "1.2.4"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("sh", "-c", fragment)
+			cmd.Env = []string{"OSS_RENDERED=1", "OSS_BASE_URL=https://test.invalid/cli", "RELEASE_VERSION=" + tc.release, "VERSION=" + tc.explicit}
+			out, err := cmd.CombinedOutput()
+			if err != nil || string(out) != tc.want {
+				t.Fatalf("out=%q error=%v", out, err)
+			}
+		})
+	}
 }

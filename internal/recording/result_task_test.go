@@ -79,8 +79,12 @@ func TestSupersededRefreshDoesNotFailReplacement(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		downloadResultAudio("rec_refresh", source.URL, storage, testLogger{t}, SyncOptions{DownloadOptions: DownloadOptions{MaxRetries: 1}, URLRefresher: func(label, task string) func(context.Context) (string, error) {
-			return func(context.Context) (string, error) { close(entered); <-release; return source.URL, nil }
+		downloadResultAudio("rec_refresh", source.URL, storage, testLogger{t}, SyncOptions{DownloadOptions: DownloadOptions{MaxRetries: 1}, URLRefresher: func(label, task string) func(context.Context) (DownloadLink, error) {
+			return func(context.Context) (DownloadLink, error) {
+				close(entered)
+				<-release
+				return DownloadLink{URL: source.URL}, nil
+			}
 		}})
 	}()
 	select {

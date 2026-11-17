@@ -333,10 +333,9 @@ func voiceToday(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error
 func voiceStoragePath(ctx *clictx.Context, _ *cobra.Command, _ []string) (any, error) {
 	return map[string]any{
 		"ok": true, "path": ctx.Paths.Voice,
-		"history":            filepath.Join(ctx.Paths.Voice, "audio-jsonl"),
-		"audio":              filepath.Join(ctx.Paths.Voice, "audio"),
-		"recordings_history": filepath.Join(ctx.Paths.Voice, "recordings-jsonl"),
-		"recordings":         filepath.Join(ctx.Paths.Voice, "recordings"),
-		"format":             "daily-jsonl",
+		"history":    filepath.Join(ctx.Paths.Voice, "audio-jsonl"),
+		"audio":      filepath.Join(ctx.Paths.Voice, "audio"),
+		"recordings": filepath.Join(ctx.Paths.Voice, "recordings"),
+		"format":     "daily-jsonl",
 	}, nil
 }

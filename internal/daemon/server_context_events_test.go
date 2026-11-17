@@ -448,3 +448,39 @@ func TestContextRecordingRevisionsTrackContent(t *testing.T) {
 		t.Fatal(events)
 	}
 }
+
+// The 0.17 daily decisions must coexist with 0.18 change notifications.
+func TestContextHealthPreservesDailyDecisions(t *testing.T) {
+	s, _ := newTestServer(t, "")
+	for _, tc := range []struct {
+		body, reason string
+		applied      bool
+		events       int
+	}{
+		{healthBatch, "", true, 1},
+		{healthBatch, "", true, 1},
+		{strings.ReplaceAll(healthBatch, "healthkit", "honor"), "apple_priority", false, 1},
+		{strings.ReplaceAll(healthBatch, "09:10:00", "09:00:00"), "stale_collected_at", false, 1},
+		{strings.ReplaceAll(healthBatch, "09:10:00", "09:20:00"), "", true, 2},
+	} {
+		w := contextRequest(t, s, "POST", "/health-data", tc.body, "")
+		var response struct {
+			Days []struct {
+				Applied bool
+				Reason  string
+			}
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &response) != nil || len(response.Days) != 1 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		if response.Days[0].Applied != tc.applied || response.Days[0].Reason != tc.reason {
+			t.Fatal(w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), `"Changed"`) {
+			t.Fatal("internal change flag leaked")
+		}
+		if got := len(eventPage(t, s, "").Events); got != tc.events {
+			t.Fatalf("events=%d want=%d", got, tc.events)
+		}
+	}
+}

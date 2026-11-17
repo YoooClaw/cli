@@ -54,7 +54,7 @@ func TestWindowsMigrationOptionalFields(t *testing.T) {
 	}
 }
 
-func TestInstallScriptResolvesGitHubVersionPortably(t *testing.T) {
+func TestInstallScriptPinsGitHubDownloadToOSSLatest(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -64,8 +64,7 @@ func TestInstallScriptResolvesGitHubVersionPortably(t *testing.T) {
 		wantPathModified bool
 		wantActivated    bool
 	}{
-		// The mocked GitHub API lists the prerelease first: resolving without
-		// --version must still skip it and land on the newest stable tag.
+		// All platforms follow OSS latest unless an explicit version is supplied.
 		{name: "stable", wantVersion: "0.7.2"},
 		{name: "stable with legacy opt-out", args: []string{"--no-modify-path"}, wantVersion: "0.7.2"},
 		{name: "explicit prerelease", args: []string{"--version", "0.8.0-beta.1"}, wantVersion: "0.8.0-beta.1"},
@@ -99,6 +98,9 @@ exec /usr/bin/sed "$@"
 			writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
 printf '%s\n' "$*" >> "$CURL_LOG"
 case "$*" in
+  *artifact.yoooclaw.com/cli/latest*)
+    printf "0.7.2\n"
+    ;;
   *api.github.com*)
     printf '%s\n' '[{"tag_name" : "cli-v0.8.0-beta.1"},{"tag_name": "cli-v0.7.2"}]'
     ;;
@@ -145,7 +147,7 @@ esac
 			if !strings.Contains(logText, wantURL) {
 				t.Fatalf("download URL does not contain %q:\n%s", wantURL, logText)
 			}
-			if strings.Contains(logText, "tag_name") {
+			if strings.Contains(logText, "api.github.com") || strings.Contains(logText, "tag_name") {
 				t.Fatalf("raw JSON leaked into download URL:\n%s", logText)
 			}
 			activated := strings.Contains(string(output), "切换 Relay owner 到 standalone CLI")
@@ -430,6 +432,9 @@ printf '0.7.3\n'
 `)
 			writeExecutable(t, filepath.Join(mockBin, "curl"), `#!/bin/sh
 case "$*" in
+  *artifact.yoooclaw.com/cli/latest*)
+    printf "0.7.2\n"
+    ;;
   *api.github.com*)
     printf '%s\n' '[{"tag_name":"cli-v0.8.1"}]'
     ;;
@@ -657,5 +662,85 @@ func TestInstallScriptRejectsBlankSkill(t *testing.T) {
 	output, err := exec.Command("sh", mustAbs(t, "install.sh"), "--skill", " ").CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "--skill 不能为空") {
 		t.Fatalf("expected blank --skill rejection: %v\n%s", err, output)
+	}
+}
+
+func TestMissingLatestDoesNotFallBackToGitHub(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	mustMkdirAll(t, bin)
+	writeExecutable(t, filepath.Join(bin, "uname"), `#!/bin/sh
+case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac
+`)
+	log := filepath.Join(root, "curl.log")
+	writeExecutable(t, filepath.Join(bin, "curl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nexit 22\n")
+	cmd := exec.Command("sh", mustAbs(t, "install.sh"), "--dir", filepath.Join(root, "install"))
+	cmd.Env = append(os.Environ(), "HOME="+root, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "CURL_LOG="+log)
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "无法解析生产 OSS latest") {
+		t.Fatalf("error=%v out=%s", err, out)
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Contains(string(calls), "api.github.com") || strings.Contains(string(calls), "releases/download") {
+		t.Fatalf("unexpected fallback: %s", calls)
+	}
+}
+
+func TestInstallPlatformsResolveLatest(t *testing.T) {
+	raw, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := strings.Index(string(raw), "# ---------- resolve install dir")
+	if end < 0 {
+		t.Fatal("missing install boundary")
+	}
+	for _, osName := range []string{"Darwin", "Linux"} {
+		for _, arch := range []string{"arm64", "x86_64"} {
+			for _, rendered := range []bool{false, true} {
+				for _, version := range []string{"", "latest", "0.17.0"} {
+					t.Run(fmt.Sprintf("%s/%s/oss=%t/version=%s", osName, arch, rendered, version), func(t *testing.T) {
+						root := t.TempDir()
+						log := filepath.Join(root, "curl.log")
+						writeExecutable(t, filepath.Join(root, "uname"), fmt.Sprintf("#!/bin/sh\ncase \"$1\" in -s) echo %s ;; -m) echo %s ;; esac\n", osName, arch))
+						writeExecutable(t, filepath.Join(root, "curl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nprintf '0.18.0\\n'\n")
+						script := string(raw[:end]) + "printf 'RESOLVED=%s/%s\\n' \"$BASE\" \"$ASSET\"\n"
+						if rendered {
+							script = strings.ReplaceAll(script, "__YOOOCLAW_CLI_OSS_BASE_URL__", "https://example.test/cli")
+							script = strings.ReplaceAll(script, "__YOOOCLAW_CLI_TEMPLATE_RENDERED__", "1")
+						}
+						path := filepath.Join(root, "install.sh")
+						writeExecutable(t, path, script)
+						args := []string{path}
+						if version != "" {
+							args = append(args, "--version", version)
+						}
+						cmd := exec.Command("sh", args...)
+						cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "CURL_LOG="+log)
+						out, err := cmd.CombinedOutput()
+						if err != nil {
+							t.Fatalf("%v: %s", err, out)
+						}
+						want := "0.18.0"
+						query := true
+						if version == "0.17.0" {
+							want = version
+							query = false
+						}
+						base := "https://github.com/YoooClaw/cli/releases/download/cli-v" + want
+						if rendered {
+							base = "https://example.test/cli/v" + want
+						}
+						if !strings.Contains(string(out), "RESOLVED="+base+"/yoooclaw-") {
+							t.Fatalf("unexpected target: %s", out)
+						}
+						calls, _ := os.ReadFile(log)
+						if (len(calls) > 0) != query {
+							t.Fatalf("unexpected latest request: %s", calls)
+						}
+					})
+				}
+			}
+		}
 	}
 }

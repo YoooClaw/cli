@@ -16,8 +16,17 @@ type uploadCredentials struct {
 	mu         sync.Mutex
 	cloud      *Client
 	task       UploadTask
+	refresh    func(context.Context, *UploadTask) (*UploadTask, error)
+	kind       string
 	force      bool
 	refreshErr error
+}
+
+func (p *uploadCredentials) refreshed(ctx context.Context) (*UploadTask, error) {
+	if p.refresh != nil {
+		return p.refresh(ctx, &p.task)
+	}
+	return p.cloud.Refresh(ctx, &p.task)
 }
 
 func (p *uploadCredentials) invalidate() { p.mu.Lock(); defer p.mu.Unlock(); p.force = true }
@@ -30,7 +39,7 @@ func (p *uploadCredentials) GetCredentials(ctx context.Context) (credentials.Cre
 	expiry, _ := time.Parse(time.RFC3339, p.task.Credentials.Expiration)
 	if p.force || !expiry.After(time.Now().Add(refreshWindow)) {
 		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		next, err := p.cloud.Refresh(refreshCtx, &p.task)
+		next, err := p.refreshed(refreshCtx)
 		cancel()
 		if err != nil {
 			p.refreshErr = err
@@ -39,7 +48,7 @@ func (p *uploadCredentials) GetCredentials(ctx context.Context) (credentials.Cre
 		expiry, _ = time.Parse(time.RFC3339, next.Credentials.Expiration)
 		// Reject unusably short credentials rather than refreshing every part.
 		if !expiry.After(time.Now().Add(refreshWindow)) {
-			p.refreshErr = failure("CLOUD_RESPONSE_INVALID", "迁移上传凭据有效期不足")
+			p.refreshErr = failure("CLOUD_RESPONSE_INVALID", p.kind+"上传凭据有效期不足")
 			return credentials.Credentials{}, p.refreshErr
 		}
 		p.task = *next

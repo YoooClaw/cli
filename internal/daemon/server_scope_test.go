@@ -77,6 +77,7 @@ func withRecordings(t *testing.T, srv *server) *recording.Storage {
 func TestRecordingReadScopedByClientLabel(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	storage := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
 	for id, label := range map[string]string{"rec_a": "phone-a", "rec_b": "phone-b", "rec_old": ""} {
 		if _, err := storage.Ingest(id, recording.Metadata{Name: id}, label); err != nil {
 			t.Fatal(err)
@@ -104,6 +105,7 @@ func TestRecordingReadScopedByClientLabel(t *testing.T) {
 func TestRecordingMutationScopedByClientLabel(t *testing.T) {
 	srv, ts := newTestServer(t, "")
 	storage := withRecordings(t, srv)
+	withCaptureRecordings(t, srv)
 	if _, err := storage.Ingest("rec_b", recording.Metadata{Name: "B 的录音"}, "phone-b"); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 const transcriptDocumentSchemaVersion = 1
@@ -20,18 +21,20 @@ type TranscriptSource struct {
 
 // TranscriptSegment 是 transcript-data normalized.segments 的单段。
 type TranscriptSegment struct {
-	Text      string   `json:"text"`
-	StartMS   *float64 `json:"startMs,omitempty"`
-	EndMS     *float64 `json:"endMs,omitempty"`
-	SpeakerID *int     `json:"speakerId,omitempty"`
+	Text        string   `json:"text"`
+	StartMS     *float64 `json:"startMs,omitempty"`
+	EndMS       *float64 `json:"endMs,omitempty"`
+	SpeakerID   *int     `json:"speakerId,omitempty"`
+	SpeakerName string   `json:"speakerName,omitempty"`
 }
 
 // TranscriptItem 是对客户端展示的 sourceTextList 形状。
 type TranscriptItem struct {
-	Content   string   `json:"content"`
-	SpeakerID *int     `json:"speakerId,omitempty"`
-	StartTime *float64 `json:"startTime,omitempty"`
-	EndTime   *float64 `json:"endTime,omitempty"`
+	Content     string   `json:"content"`
+	SpeakerID   *int     `json:"speakerId,omitempty"`
+	SpeakerName string   `json:"speakerName,omitempty"`
+	StartTime   *float64 `json:"startTime,omitempty"`
+	EndTime     *float64 `json:"endTime,omitempty"`
 }
 
 // TranscriptDocument 是转写结构化主存储。
@@ -85,10 +88,11 @@ func ExtractSourceTextListFromDocument(doc TranscriptDocument) []TranscriptItem 
 				continue
 			}
 			out = append(out, TranscriptItem{
-				Content:   seg.Text,
-				SpeakerID: seg.SpeakerID,
-				StartTime: seg.StartMS,
-				EndTime:   seg.EndMS,
+				Content:     seg.Text,
+				SpeakerID:   seg.SpeakerID,
+				SpeakerName: strings.TrimSpace(seg.SpeakerName),
+				StartTime:   seg.StartMS,
+				EndTime:     seg.EndMS,
 			})
 		}
 		if len(out) > 0 {
@@ -191,9 +195,7 @@ func formatTranscriptSegmentText(seg TranscriptSegment) string {
 	if seg.StartMS != nil {
 		prefix = "[" + formatTimestamp(*seg.StartMS) + "] "
 	}
-	if seg.SpeakerID != nil {
-		prefix += fmt.Sprintf("说话人%d：", *seg.SpeakerID)
-	}
+	prefix += transcriptSpeakerPrefix(seg, true)
 	return prefix + text
 }
 
@@ -230,4 +232,30 @@ func extractSummary(text string) string {
 		return string(runes[:10])
 	}
 	return "录音转写"
+}
+
+// transcriptSpeakerPrefix renders a name as inline Markdown. The result.write
+// fallback historically omitted unnamed speakers; ASR includes their IDs.
+func transcriptSpeakerPrefix(seg TranscriptSegment, includeID bool) string {
+	name := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, seg.SpeakerName)
+	name = strings.Join(strings.Fields(name), " ")
+	if name != "" {
+		var out strings.Builder
+		for _, r := range name {
+			if strings.ContainsRune("\\`*_{}[]<>()#+-.!|~&", r) {
+				out.WriteByte('\\')
+			}
+			out.WriteRune(r)
+		}
+		return out.String() + "："
+	}
+	if includeID && seg.SpeakerID != nil {
+		return fmt.Sprintf("说话人%d：", *seg.SpeakerID)
+	}
+	return ""
 }

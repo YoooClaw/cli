@@ -6,17 +6,20 @@ Apply the parent `yoooclaw-context-query` rules.
 
 ```bash
 yoooclaw recording storage-path --format json
-yoooclaw recording list [--source all|capture_app|smart_hardware] \
+yoooclaw recording list [--source all|mobile_app|capture_app] \
   [--status <STATUS>] [--client <label>] \
   [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>] --format json
-yoooclaw recording +today [--source all|capture_app|smart_hardware] --format json
-yoooclaw recording +latest [--source all|capture_app|smart_hardware] --format json
+yoooclaw recording +today [--source all|mobile_app|capture_app] --format json
+yoooclaw recording +latest [--source all|mobile_app|capture_app] --format json
 ```
 
 The default source is `all`. Every item identifies its origin:
 
 - `capture_app` / `YoooClaw Capture`: meetings recorded by the desktop voice-input App.
-- `smart_hardware` / `YoooClaw 智能硬件`: recordings synchronized from YoooClaw hardware.
+- `mobile_app` / `YoooClaw 智能硬件`: recordings synchronized from the YoooClaw hardware that
+  the App connects to. When the user says "YoooClaw 硬件", "智能硬件", "硬件录音", or names a
+  hardware device, still use `mobile_app`. `smart_hardware` is only accepted as a legacy
+  `--source` input alias; `source_type` in output is always `mobile_app`.
 
 Mixed lists are sorted globally by actual occurrence time descending. `--from` is inclusive and
 `--to` is exclusive. `--client` identifies a hardware instance and therefore excludes Capture when
@@ -51,7 +54,7 @@ depend on the returned source:
   is present only when its declared artifact currently exists as a regular file. Read a Capture
   transcript by flattening `transcripts[].sentences[]` in `begin_time`, `end_time` order and retain
   `speaker_id`; its ASR `task_id` is not the recording ID.
-- `smart_hardware`: use the source root in `recording storage-path` and resolve the existing
+- `mobile_app`: use the source root in `recording storage-path` and resolve the existing
   `transcriptFile`, `summaryFile`, `srtFile`, or `audioFile` relative to that root.
 
 For a stored hardware summary, prefer `summaryFile` returned by status. If status omits the path,
@@ -79,8 +82,9 @@ Hardware status progression may include:
 
 `receiving → pending_oss_upload → uploading_oss → oss_uploaded → synced → transcribing → transcribed`
 
-Hardware failure states include `receiving_failed` and `transcribe_failed`. Only hardware exposes
-the daemon state event flow:
+Hardware failure states include `receiving_failed` and `transcribe_failed`. `recording events`
+merges the `mobile_app` and `capture_app` event streams, sorted by event time; each event carries
+`sourceType`, so use that field to attribute diagnosis to its source:
 
 ```bash
 yoooclaw recording events --id <recording_id> --format json
@@ -88,7 +92,8 @@ yoooclaw recording events --since 24h --limit 500 --format json
 ```
 
 YoooClaw Capture's `status` is producer metadata only. If a Capture artifact is missing, report the
-corresponding `has_*` and `missing_artifacts` facts rather than applying the hardware state model.
+corresponding `has_*` and `missing_artifacts` facts rather than applying the hardware state model,
+even when an event mentions the same recording.
 
 ## 5. Answer
 
@@ -98,4 +103,29 @@ corresponding `has_*` and `missing_artifacts` facts rather than applying the har
 - Multiple recordings: group by recording name/ID and source.
 - Missing transcript: report the file facts and any source-specific error; do not guess.
 
-This branch is read-only. Recording transformations use `yoooclaw-recordings-process`.
+## 6. Deletion
+
+Deleting is the only recording mutation available to this Skill, and it must go through the CLI
+so the daemon updates `recordings/index.json` and the files together:
+
+```bash
+yoooclaw recording delete <recording_id> --source <source_type> --yes --format json
+yoooclaw recording delete <recording_id> --source mobile_app --local-only --yes --format json
+```
+
+- Default: delete the index entry and all local artifacts (`--source` defaults to `mobile_app`).
+- `--local-only`: clear local artifacts but keep the entry pending re-download. Use only when the
+  user asked to clean up local files rather than delete the recording.
+- `--yes` is required in non-interactive runs; without it the command asks for confirmation.
+- Confirm the target first with `recording status`/`recording list`, and require a unique match.
+  Never delete several recordings because a filter matched; list them and let the user choose.
+
+Never edit `recordings/index.json` directly and never `rm`/trash files under the recordings root
+(`audio/`, `transcripts/`, `transcript-data/`, `summaries/`). The daemon keeps the index in memory
+and rewrites the whole file on its next change, so a direct edit appears to work and then reverts.
+Only the command above reaches the daemon's write path.
+
+## Boundary
+
+Query steps in this branch are read-only. Recording transformations use
+`yoooclaw-recordings-process`.
