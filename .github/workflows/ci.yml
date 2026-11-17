@@ -427,6 +427,9 @@ jobs:
           📥 macOS / Linux（固定本次版本）：
           curl -fsSL ${BASE_URL}/install.sh | sh -s -- --version ${VERSION} --force
 
+          📥 无影 / Claude（固定本次测试版本）：
+          curl -fsSL ${BASE_URL}/install-wuying.sh | sh -s -- --version ${VERSION} --skill claude --env test --force
+
           📥 Windows PowerShell：
           & ([scriptblock]::Create((irm '${BASE_URL}/install.ps1'))) -Version ${VERSION} -Force
 
