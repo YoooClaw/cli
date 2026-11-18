@@ -179,3 +179,11 @@ GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种�
 不通过 `INVALID_PARAMS` 自动猜测版本：新 daemon 对非法参数仍返回该码，避免掩盖调用错误。
 桌面当前索引与每日历史是独立配置：`CaptureRecordings=nil` 仅表示不读当前索引；
 `CaptureVoiceRoot` 非空时仍读取旧每日历史，空时才不读取历史。两者均未配置时桌面为空。
+
+### 历史录音写操作
+
+`recordings.rename/delete/result.write` 在明确选择 `capture_app` 时也查找旧每日历史，先校验可见性，再登记选中记录并复用现有写入流程；无需先导出。完整删除保留遮蔽 ID，本地清理保留记录。`result.write` 保留未被请求更新的历史元数据和音频。
+
+历史 Capture 的 `recordings.retranscribe` 暂不支持，返回 `SOURCE_UNREADABLE`，且不因被拒绝的请求登记历史记录。现有 ASR 需要云端音频 URL 和标准音频路径；仅把本地历史登记进索引并不能满足，需要在 Capture 端重新转写后同步。
+
+本轮不引入历史缓存；显式 Capture/all 查询仍有累计 32 MiB 的扫描预算。CLI 的历史 `status` 继续保留 Capture 原始值，App 使用统一状态映射，两者状态展示口径尚未统一。未知历史转写格式继续明确报错，不把缺失文本的结果默认为完整同步。

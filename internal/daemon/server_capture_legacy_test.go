@@ -97,3 +97,68 @@ func TestCaptureLegacyGatewayReadAndExport(t *testing.T) {
 	}
 
 }
+
+func TestCaptureLegacyMutationsBeforeExport(t *testing.T) {
+	for _, method := range []string{"rename", "delete", "result.write", "retranscribe"} {
+		t.Run(method, func(t *testing.T) {
+			srv, ts := newTestServer(t, "")
+			withRecordings(t, srv)
+			root := withCaptureRecordings(t, srv)
+			history := filepath.Join(srv.ctx.Paths.Voice, "recordings-jsonl")
+			if err := os.MkdirAll(history, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "old.m4a"), []byte("audio"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			row := `{"id":"legacy","title":"原名","recorded_at":"2026-11-10T10:00:00+08:00","duration_ms":3000,"status":"completed","audio_rel_path":"recordings/old.m4a"}` + "\n"
+			if err := os.WriteFile(filepath.Join(history, "2026-11-10.jsonl"), []byte(row), 0600); err != nil {
+				t.Fatal(err)
+			}
+			body := `{"recordingId":"legacy","sourceType":"capture_app"`
+			switch method {
+			case "retranscribe":
+				body += `,"asr":{"mode":"api"}}`
+			case "rename":
+				body += `,"name":"新名"}`
+			case "delete":
+				body += `,"deleteRemote":true}`
+			case "result.write":
+				body += `,"transcript":{"text":"更新正文"}}`
+			}
+			resp := asClient(t, "POST", ts.URL+"/gateway/recordings."+method, "phone-a", body)
+			if method == "retranscribe" {
+				if errorCode(resp) != "SOURCE_UNREADABLE" {
+					t.Fatalf("retranscribe: %+v", resp)
+				}
+				if _, found, _ := srv.captureRecordingStorage.LookupByID("legacy"); found {
+					t.Fatal("rejected retranscribe adopted history")
+				}
+				return
+			}
+			gatewayData(t, resp)
+			entry, found, err := srv.captureRecordingStorage.LookupSourceByID(t.Context(), "legacy")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if method == "delete" {
+				if found {
+					t.Fatalf("deleted history returned: %+v", entry)
+				}
+				if _, err := os.Stat(filepath.Join(root, "old.m4a")); !os.IsNotExist(err) {
+					t.Fatalf("audio remains: %v", err)
+				}
+				return
+			}
+			if !found || entry.AudioFile != "old.m4a" || entry.Metadata.CreatedAt != "2026-11-10T10:00:00+08:00" {
+				t.Fatalf("lost history: %+v", entry)
+			}
+			if method == "rename" && entry.Metadata.Name != "新名" {
+				t.Fatalf("rename: %+v", entry)
+			}
+			if method == "result.write" && entry.TranscriptDataFile == "" {
+				t.Fatalf("write: %+v", entry)
+			}
+		})
+	}
+}
