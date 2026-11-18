@@ -13,7 +13,8 @@ import (
 	"github.com/YoooClaw/cli/internal/reminders"
 )
 
-const SummaryLatestLimit = 32 << 10
+// Eight latest items leave 32 KiB for envelopes, warnings and metadata.
+const SummaryLatestLimit = 28 << 10
 
 var summaryKinds = []string{"notifications", "locations", "calendars", "reminders", "web-pages", "recordings", "capture-recordings", "health-data"}
 
@@ -128,6 +129,8 @@ func (s *Service) ReadSummary(ctx context.Context, values url.Values, stores Sum
 				e = s.summaryRecordings(ctx, q, stores.CaptureRecordings, stores.RecordingScope, &r, recording.SourceCaptureApp, stores.CaptureVoiceRoot)
 			case "health-data":
 				e = s.summaryHealth(ctx, &r)
+			default:
+				e = readFailed()
 			}
 			if e != nil {
 				r.Status, r.Error, r.Count, r.Latest = "error", e, nil, nil

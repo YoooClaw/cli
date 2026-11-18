@@ -418,6 +418,10 @@ func TestSummaryRecordingCategories(t *testing.T) {
 			q.Set("types", types)
 		}
 		out := getSummary(t, s, stores, q)
+		hardware, capture := out.Assets["recordings"], out.Assets["capture-recordings"]
+		if hardware.Latest != nil && capture.Latest != nil && hardware.Latest.RecordID == capture.Latest.RecordID {
+			t.Fatal("cross-category UUIDs share a summary ID")
+		}
 		for kind, source := range map[string]string{"recordings": "mobile_app", "capture-recordings": "capture_app"} {
 			r, found := out.Assets[kind]
 			if types != "" && !strings.Contains(","+types+",", ","+kind+",") {
@@ -460,5 +464,62 @@ func TestSummaryRecordingCategories(t *testing.T) {
 		if _, err := s.ReadSummary(context.Background(), url.Values{"sources": values}, stores); err == nil {
 			t.Fatalf("accepted sources=%v", values)
 		}
+	}
+}
+
+func TestSummaryAllLatestItemsFitResponseBudget(t *testing.T) {
+	out := SummaryResponse{OK: true, Date: "2026-11-18", TimeZone: "Asia/Shanghai", DayStart: "2026-11-18T00:00:00+08:00", DayEnd: "2026-11-19T00:00:00+08:00", GeneratedAt: "2026-11-18T12:00:00+08:00", Assets: map[string]SummaryResult{}}
+	for _, kind := range summaryKinds {
+		r := emptySummary(kind)
+		it := item("summary-id", "", map[string]any{"value": ""})
+		it.Data["value"] = strings.Repeat("x", SummaryLatestLimit-len(marshal(t, it)))
+		if len(marshal(t, it)) != SummaryLatestLimit {
+			t.Fatal("fixture is not at item limit")
+		}
+		r.Latest = &it
+		r.Warnings = []Warning{{Code: "INVALID_TIMESTAMP_SKIPPED", Count: 1}}
+		out.Assets[kind] = r
+	}
+	if size := len(marshal(t, out)); size > ResponseLimit {
+		t.Fatalf("valid latest items exceed response budget: %d > %d", size, ResponseLimit)
+	}
+}
+
+func TestSummaryCaptureReadBudgets(t *testing.T) {
+	for _, source := range []string{"index", "history"} {
+		t.Run(source, func(t *testing.T) {
+			s, stores := summaryFixture(t)
+			voice := t.TempDir()
+			root := filepath.Join(voice, "recordings")
+			stores.CaptureVoiceRoot = voice
+			stores.CaptureRecordings = recording.NewCaptureStorage(root, summaryTestLogger{t})
+			if err := stores.CaptureRecordings.Init(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "index.json")
+			if source == "history" {
+				dir := filepath.Join(voice, "recordings-jsonl")
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				path = filepath.Join(dir, "2026-10-22.jsonl")
+			}
+			if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, recording.SummaryIndexLimit+1); err != nil {
+				t.Fatal(err)
+			}
+			out := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}})
+			r := out.Assets["capture-recordings"]
+			if !out.Partial || r.Error == nil || r.Error.Code != "SOURCE_TOO_LARGE" || r.Count != nil || r.Latest != nil {
+				t.Fatalf("capture budget: %+v", r)
+			}
+			for kind, other := range out.Assets {
+				if kind != "capture-recordings" && other.Error != nil {
+					t.Fatalf("%s affected by Capture budget: %+v", kind, other)
+				}
+			}
+		})
 	}
 }

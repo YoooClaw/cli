@@ -279,7 +279,7 @@ func TestAssetsSummaryWiresCaptureStore(t *testing.T) {
 	w := assetHTTP(s, "GET", "/assets/summary?date=2026-10-22", "gateway-secret")
 	out := decodeSummaryHTTP(t, w.Code, w.Header(), w.Body.Bytes())
 	hardware := out.Assets["recordings"]
-	if len(out.Assets) != 8 || hardware.Error != nil || hardware.Count == nil || *hardware.Count != 3 {
+	if out.Partial || len(out.Assets) != 8 || hardware.Error != nil || hardware.Count == nil || *hardware.Count != 3 {
 		t.Fatalf("default hardware category: %+v", out)
 	}
 	r := out.Assets["capture-recordings"]
@@ -298,7 +298,7 @@ func TestAssetsSummaryWiresCaptureStore(t *testing.T) {
 	w = assetHTTP(s, "GET", "/assets/summary?date=2026-10-22", "gateway-secret")
 	out = decodeSummaryHTTP(t, w.Code, w.Header(), w.Body.Bytes())
 	r = out.Assets["capture-recordings"]
-	if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 2 || r.Latest.Data["recordingId"] != "legacy-latest" {
+	if out.Partial || r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 2 || r.Latest.Data["recordingId"] != "legacy-latest" {
 		t.Fatalf("legacy missing: %+v", r)
 	}
 }
