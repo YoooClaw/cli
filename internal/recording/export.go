@@ -423,8 +423,8 @@ func (s *ExportService) runExport(recordingID, exportID string, cloud ExportClou
 	})
 	if err != nil {
 		code, message, scope, retryable := exportRunFailure(err)
+		s.logger.Warn("[recording-export] 导出失败: " + exportID + ", recordingId=" + recordingID + ", " + exportErrorLog(err))
 		s.fail(recordingID, exportID, code, message, scope, retryable)
-		s.logger.Warn("[recording-export] 导出失败: " + exportID + ", " + exportErrorLog(err))
 		return
 	}
 	if upload.TaskID == "" || upload.ObjectKey == "" || (taskID != "" && upload.TaskID != taskID) {

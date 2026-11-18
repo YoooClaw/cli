@@ -13,13 +13,14 @@ const refreshWindow = 5 * time.Minute
 // The SDK calls this provider before signing each part. Serialize refreshes so
 // concurrent parts share one credential generation and never create a new task.
 type uploadCredentials struct {
-	mu         sync.Mutex
-	cloud      *Client
-	task       UploadTask
-	refresh    func(context.Context, *UploadTask) (*UploadTask, error)
-	kind       string
-	force      bool
-	refreshErr error
+	mu              sync.Mutex
+	cloud           *Client
+	task            UploadTask
+	refresh         func(context.Context, *UploadTask) (*UploadTask, error)
+	kind            string
+	force           bool
+	refreshErr      error
+	previousSecrets []string
 }
 
 func (p *uploadCredentials) refreshed(ctx context.Context) (*UploadTask, error) {
@@ -51,6 +52,8 @@ func (p *uploadCredentials) GetCredentials(ctx context.Context) (credentials.Cre
 			p.refreshErr = failure("CLOUD_RESPONSE_INVALID", p.kind+"上传凭据有效期不足")
 			return credentials.Credentials{}, p.refreshErr
 		}
+		old := p.task.Credentials
+		p.previousSecrets = append(p.previousSecrets, old.AccessKeyID, old.AccessKeySecret, old.SecurityToken)
 		p.task = *next
 		p.force = false
 	}

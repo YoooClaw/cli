@@ -116,17 +116,27 @@ func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePla
 		o.CheckpointDir = checkpoint
 	})
 	var completion *uploadCompletion
+	var diagnostics []string
+	attempt := 0
 	err = retry(ctx, func() error {
+		attempt++
+		started := time.Now()
 		if _, e := provider.GetCredentials(ctx); e != nil {
+			diagnostics = append(diagnostics, provider.failureDetail("credentials", attempt, started, e))
 			return e
 		}
+		started = time.Now() // Exclude the initial credential refresh from OSS elapsed time.
 		_, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{Bucket: oss.Ptr(task.Bucket), Key: oss.Ptr(task.ObjectKey), ContentType: oss.Ptr(plan.contentType)}, path)
 		if e != nil {
+			diagnostics = append(diagnostics, provider.failureDetail("oss_upload", attempt, started, e))
 			// The OSS completion response may be lost after the object was committed.
 			// Confirm the existing task before attempting the SDK upload again.
+			confirmStarted := time.Now()
 			if confirmed, confirmErr := plan.complete(ctx, task.TaskID, task.ObjectKey); confirmErr == nil {
 				completion = confirmed
 				return nil
+			} else {
+				diagnostics = append(diagnostics, provider.failureDetail("complete_after_upload_error", attempt, confirmStarted, confirmErr))
 			}
 			var serviceErr *oss.ServiceError
 			if errors.As(e, &serviceErr) && (serviceErr.Code == "SecurityTokenExpired" || serviceErr.Code == "InvalidSecurityToken") {
@@ -137,17 +147,23 @@ func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePla
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, withUploadDiagnostics(err, diagnostics)
 	}
 	if completion == nil {
+		attempt = 0
 		err = retry(ctx, func() error {
 			var e error
+			attempt++
+			started := time.Now()
 			completion, e = plan.complete(ctx, task.TaskID, task.ObjectKey)
+			if e != nil {
+				diagnostics = append(diagnostics, provider.failureDetail("complete", attempt, started, e))
+			}
 			return e
 		})
 	}
 	if err != nil {
-		return nil, failure("CLOUD_COMPLETE_FAILED", plan.completeHint(task))
+		return nil, withUploadDiagnostics(failure("CLOUD_COMPLETE_FAILED", plan.completeHint(task)), diagnostics)
 	}
 	if completion.fileSize != info.Size() {
 		return nil, failure("CLOUD_SIZE_MISMATCH", plan.sizeMismatchMessage+"，任务 "+task.TaskID)

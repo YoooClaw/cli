@@ -35,9 +35,7 @@ func finishReport(ctx context.Context, observation ReportObservation, started ti
 	observation.Attempt, _ = ctx.Value(reportAttemptKey{}).(int)
 	observation.Elapsed = time.Since(started)
 	observation.Success = err == nil
-	if !diagnosticCodeRE.MatchString(observation.Code) {
-		observation.Code = "unknown"
-	}
+	observation.Code = diagnosticCode(observation.Code)
 	log(observation)
 }
 func transportFailure(err error) string {
@@ -49,4 +47,11 @@ func transportFailure(err error) string {
 		return "timeout"
 	}
 	return "transport_error"
+}
+
+func diagnosticCode(code string) string {
+	if !diagnosticCodeRE.MatchString(code) {
+		return "unknown"
+	}
+	return code
 }
