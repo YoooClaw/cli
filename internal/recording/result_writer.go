@@ -90,6 +90,38 @@ type ResultWriteResult struct {
 	Stored         ResultWriteStored `json:"stored"`
 }
 
+// ValidateResultWrite checks request-only constraints without reading or writing
+// storage. Gateways call it before registering historical entries; the writer
+// repeats it for non-gateway callers.
+func (s *Storage) ValidateResultWrite(params ResultWriteParams) error {
+	recordingID := strings.TrimSpace(params.RecordingID)
+	if recordingID == "" {
+		return errors.New("recordingId is required")
+	}
+	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
+	if !fsutil.IsSafeName(recordingID) {
+		return errors.New("recordingId is invalid")
+	}
+	oss := resultOssURL(params)
+	hasResult := params.Transcript != nil || params.Summary != nil
+	if !hasResult && (!s.capture || oss == "") {
+		return errors.New("transcript or summary is required")
+	}
+
+	if params.OssTaskID != nil {
+		taskID := strings.TrimSpace(*params.OssTaskID)
+		if taskID == "" || len(taskID) > 256 || oss == "" {
+			return errors.New("ossTaskId requires a nonempty task ID (max 256 bytes) and ossUrl")
+		}
+	}
+	if params.Recording != nil {
+		if err := ValidateRecordingType(params.Recording.RecordingType); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // HandleRecordingResultWrite 处理 recordings.result.write：写入 App / 云端生成的
 // 转录与总结，覆盖同一录音的 transcript-data/transcripts/summaries 文件。
 // 找不到录音时按占位元数据 upsert 新建；
@@ -98,31 +130,15 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	finish := observeContent(storage, params.RecordingID, opts.OnContentCommit)
 	success := false
 	defer func() { finish(success) }()
+	if err := storage.ValidateResultWrite(params); err != nil {
+		return ResultWriteResult{}, err
+	}
 	recordingID := strings.TrimSpace(params.RecordingID)
-	if recordingID == "" {
-		return ResultWriteResult{}, errors.New("recordingId is required")
-	}
-	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
-	if !fsutil.IsSafeName(recordingID) {
-		return ResultWriteResult{}, errors.New("recordingId is invalid")
-	}
 	oss := resultOssURL(params)
 	hasResult := params.Transcript != nil || params.Summary != nil
-	if !hasResult && (!storage.capture || oss == "") {
-		return ResultWriteResult{}, errors.New("transcript or summary is required")
-	}
-
 	taskID := ""
 	if params.OssTaskID != nil {
 		taskID = strings.TrimSpace(*params.OssTaskID)
-		if taskID == "" || len(taskID) > 256 || oss == "" {
-			return ResultWriteResult{}, errors.New("ossTaskId requires a nonempty task ID (max 256 bytes) and ossUrl")
-		}
-	}
-	if params.Recording != nil {
-		if err := ValidateRecordingType(params.Recording.RecordingType); err != nil {
-			return ResultWriteResult{}, err
-		}
 	}
 	entry, found := storage.FindByID(recordingID)
 	clientLabel := strings.TrimSpace(opts.ClientLabel)

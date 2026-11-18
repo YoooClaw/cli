@@ -99,7 +99,7 @@ func TestCaptureLegacyGatewayReadAndExport(t *testing.T) {
 }
 
 func TestCaptureLegacyMutationsBeforeExport(t *testing.T) {
-	for _, method := range []string{"rename", "delete", "result.write", "retranscribe"} {
+	for _, method := range []string{"rename", "delete", "result.write", "retranscribe", "invalid-empty", "invalid-task", "invalid-type"} {
 		t.Run(method, func(t *testing.T) {
 			srv, ts := newTestServer(t, "")
 			withRecordings(t, srv)
@@ -117,6 +117,12 @@ func TestCaptureLegacyMutationsBeforeExport(t *testing.T) {
 			}
 			body := `{"recordingId":"legacy","sourceType":"capture_app"`
 			switch method {
+			case "invalid-empty":
+				body += `}`
+			case "invalid-task":
+				body += `,"transcript":{"text":"正文"},"ossTaskId":"task-without-url"}`
+			case "invalid-type":
+				body += `,"transcript":{"text":"正文"},"recording":{"recording_type":"bad"}}`
 			case "retranscribe":
 				body += `,"asr":{"mode":"api"}}`
 			case "rename":
@@ -126,7 +132,20 @@ func TestCaptureLegacyMutationsBeforeExport(t *testing.T) {
 			case "result.write":
 				body += `,"transcript":{"text":"更新正文"}}`
 			}
-			resp := asClient(t, "POST", ts.URL+"/gateway/recordings."+method, "phone-a", body)
+			route := method
+			if strings.HasPrefix(method, "invalid-") {
+				route = "result.write"
+			}
+			resp := asClient(t, "POST", ts.URL+"/gateway/recordings."+route, "phone-a", body)
+			if strings.HasPrefix(method, "invalid-") {
+				if errorCode(resp) != "INVALID_PARAMS" {
+					t.Fatalf("validation: %+v", resp)
+				}
+				if _, found, _ := srv.captureRecordingStorage.LookupByID("legacy"); found {
+					t.Fatal("invalid request adopted legacy")
+				}
+				return
+			}
 			if method == "retranscribe" {
 				if errorCode(resp) != "SOURCE_UNREADABLE" {
 					t.Fatalf("retranscribe: %+v", resp)
@@ -153,7 +172,7 @@ func TestCaptureLegacyMutationsBeforeExport(t *testing.T) {
 			if !found || entry.AudioFile != "old.m4a" || entry.Metadata.CreatedAt != "2026-11-10T10:00:00+08:00" {
 				t.Fatalf("lost history: %+v", entry)
 			}
-			if method == "rename" && entry.Metadata.Name != "新名" {
+			if method == "rename" && (entry.Metadata.Name != "新名" || entry.Title != "新名") {
 				t.Fatalf("rename: %+v", entry)
 			}
 			if method == "result.write" && entry.TranscriptDataFile == "" {

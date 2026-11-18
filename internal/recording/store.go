@@ -744,6 +744,7 @@ func (s *Storage) Rename(recordingID, name string) (Entry, bool, error) {
 	}
 	entry := s.index.Recordings[idx]
 	entry.Metadata.Name = name
+	entry.Title = name
 	entry.UpdatedAt = nowISO()
 	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, false, err

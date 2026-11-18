@@ -182,7 +182,7 @@ GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种�
 
 ### 历史录音写操作
 
-`recordings.rename/delete/result.write` 在明确选择 `capture_app` 时也查找旧每日历史，先校验可见性，再登记选中记录并复用现有写入流程；无需先导出。完整删除保留遮蔽 ID，本地清理保留记录。`result.write` 保留未被请求更新的历史元数据和音频。
+`recordings.rename/delete/result.write` 在明确选择 `capture_app` 时也查找旧每日历史，先校验可见性，再登记选中记录并复用现有写入流程；无需先导出。`result.write` 的请求参数校验在登记历史记录前完成；后续 I/O 失败不保证无落盘。改名同时更新 `metadata.name` 与 `title`，保证列表及详情使用新名称。完整删除保留遮蔽 ID，本地清理保留记录。`result.write` 保留未被请求更新的历史元数据和音频。
 
 历史 Capture 的 `recordings.retranscribe` 暂不支持，返回 `SOURCE_UNREADABLE`，且不因被拒绝的请求登记历史记录。现有 ASR 需要云端音频 URL 和标准音频路径；仅把本地历史登记进索引并不能满足，需要在 Capture 端重新转写后同步。
 

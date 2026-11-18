@@ -156,6 +156,10 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if !ok {
 			return
 		}
+		if err := store.ValidateResultWrite(body); err != nil {
+			gatewayErr(w, "INVALID_PARAMS", err.Error())
+			return
+		}
 		// Check and write under the same lock so concurrent uploads cannot create
 		// the same ID in both stores. The asynchronous downloads have their own locks.
 		s.recordingResultMu.Lock()
