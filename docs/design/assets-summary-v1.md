@@ -45,7 +45,7 @@ GET /assets/summary?date=2026-10-30&types=notifications,health-data
 | 日程 | 目标日文件内的展示项，包括覆盖当天的跨天事件 | `startAt` 最大，同刻取后行 | 单个日期文件，不跨日填页 |
 | 提醒事项 | `due.date` 等于目标日，含已完成与未完成，无截止日期项排除 | 当天到期墙上时间最大；仅日期排在带时间之前；同值按 recordId 降序 | 当前镜像精简索引，不读取备注和详情 |
 | 网页剪藏 | 当前 URL 索引项的 `capturedAt` 换算主机本地日期后等于目标日 | `capturedAt` 最大，同刻按 urlHash 降序 | URL 索引，不读取网页正文/版本正文 |
-| 录音 | 当前可见索引中 `metadata.created_at` 换算本地日期后等于目标日 | `created_at` 最大，同刻按录音 ID 降序 | 持写锁读取已提交元数据，不读取音频或转写 |
+| 录音 | 手机与桌面录音可见索引合并后，`metadata.created_at` 换算本地日期后等于目标日 | `created_at` 最大，同刻按 sourceType、录音 ID 降序 | 持写锁读取已提交元数据，不读取音频或转写 |
 | 健康 | 不统计数量；不受请求 `date` 限制 | 最新业务日期的有效 v3 快照 | 日期倒序查找，返回日指标和睡眠摘要，不带阶段详情 |
 
 请求的默认“今天”来自主机时区；原始存储的日期归属不变：通知按通知时间、
@@ -100,7 +100,7 @@ clientLabel 可见性（当前来源与共享历史），不会借新接口扩�
 
 每个类别独立返回 `status`、`latestBy`、`latest`、`warnings`，成功计数类型还有 `count`。
 `latest` 沿用资产 Item 信封和展示字段投影，网页只返回 title/url；
-录音只返回 recordingId/name/created_at/时长/状态/产物可用布尔值，不返回本机文件路径。
+录音只返回 sourceType/recordingId/name/created_at/时长/状态/产物可用布尔值，不返回本机文件路径。
 通知/位置/日程的汇总 recordId 是摘要标识，不保证与逐条列表中的行 ID 相同；
 提醒沿用原详情 recordId，健康沿用原业务日期 ID，均不产生分页 cursor。
 
@@ -139,3 +139,5 @@ HTTP 返回 `application/json; charset=utf-8` 和 `Cache-Control:no-store`。
 高精度数字、去重与迟到通知、部分失败、读取/响应预算、原录音可见性、鉴权、
 GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种方法及并发上传查询。
 所有数据与网络验证使用临时目录和本地测试服务，不修改运行中 CLI 的用户数据。
+
+录音汇总包含 `mobile_app` 与 `capture_app`，使用相同的 clientLabel 可见性规则。跨来源相同 UUID 按两条记录统计；`latest.data.sourceType` 标识来源。桌面来源的 latest ID 纳入来源命名空间，手机来源保持已有 ID。任一已配置录音索引读取失败时，recordings 返回 error，count/latest 均为空，不返回部分数量。

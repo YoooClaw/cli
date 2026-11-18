@@ -40,10 +40,11 @@ type SummaryResponse struct {
 // SummaryStores injects existing stores rather than introducing new writers or
 // HTTP clients. Recordings retain their legacy credential/source visibility.
 type SummaryStores struct {
-	Notifications  *notif.Storage
-	Reminders      *reminders.Storage
-	Recordings     *recording.Storage
-	RecordingScope string
+	Notifications     *notif.Storage
+	Reminders         *reminders.Storage
+	Recordings        *recording.Storage
+	CaptureRecordings *recording.Storage
+	RecordingScope    string
 }
 
 type summaryQuery struct {
@@ -121,7 +122,7 @@ func (s *Service) ReadSummary(ctx context.Context, values url.Values, stores Sum
 			case "web-pages":
 				e = s.summaryWeb(ctx, q, &r)
 			case "recordings":
-				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r)
+				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r, stores.CaptureRecordings)
 			case "health-data":
 				e = s.summaryHealth(ctx, &r)
 			}

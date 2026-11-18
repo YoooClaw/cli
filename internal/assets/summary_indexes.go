@@ -115,43 +115,59 @@ func (s *Service) summaryReminders(ctx context.Context, q summaryQuery, store *r
 	return nil
 }
 
-func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *recording.Storage, scope string, r *SummaryResult) *Error {
+func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *recording.Storage, scope string, r *SummaryResult, capture *recording.Storage) *Error {
 	if store == nil {
-		return readFailed()
-	}
-	entries, err := store.ReadIndexSnapshot(ctx)
-	if errors.Is(err, recording.ErrSummaryIndexTooLarge) {
-		return tooLarge()
-	}
-	if err != nil {
 		return readFailed()
 	}
 	var newest time.Time
 	latestID := ""
 	p := newPage()
-	for _, entry := range entries {
-		if ctx.Err() != nil {
+	for _, source := range []struct {
+		store *recording.Storage
+		kind  string
+	}{
+		{store, recording.SourceMobileApp}, {capture, recording.SourceCaptureApp},
+	} {
+		// Older embedders may not have a Capture store configured.
+		if source.store == nil {
+			continue
+		}
+		entries, err := source.store.ReadIndexSnapshot(ctx)
+		if errors.Is(err, recording.ErrSummaryIndexTooLarge) {
+			return tooLarge()
+		}
+		if err != nil {
 			return readFailed()
 		}
-		if !clientlabel.Visible(entry.ClientLabel, scope) {
-			continue
-		}
-		at, ok := recording.ParseTime(entry.Metadata.CreatedAt)
-		if entry.ID == "" || !ok {
-			p.warn("INVALID_TIMESTAMP_SKIPPED")
-			continue
-		}
-		if at.In(q.zone).Format(time.DateOnly) != q.date {
-			continue
-		}
-		*r.Count++
-		if r.Latest == nil || at.After(newest) || at.Equal(newest) && entry.ID > latestID {
-			data := map[string]any{"recordingId": entry.ID, "name": entry.Metadata.Name, "created_at": entry.Metadata.CreatedAt,
-				"duration_sec": entry.Metadata.DurationSec, "duration_display": recording.FormatDurationDisplay(entry.Metadata.DurationSec),
-				"transfer_status": entry.Status, "audio_status": entry.AudioStatus,
-				"has_audio": entry.AudioFile != "", "has_transcript": entry.TranscriptFile != "", "has_srt": entry.SrtFile != ""}
-			it := item(digest(s.profile, "recordings", entry.ID), "", data)
-			r.Latest, newest, latestID = &it, at, entry.ID
+		for _, entry := range entries {
+			if ctx.Err() != nil {
+				return readFailed()
+			}
+			if !clientlabel.Visible(entry.ClientLabel, scope) {
+				continue
+			}
+			at, ok := recording.ParseTime(entry.Metadata.CreatedAt)
+			if entry.ID == "" || !ok {
+				p.warn("INVALID_TIMESTAMP_SKIPPED")
+				continue
+			}
+			if at.In(q.zone).Format(time.DateOnly) != q.date {
+				continue
+			}
+			*r.Count++
+			identity := source.kind + ":" + entry.ID
+			if r.Latest == nil || at.After(newest) || at.Equal(newest) && identity > latestID {
+				data := map[string]any{"sourceType": source.kind, "recordingId": entry.ID, "name": entry.Metadata.Name, "created_at": entry.Metadata.CreatedAt,
+					"duration_sec": entry.Metadata.DurationSec, "duration_display": recording.FormatDurationDisplay(entry.Metadata.DurationSec),
+					"transfer_status": entry.Status, "audio_status": entry.AudioStatus,
+					"has_audio": entry.AudioFile != "", "has_transcript": entry.TranscriptFile != "", "has_srt": entry.SrtFile != ""}
+				id := digest(s.profile, "recordings", entry.ID)
+				if source.kind == recording.SourceCaptureApp {
+					id = digest(s.profile, "recordings", source.kind, entry.ID)
+				}
+				it := item(id, "", data)
+				r.Latest, newest, latestID = &it, at, identity
+			}
 		}
 	}
 	r.Warnings = p.Warnings

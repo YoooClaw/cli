@@ -266,3 +266,19 @@ func TestAssetsSummaryRelayRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestAssetsSummaryWiresCaptureStore(t *testing.T) {
+	s, _ := newTestServer(t, "gateway-secret")
+	seedAssetEndpoints(t, s)
+	seedSummaryRecordings(t, s)
+	withCaptureRecordings(t, s)
+	if _, err := s.captureRecordingStorage.Ingest("desktop-latest", recording.Metadata{Name: "desktop", CreatedAt: time.Date(2026, 10, 22, 23, 59, 0, 0, time.Local).Format(time.RFC3339)}, "default"); err != nil {
+		t.Fatal(err)
+	}
+	w := assetHTTP(s, "GET", "/assets/summary?date=2026-10-22", "gateway-secret")
+	out := decodeSummaryHTTP(t, w.Code, w.Header(), w.Body.Bytes())
+	r := out.Assets["recordings"]
+	if r.Error != nil || *r.Count != 4 || r.Latest.Data["recordingId"] != "desktop-latest" || r.Latest.Data["sourceType"] != recording.SourceCaptureApp {
+		t.Fatalf("capture missing: %+v", r)
+	}
+}

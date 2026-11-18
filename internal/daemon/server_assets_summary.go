@@ -18,7 +18,7 @@ func (s *server) handleAssetSummary(w http.ResponseWriter, r *http.Request, auth
 		return
 	}
 	response, e := s.assetsReader().ReadSummary(r.Context(), params, assets.SummaryStores{
-		Notifications: s.storage, Reminders: s.reminderStorage, Recordings: s.recordingStorage, RecordingScope: auth.scope(),
+		Notifications: s.storage, Reminders: s.reminderStorage, Recordings: s.recordingStorage, CaptureRecordings: s.captureRecordingStorage, RecordingScope: auth.scope(),
 	})
 	if e != nil {
 		writeAssetError(w, e)
