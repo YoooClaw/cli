@@ -18,7 +18,7 @@ import (
 
 func TestUploadDiagnosticPreservesContractAndExcludesRawSDKData(t *testing.T) {
 	raw := &oss.ServiceError{Code: "RequestTimeTooSkewed", StatusCode: 403, RequestID: "request-123", EC: "0002-00000504",
-		Message: "secret-message", RequestTarget: "https://host/key?Signature=secret-signature",
+		Message: "Request time differs. SecurityToken=secret-message", RequestTarget: "https://host/key?Signature=secret-signature",
 		Snapshot: []byte("secret-snapshot"), Headers: http.Header{"Authorization": []string{"secret-auth"}}}
 	detail := uploadFailureDetail("oss_upload", 2, time.Now(), raw)
 	for _, want := range []string{"attempt=2", "http_status=403", "oss_code=RequestTimeTooSkewed", "oss_request_id=request-123", "oss_ec=0002-00000504"} {
@@ -50,11 +50,11 @@ func TestRecordingUploadFailureRetainsOSSAndConfirmationDiagnostics(t *testing.T
 		case apiPath + "/complete":
 			completes++
 			w.WriteHeader(409)
-			fmt.Fprint(w, "secret-complete-body")
+			fmt.Fprint(w, `{"message":"Object not committed","securityToken":"secret-complete-body"}`)
 		default:
 			w.Header().Set("Content-Type", "application/xml")
 			w.WriteHeader(403)
-			fmt.Fprint(w, `<Error><Code>RequestTimeTooSkewed</Code><Message>secret-oss-body</Message><RequestId>request-123</RequestId><EC>0002-00000504</EC></Error>`)
+			fmt.Fprint(w, `<Error><Code>RequestTimeTooSkewed</Code><Message>Request time differs. SecurityToken=secret-oss-body</Message><RequestId>request-123</RequestId><EC>0002-00000504</EC></Error>`)
 		}
 	})
 	file := filepath.Join(t.TempDir(), "call.m4a")
@@ -67,7 +67,7 @@ func TestRecordingUploadFailureRetainsOSSAndConfirmationDiagnostics(t *testing.T
 		t.Fatalf("missing diagnostic: %v", err)
 	}
 	detail := diagnostic.Diagnostic()
-	for _, want := range []string{"stage=oss_upload", "operation=PutObject", "oss_code=RequestTimeTooSkewed", "oss_request_id=request-123", "stage=complete_after_upload_error", "http_status=409", "attempt=4"} {
+	for _, want := range []string{"stage=oss_upload", "operation=PutObject", "oss_code=RequestTimeTooSkewed", "oss_request_id=request-123", "stage=complete_after_upload_error", "http_status=409", "attempt=4", "Request time differs.", "Object not committed"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("missing %q: %s", want, detail)
 		}
@@ -86,7 +86,7 @@ func TestRecordingUploadCompleteFailureRetainsDiagnosticWithoutReupload(t *testi
 		case apiPath + "/complete":
 			completes++
 			w.WriteHeader(503)
-			fmt.Fprint(w, "secret-response")
+			fmt.Fprint(w, `{"message":"Storage unavailable","apiKey":"secret-response"}`)
 		default:
 			puts++
 			b, _ := io.ReadAll(r.Body)

@@ -122,12 +122,12 @@ func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePla
 		attempt++
 		started := time.Now()
 		if _, e := provider.GetCredentials(ctx); e != nil {
-			diagnostics = append(diagnostics, uploadFailureDetail("credentials", attempt, started, e))
+			diagnostics = append(diagnostics, provider.failureDetail("credentials", attempt, started, e))
 			return e
 		}
 		_, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{Bucket: oss.Ptr(task.Bucket), Key: oss.Ptr(task.ObjectKey), ContentType: oss.Ptr(plan.contentType)}, path)
 		if e != nil {
-			diagnostics = append(diagnostics, uploadFailureDetail("oss_upload", attempt, started, e))
+			diagnostics = append(diagnostics, provider.failureDetail("oss_upload", attempt, started, e))
 			// The OSS completion response may be lost after the object was committed.
 			// Confirm the existing task before attempting the SDK upload again.
 			confirmStarted := time.Now()
@@ -135,7 +135,7 @@ func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePla
 				completion = confirmed
 				return nil
 			} else {
-				diagnostics = append(diagnostics, uploadFailureDetail("complete_after_upload_error", attempt, confirmStarted, confirmErr))
+				diagnostics = append(diagnostics, provider.failureDetail("complete_after_upload_error", attempt, confirmStarted, confirmErr))
 			}
 			var serviceErr *oss.ServiceError
 			if errors.As(e, &serviceErr) && (serviceErr.Code == "SecurityTokenExpired" || serviceErr.Code == "InvalidSecurityToken") {
@@ -156,7 +156,7 @@ func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePla
 			started := time.Now()
 			completion, e = plan.complete(ctx, task.TaskID, task.ObjectKey)
 			if e != nil {
-				diagnostics = append(diagnostics, uploadFailureDetail("complete", attempt, started, e))
+				diagnostics = append(diagnostics, provider.failureDetail("complete", attempt, started, e))
 			}
 			return e
 		})

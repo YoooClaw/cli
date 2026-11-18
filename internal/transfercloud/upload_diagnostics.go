@@ -14,7 +14,7 @@ import (
 )
 
 // Keep diagnostics local: Error/Unwrap preserve the existing public contract.
-// Never retain SDK Error(), response bodies, request targets or credentials.
+// Keep only sanitized, bounded descriptions; never retain SDK snapshots or headers.
 type uploadDiagnosticError struct {
 	err    error
 	detail string
@@ -33,7 +33,7 @@ func uploadDiagnosticToken(s string) string {
 	return s
 }
 
-func uploadFailureDetail(stage string, attempt int, started time.Time, err error) string {
+func uploadFailureDetail(stage string, attempt int, started time.Time, err error, secrets ...string) string {
 	detail := fmt.Sprintf("stage=%s attempt=%d elapsed_ms=%d", stage, attempt, time.Since(started).Milliseconds())
 	var op *oss.OperationError
 	if errors.As(err, &op) {
@@ -41,13 +41,13 @@ func uploadFailureDetail(stage string, attempt int, started time.Time, err error
 	}
 	var service *oss.ServiceError
 	if errors.As(err, &service) {
-		return detail + fmt.Sprintf(" http_status=%d oss_code=%s oss_request_id=%s oss_ec=%s",
-			service.StatusCode, uploadDiagnosticToken(service.Code), uploadDiagnosticToken(service.RequestID), uploadDiagnosticToken(service.EC))
+		return detail + fmt.Sprintf(" http_status=%d oss_code=%s oss_request_id=%s oss_ec=%s oss_message=%q",
+			service.StatusCode, uploadDiagnosticToken(service.Code), uploadDiagnosticToken(service.RequestID), uploadDiagnosticToken(service.EC), redactDiagnostic(service.Message, secrets...))
 	}
 	reason := transportFailure(err)
 	var httpErr *HTTPStatusError
 	if errors.As(err, &httpErr) {
-		detail += fmt.Sprintf(" http_status=%d", httpErr.StatusCode)
+		detail += fmt.Sprintf(" http_status=%d service_detail=%q", httpErr.StatusCode, redactDiagnostic(httpErr.Detail, secrets...))
 		reason = "http_error"
 	}
 	var coded *errs.Error
@@ -57,6 +57,7 @@ func uploadFailureDetail(stage string, attempt int, started time.Time, err error
 	var client *oss.ClientError
 	if errors.As(err, &client) {
 		detail += " sdk_code=" + uploadDiagnosticToken(client.Code)
+		detail += fmt.Sprintf(" sdk_message=%q", redactDiagnostic(client.Message, secrets...))
 	}
 	var dns *net.DNSError
 	if errors.As(err, &dns) {
@@ -74,4 +75,15 @@ func withUploadDiagnostics(err error, details []string) error {
 		return err
 	}
 	return &uploadDiagnosticError{err: err, detail: strings.Join(details, " | ")}
+}
+
+// Snapshot credential generations under the provider lock: a failed multipart
+// request may have used credentials from before a concurrent refresh.
+func (p *uploadCredentials) failureDetail(stage string, attempt int, started time.Time, err error) string {
+	p.mu.Lock()
+	secrets := append([]string{p.cloud.apiKey}, p.previousSecrets...)
+	c := p.task.Credentials
+	secrets = append(secrets, c.AccessKeyID, c.AccessKeySecret, c.SecurityToken)
+	p.mu.Unlock()
+	return uploadFailureDetail(stage, attempt, started, err, secrets...)
 }
