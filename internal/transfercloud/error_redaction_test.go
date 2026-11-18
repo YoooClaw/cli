@@ -49,3 +49,21 @@ func TestProviderDiagnosticRedactsOldAndCurrentCredentials(t *testing.T) {
 		t.Fatal("public chain changed")
 	}
 }
+
+func TestDiagnosticPreservesOSSProseAndRedactsObfuscatedSecrets(t *testing.T) {
+	for _, text := range []string{"The OSS Access Key Id you provided does not exist", "OSS request failed:", "Basic request failed:"} {
+		if got := redactDiagnostic(text); got != text {
+			t.Fatalf("got %q want %q", got, text)
+		}
+	}
+	for _, text := range []string{"pri\u200bvate-secret", "pri\x00vate-secret", "private-secret", "pri&#8203;vate-secret"} {
+		if got := redactDiagnostic(text, "private-secret"); got != "[redacted]" {
+			t.Fatalf("secret leaked: %q", got)
+		}
+	}
+	for _, text := range []string{"Basic dXNlcjpwYXNz", "OSS accessid:c2lnbmF0dXJl=", "OSS4-HMAC-SHA256 credentials"} {
+		if got := redactDiagnostic(text); !strings.Contains(got, "[redacted]") {
+			t.Fatalf("auth not redacted: %q", got)
+		}
+	}
+}

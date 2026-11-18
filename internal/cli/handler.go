@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 
 	"github.com/YoooClaw/cli/internal/clictx"
@@ -69,7 +70,8 @@ func run(h handler) func(*cobra.Command, []string) error {
 }
 
 func exitCodeOf(err error) int {
-	if e, ok := err.(*errs.Error); ok && e.ExitCode != 0 {
+	var e *errs.Error
+	if errors.As(err, &e) && e.ExitCode != 0 {
 		return e.ExitCode
 	}
 	return 1

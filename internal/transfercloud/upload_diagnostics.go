@@ -42,9 +42,15 @@ func uploadFailureDetail(stage string, attempt int, started time.Time, err error
 	var service *oss.ServiceError
 	if errors.As(err, &service) {
 		return detail + fmt.Sprintf(" http_status=%d oss_code=%s oss_request_id=%s oss_ec=%s oss_message=%q",
-			service.StatusCode, uploadDiagnosticToken(service.Code), uploadDiagnosticToken(service.RequestID), uploadDiagnosticToken(service.EC), redactDiagnostic(service.Message, secrets...))
+			service.StatusCode, diagnosticCode(service.Code), uploadDiagnosticToken(service.RequestID), uploadDiagnosticToken(service.EC), redactDiagnostic(service.Message, secrets...))
 	}
 	reason := transportFailure(err)
+	if reason == "transport_error" {
+		var network net.Error
+		if !errors.As(err, &network) {
+			reason = "unknown_error"
+		}
+	}
 	var httpErr *HTTPStatusError
 	if errors.As(err, &httpErr) {
 		detail += fmt.Sprintf(" http_status=%d service_detail=%q", httpErr.StatusCode, redactDiagnostic(httpErr.Detail, secrets...))
@@ -52,11 +58,17 @@ func uploadFailureDetail(stage string, attempt int, started time.Time, err error
 	}
 	var coded *errs.Error
 	if errors.As(err, &coded) {
-		detail += " code=" + uploadDiagnosticToken(coded.Code)
+		detail += " code=" + diagnosticCode(coded.Code)
+		if reason == "unknown_error" {
+			reason = "service_error"
+		}
 	}
 	var client *oss.ClientError
 	if errors.As(err, &client) {
-		detail += " sdk_code=" + uploadDiagnosticToken(client.Code)
+		detail += " sdk_code=" + diagnosticCode(client.Code)
+		if reason == "unknown_error" {
+			reason = "sdk_error"
+		}
 		detail += fmt.Sprintf(" sdk_message=%q", redactDiagnostic(client.Message, secrets...))
 	}
 	var dns *net.DNSError

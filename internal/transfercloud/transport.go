@@ -125,6 +125,7 @@ func (c *Client) uploadFile(ctx context.Context, path string, plan uploadFilePla
 			diagnostics = append(diagnostics, provider.failureDetail("credentials", attempt, started, e))
 			return e
 		}
+		started = time.Now() // Exclude the initial credential refresh from OSS elapsed time.
 		_, e := uploader.UploadFile(ctx, &oss.PutObjectRequest{Bucket: oss.Ptr(task.Bucket), Key: oss.Ptr(task.ObjectKey), ContentType: oss.Ptr(plan.contentType)}, path)
 		if e != nil {
 			diagnostics = append(diagnostics, provider.failureDetail("oss_upload", attempt, started, e))

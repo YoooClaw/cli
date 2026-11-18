@@ -1,9 +1,12 @@
 package transfercloud
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/YoooClaw/cli/internal/output"
 	"io"
 	"net/http"
 	"os"
@@ -110,5 +113,42 @@ func TestRecordingUploadCompleteFailureRetainsDiagnosticWithoutReupload(t *testi
 	detail := diagnostic.Diagnostic()
 	if puts != 1 || completes != 4 || !strings.Contains(detail, "stage=complete attempt=4") || !strings.Contains(detail, "http_status=503") || strings.Contains(detail, "secret") {
 		t.Fatalf("puts=%d completes=%d detail=%s", puts, completes, detail)
+	}
+}
+
+func TestUploadDiagnosticPublicRendering(t *testing.T) {
+	for _, code := range []string{"CLOUD_UPLOAD_FAILED", "CLOUD_COMPLETE_FAILED"} {
+		public := failure(code, "public message")
+		wrapped := withUploadDiagnostics(public, []string{"LOCAL_ONLY_DIAGNOSTIC"})
+		for _, format := range []output.Format{output.JSON, output.Pretty} {
+			var buf bytes.Buffer
+			output.RenderError(&buf, wrapped, format)
+			var value struct {
+				Error struct {
+					Code    string
+					Message string
+				}
+			}
+			if err := json.Unmarshal(buf.Bytes(), &value); err != nil {
+				t.Fatal(err)
+			}
+			if value.Error.Code != "YOOOCLAW_TRANSFER_"+code || value.Error.Message != "public message" || strings.Contains(buf.String(), "LOCAL_ONLY") {
+				t.Fatal(buf.String())
+			}
+		}
+	}
+}
+func TestUploadDiagnosticFailureClassification(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		reason string
+	}{
+		{failure("CLOUD_REFRESH_FAILED", "refresh failed"), "service_error"},
+		{&oss.ClientError{Code: "SerializationError", Message: "bad response"}, "sdk_error"},
+		{context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"},
+	} {
+		if got := uploadFailureDetail("oss_upload", 1, time.Now(), tc.err); !strings.Contains(got, "reason="+tc.reason) {
+			t.Fatal(got)
+		}
 	}
 }
