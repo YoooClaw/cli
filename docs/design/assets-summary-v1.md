@@ -17,7 +17,7 @@ GET /assets/summary?date=2026-10-30&types=notifications,health-data
 | --- | --- |
 | `date` | 可选 `YYYY-MM-DD`，默认 CLI 主机本地今天 |
 | `types` | 可选逗号分隔类别；默认全部七类，仅查询选中类别 |
-| `sources` | 可选 `mobile_app`（默认）或 `all`；仅控制 recordings 的来源，其他类别不受影响 |
+| `sources` | 可选 `mobile_app`（默认）、`capture_app` 或 `all`；仅控制 recordings 的来源，其他类别不受影响 |
 
 类别为 `notifications`、`locations`、`calendars`、`reminders`、`web-pages`、
 `recordings`、`health-data`。空值、重复类别、重复参数、未知参数/类别及非法日期
@@ -146,7 +146,7 @@ GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种�
 
 ### Capture 覆盖范围与客户端约束
 
-- `sources=all` 时，桌面来源同时读取 `voice/recordings/index.json` 与旧版
+- `sources=all` 或 `sources=capture_app` 时，桌面来源同时读取 `voice/recordings/index.json` 与旧版
   `voice/recordings-jsonl/<date>.jsonl`，复用 `capturerecording.List` 的日期筛选、
   历史 UUID 去重与有效完整行规则。坏行/未完成尾行处理沿用该读取器。
   新索引中的 UUID 在日期和可见性过滤前就遮蔽同 UUID 的旧历史，防止过期历史重新出现；
@@ -163,10 +163,10 @@ GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种�
   保持已有 count/latest 口径。新 App 必须显式传 `sources=all` 才启用跨来源汇总。
 - `sources=all` 下任一已配置录音索引失败时，不显示手机来源的部分数量作为完整总数。
   此时仅 recordings 类别失败，其他资产类别仍可用；客户端应显示统计不可用，不能显示 0。
-- 库调用约定：手机 store 为必需依赖，桌面 store 为可选扩展，以兼容旧调用方。
-  手机 store 为 nil 返回读取失败；桌面 store 为 nil 表示未配置，不参与统计。
+- 库调用约定：手机 store 在手机/合并模式下为必需依赖，桌面 store 为可选扩展，以兼容旧调用方。
+  手机/合并模式下手机 store 为 nil 返回读取失败；桌面模式不要求手机 store；桌面 store 为 nil 表示未配置，不参与统计。
 
 
 新 App 请求示例：`GET /assets/summary?date=2026-10-22&types=recordings&sources=all`。
 不传 `sources` 或传 `sources=mobile_app` 均只读手机索引，桌面索引损坏不会影响此模式。
-`sources` 空值、未知值或重复参数返回 400 `INVALID_PARAMS`；首版不支持单独 `capture_app`。
+`sources` 空值、未知值或重复参数返回 400 `INVALID_PARAMS`；`sources=capture_app` 单独统计桌面当前索引及旧每日 JSONL，不读取手机索引。

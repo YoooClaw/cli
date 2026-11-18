@@ -49,10 +49,10 @@ type SummaryStores struct {
 }
 
 type summaryQuery struct {
-	date                string
-	zone                *time.Location
-	kinds               []string
-	allRecordingSources bool
+	date            string
+	zone            *time.Location
+	kinds           []string
+	recordingSource string
 }
 
 func (s *Service) summaryQuery(values url.Values) (summaryQuery, *Error) {
@@ -63,10 +63,10 @@ func (s *Service) summaryQuery(values url.Values) (summaryQuery, *Error) {
 		}
 	}
 	if source := values.Get("sources"); source != "" {
-		if source != "all" && source != "mobile_app" {
+		if source != recording.SourceAll && source != recording.SourceMobileApp && source != recording.SourceCaptureApp {
 			return q, invalid()
 		}
-		q.allRecordingSources = source == "all"
+		q.recordingSource = source
 	}
 	if date := values.Get("date"); date != "" {
 		if !validDate(date) {

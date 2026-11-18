@@ -366,6 +366,9 @@ func TestSummaryLegacyCapture(t *testing.T) {
 		}
 	}
 	check(2, "same") // Legacy-only data; duplicate JSONL IDs counted once.
+	q.Set("sources", "capture_app")
+	check(2, "same")
+	q.Set("sources", "all")
 	// The new index shadows legacy even when its record is outside the day.
 	if _, err := stores.CaptureRecordings.Ingest("same", recording.Metadata{Name: "new", CreatedAt: "2026-10-21T03:00:00Z"}, "phone-b"); err != nil {
 		t.Fatal(err)
@@ -412,7 +415,7 @@ func TestSummaryRecordingSourcesOptIn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, source := range []string{"", "mobile_app", "all"} {
+	for _, source := range []string{"", "mobile_app", "capture_app", "all"} {
 		q := url.Values{"date": {"2026-10-22"}, "types": {"recordings"}}
 		if source != "" {
 			q.Set("sources", source)
@@ -420,6 +423,9 @@ func TestSummaryRecordingSourcesOptIn(t *testing.T) {
 		r := getSummary(t, s, stores, q).Assets["recordings"]
 		wantCount := int64(1)
 		wantSource := "mobile_app"
+		if source == "capture_app" {
+			wantSource = "capture_app"
+		}
 		if source == "all" {
 			wantCount = 2
 			wantSource = "capture_app"
@@ -428,6 +434,14 @@ func TestSummaryRecordingSourcesOptIn(t *testing.T) {
 			t.Fatalf("source=%q result=%+v", source, r)
 		}
 	}
+	// Capture-only must not require or inspect the mobile store.
+	mobile := stores.Recordings
+	stores.Recordings = nil
+	captureOnly := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}, "types": {"recordings"}, "sources": {"capture_app"}}).Assets["recordings"]
+	if captureOnly.Error != nil || captureOnly.Count == nil || *captureOnly.Count != 1 {
+		t.Fatalf("capture-only=%+v", captureOnly)
+	}
+	stores.Recordings = mobile
 	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +449,7 @@ func TestSummaryRecordingSourcesOptIn(t *testing.T) {
 	if r.Error != nil || r.Count == nil || *r.Count != 1 {
 		t.Fatalf("unselected capture affected default: %+v", r)
 	}
-	for _, values := range [][]string{{""}, {"capture_app"}, {"invalid"}, {"all", "all"}} {
+	for _, values := range [][]string{{""}, {"capture"}, {"invalid"}, {"all", "all"}} {
 		if _, err := s.ReadSummary(context.Background(), url.Values{"sources": values}, stores); err == nil {
 			t.Fatalf("accepted sources=%v", values)
 		}

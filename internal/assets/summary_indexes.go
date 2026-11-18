@@ -117,10 +117,12 @@ func (s *Service) summaryReminders(ctx context.Context, q summaryQuery, store *r
 }
 
 func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *recording.Storage, scope string, r *SummaryResult, capture *recording.Storage, voiceRoot string) *Error {
-	if store == nil {
+	if q.recordingSource == recording.SourceCaptureApp {
+		store = nil
+	} else if store == nil {
 		return readFailed()
 	}
-	if !q.allRecordingSources {
+	if q.recordingSource == "" || q.recordingSource == recording.SourceMobileApp {
 		capture = nil
 		voiceRoot = ""
 	}
