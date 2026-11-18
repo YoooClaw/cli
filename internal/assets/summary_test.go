@@ -287,3 +287,171 @@ func TestSummaryDayBoundariesUseHostZoneAndDST(t *testing.T) {
 		})
 	}
 }
+
+func TestSummaryRecordingsIncludesCapture(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = originalLocal })
+	s, stores := summaryFixture(t)
+	root := t.TempDir()
+	stores.CaptureRecordings = recording.NewCaptureStorage(root, summaryTestLogger{t})
+	if err := stores.CaptureRecordings.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []struct {
+		store         *recording.Storage
+		id, label, at string
+	}{
+		{stores.Recordings, "same", "phone-a", "2026-10-22T01:00:00Z"},
+		{stores.CaptureRecordings, "same", "phone-a", "2026-10-22T02:00:00Z"},
+		{stores.CaptureRecordings, "other", "phone-b", "2026-10-22T03:00:00Z"},
+		{stores.CaptureRecordings, "outside", "phone-a", "2026-10-20T15:59:59Z"},
+	} {
+		if _, err := x.store.Ingest(x.id, recording.Metadata{Name: x.id, CreatedAt: x.at}, x.label); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := url.Values{"date": {"2026-10-22"}, "types": {"recordings"}, "sources": {"all"}}
+	for _, tc := range []struct {
+		scope string
+		count int64
+		id    string
+	}{{"", 3, "other"}, {"phone-a", 2, "same"}, {"phone-b", 1, "other"}} {
+		stores.RecordingScope = tc.scope
+		r := getSummary(t, s, stores, q).Assets["recordings"]
+		if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != tc.count || r.Latest.Data["recordingId"] != tc.id || r.Latest.Data["sourceType"] != recording.SourceCaptureApp {
+			t.Fatalf("scope=%s result=%+v", tc.scope, r)
+		}
+	}
+	// A damaged Capture index must not masquerade as a complete mobile-only total.
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := getSummary(t, s, stores, q)
+	if !out.Partial || out.Assets["recordings"].Error == nil || out.Assets["recordings"].Count != nil || out.Assets["recordings"].Latest != nil {
+		t.Fatalf("partial totals: %+v", out)
+	}
+}
+
+func TestSummaryLegacyCapture(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = originalLocal })
+	s, stores := summaryFixture(t)
+	voice := t.TempDir()
+	stores.CaptureVoiceRoot = voice
+	stores.CaptureRecordings = recording.NewCaptureStorage(filepath.Join(voice, "recordings"), summaryTestLogger{t})
+	if err := stores.CaptureRecordings.Init(); err != nil {
+		t.Fatal(err)
+	}
+	history := filepath.Join(voice, "recordings-jsonl")
+	if err := os.MkdirAll(history, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(history, "2026-10-22.jsonl")
+	raw := `{"id":"same","title":"old","recorded_at":"2026-10-22T03:00:00Z","duration_ms":1000,"status":"done"}
+{"id":"legacy","title":"legacy","recorded_at":"2026-10-22T02:00:00Z","duration_ms":1500,"status":"done"}
+{"id":"legacy","title":"older duplicate","recorded_at":"2026-10-22T01:00:00Z","duration_ms":1000,"status":"done"}
+{"id":"outside","recorded_at":"2026-10-21T23:00:00Z","duration_ms":1000}
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	q := url.Values{"date": {"2026-10-22"}, "types": {"recordings"}, "sources": {"all"}}
+	check := func(count int64, id string) {
+		t.Helper()
+		r := getSummary(t, s, stores, q).Assets["recordings"]
+		if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != count || r.Latest.Data["recordingId"] != id || r.Latest.Data["sourceType"] != "capture_app" {
+			t.Fatalf("result=%+v", r)
+		}
+	}
+	check(2, "same") // Legacy-only data; duplicate JSONL IDs counted once.
+	q.Set("sources", "capture_app")
+	check(2, "same")
+	q.Set("sources", "all")
+	// The new index shadows legacy even when its record is outside the day.
+	if _, err := stores.CaptureRecordings.Ingest("same", recording.Metadata{Name: "new", CreatedAt: "2026-10-21T03:00:00Z"}, "phone-b"); err != nil {
+		t.Fatal(err)
+	}
+	stores.RecordingScope = "phone-a"
+	check(1, "legacy") // Shared history is visible; hidden new IDs cannot reappear via legacy.
+	if _, err := stores.Recordings.Ingest("legacy", recording.Metadata{Name: "mobile", CreatedAt: "2026-10-22T00:00:00Z"}, "phone-a"); err != nil {
+		t.Fatal(err)
+	}
+	check(2, "legacy") // Same UUID across sources remains distinct.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(history); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(history, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := getSummary(t, s, stores, q).Assets["recordings"]
+	if r.Error == nil || r.Count != nil || r.Latest != nil {
+		t.Fatalf("partial result on failure: %+v", r)
+	}
+}
+
+func TestSummaryRecordingSourcesOptIn(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = originalLocal })
+	s, stores := summaryFixture(t)
+	root := t.TempDir()
+	stores.CaptureRecordings = recording.NewCaptureStorage(root, summaryTestLogger{t})
+	if err := stores.CaptureRecordings.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []struct {
+		store *recording.Storage
+		at    string
+	}{
+		{stores.Recordings, "2026-10-22T01:00:00Z"},
+		{stores.CaptureRecordings, "2026-10-22T02:00:00Z"},
+	} {
+		if _, err := x.store.Ingest("same", recording.Metadata{Name: "test", CreatedAt: x.at}, "default"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, source := range []string{"", "mobile_app", "capture_app", "all"} {
+		q := url.Values{"date": {"2026-10-22"}, "types": {"recordings"}}
+		if source != "" {
+			q.Set("sources", source)
+		}
+		r := getSummary(t, s, stores, q).Assets["recordings"]
+		wantCount := int64(1)
+		wantSource := "mobile_app"
+		if source == "capture_app" {
+			wantSource = "capture_app"
+		}
+		if source == "all" {
+			wantCount = 2
+			wantSource = "capture_app"
+		}
+		if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != wantCount || r.Latest.Data["sourceType"] != wantSource {
+			t.Fatalf("source=%q result=%+v", source, r)
+		}
+	}
+	// Capture-only must not require or inspect the mobile store.
+	mobile := stores.Recordings
+	stores.Recordings = nil
+	captureOnly := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}, "types": {"recordings"}, "sources": {"capture_app"}}).Assets["recordings"]
+	if captureOnly.Error != nil || captureOnly.Count == nil || *captureOnly.Count != 1 {
+		t.Fatalf("capture-only=%+v", captureOnly)
+	}
+	stores.Recordings = mobile
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}, "types": {"recordings"}}).Assets["recordings"]
+	if r.Error != nil || r.Count == nil || *r.Count != 1 {
+		t.Fatalf("unselected capture affected default: %+v", r)
+	}
+	for _, values := range [][]string{{""}, {"capture"}, {"invalid"}, {"all", "all"}} {
+		if _, err := s.ReadSummary(context.Background(), url.Values{"sources": values}, stores); err == nil {
+			t.Fatalf("accepted sources=%v", values)
+		}
+	}
+}
