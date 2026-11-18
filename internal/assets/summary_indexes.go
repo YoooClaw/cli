@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clientlabel"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/reminders"
@@ -115,12 +116,17 @@ func (s *Service) summaryReminders(ctx context.Context, q summaryQuery, store *r
 	return nil
 }
 
-func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *recording.Storage, scope string, r *SummaryResult, capture *recording.Storage) *Error {
+func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *recording.Storage, scope string, r *SummaryResult, capture *recording.Storage, voiceRoot string) *Error {
 	if store == nil {
 		return readFailed()
 	}
+	if !q.allRecordingSources {
+		capture = nil
+		voiceRoot = ""
+	}
 	var newest time.Time
 	latestID := ""
+	captureIDs := map[string]bool{}
 	p := newPage()
 	for _, source := range []struct {
 		store *recording.Storage
@@ -140,6 +146,9 @@ func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *
 			return readFailed()
 		}
 		for _, entry := range entries {
+			if source.kind == recording.SourceCaptureApp {
+				captureIDs[entry.ID] = true
+			}
 			if ctx.Err() != nil {
 				return readFailed()
 			}
@@ -167,6 +176,34 @@ func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *
 				}
 				it := item(id, "", data)
 				r.Latest, newest, latestID = &it, at, identity
+			}
+		}
+	}
+	// Legacy records have no clientLabel: use the summary endpoint shared-history
+	// visibility rule. New Capture IDs shadow history before any filtering.
+	if voiceRoot != "" && clientlabel.Visible("", scope) {
+		start, _ := time.ParseInLocation(time.DateOnly, q.date, q.zone)
+		end := start.AddDate(0, 0, 1)
+		legacy, err := capturerecording.List(ctx, voiceRoot, capturerecording.Query{From: &start, To: &end, MaxIndexBytes: 32 << 20})
+		if errors.Is(err, capturerecording.ErrIndexTooLarge) {
+			return tooLarge()
+		}
+		if err != nil {
+			return readFailed()
+		}
+		for _, entry := range legacy {
+			if captureIDs[entry.ID] {
+				continue
+			}
+			*r.Count++
+			identity := recording.SourceCaptureApp + ":" + entry.ID
+			if r.Latest == nil || entry.RecordedTime.After(newest) || entry.RecordedTime.Equal(newest) && identity > latestID {
+				duration := float64(entry.DurationMS) / 1000
+				data := map[string]any{"sourceType": recording.SourceCaptureApp, "recordingId": entry.ID, "name": entry.Title, "created_at": entry.RecordedAt,
+					"duration_sec": duration, "duration_display": recording.FormatDurationDisplay(duration), "transfer_status": entry.Status,
+					"audio_status": "", "has_audio": entry.HasAudio, "has_transcript": entry.HasTranscript, "has_srt": false}
+				it := item(digest(s.profile, "recordings", recording.SourceCaptureApp, entry.ID), "", data)
+				r.Latest, newest, latestID = &it, entry.RecordedTime, identity
 			}
 		}
 	}

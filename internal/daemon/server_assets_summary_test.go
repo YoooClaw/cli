@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -275,10 +276,25 @@ func TestAssetsSummaryWiresCaptureStore(t *testing.T) {
 	if _, err := s.captureRecordingStorage.Ingest("desktop-latest", recording.Metadata{Name: "desktop", CreatedAt: time.Date(2026, 10, 22, 23, 59, 0, 0, time.Local).Format(time.RFC3339)}, "default"); err != nil {
 		t.Fatal(err)
 	}
-	w := assetHTTP(s, "GET", "/assets/summary?date=2026-10-22", "gateway-secret")
+	w := assetHTTP(s, "GET", "/assets/summary?date=2026-10-22&sources=all", "gateway-secret")
 	out := decodeSummaryHTTP(t, w.Code, w.Header(), w.Body.Bytes())
 	r := out.Assets["recordings"]
-	if r.Error != nil || *r.Count != 4 || r.Latest.Data["recordingId"] != "desktop-latest" || r.Latest.Data["sourceType"] != recording.SourceCaptureApp {
+	if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 4 || r.Latest.Data["recordingId"] != "desktop-latest" || r.Latest.Data["sourceType"] != recording.SourceCaptureApp {
 		t.Fatalf("capture missing: %+v", r)
+	}
+	history := filepath.Join(s.ctx.Paths.Voice, "recordings-jsonl")
+	if err := os.MkdirAll(history, 0700); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 22, 23, 59, 59, 0, time.Local).Format(time.RFC3339)
+	raw := fmt.Sprintf("{\"id\":\"legacy-latest\",\"recorded_at\":%q,\"duration_ms\":1000}\n", at)
+	if err := os.WriteFile(filepath.Join(history, "2026-10-22.jsonl"), []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	w = assetHTTP(s, "GET", "/assets/summary?date=2026-10-22&sources=all", "gateway-secret")
+	out = decodeSummaryHTTP(t, w.Code, w.Header(), w.Body.Bytes())
+	r = out.Assets["recordings"]
+	if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 5 || r.Latest.Data["recordingId"] != "legacy-latest" {
+		t.Fatalf("legacy missing: %+v", r)
 	}
 }

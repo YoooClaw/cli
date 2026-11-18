@@ -44,21 +44,29 @@ type SummaryStores struct {
 	Reminders         *reminders.Storage
 	Recordings        *recording.Storage
 	CaptureRecordings *recording.Storage
+	CaptureVoiceRoot  string
 	RecordingScope    string
 }
 
 type summaryQuery struct {
-	date  string
-	zone  *time.Location
-	kinds []string
+	date                string
+	zone                *time.Location
+	kinds               []string
+	allRecordingSources bool
 }
 
 func (s *Service) summaryQuery(values url.Values) (summaryQuery, *Error) {
 	q := summaryQuery{date: s.now().In(time.Local).Format(time.DateOnly), zone: time.Local, kinds: summaryKinds}
 	for name, values := range values {
-		if (name != "date" && name != "types") || len(values) != 1 || values[0] == "" {
+		if (name != "date" && name != "types" && name != "sources") || len(values) != 1 || values[0] == "" {
 			return q, invalid()
 		}
+	}
+	if source := values.Get("sources"); source != "" {
+		if source != "all" && source != "mobile_app" {
+			return q, invalid()
+		}
+		q.allRecordingSources = source == "all"
 	}
 	if date := values.Get("date"); date != "" {
 		if !validDate(date) {
@@ -122,7 +130,7 @@ func (s *Service) ReadSummary(ctx context.Context, values url.Values, stores Sum
 			case "web-pages":
 				e = s.summaryWeb(ctx, q, &r)
 			case "recordings":
-				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r, stores.CaptureRecordings)
+				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r, stores.CaptureRecordings, stores.CaptureVoiceRoot)
 			case "health-data":
 				e = s.summaryHealth(ctx, &r)
 			}
