@@ -134,6 +134,9 @@ type ExportAudioIdentity struct {
 
 // Entry 是一条录音索引项。
 type Entry struct {
+	LegacyCaptureDeleted    bool   `json:"legacyCaptureDeleted,omitempty"`
+	LegacyCapture           bool   `json:"legacyCapture,omitempty"`
+	LegacyCaptureTranscript string `json:"legacyCaptureTranscript,omitempty"`
 	// ContextRevision is populated only for the committed-content callback.
 	ContextRevision    string                     `json:"-"`
 	ResultExtra        map[string]json.RawMessage `json:"resultExtra,omitempty"`
@@ -315,6 +318,9 @@ func (s *Storage) normalizeIndexLocked(wrapper *indexWrapper) bool {
 	now := nowISO()
 	for i := range wrapper.Recordings {
 		entry := &wrapper.Recordings[i]
+		if entry.LegacyCaptureDeleted {
+			continue
+		}
 		// 条目来源由所在索引决定：Capture 索引归一到 capture_app；移动端索引
 		// 出现 capture_app 或未知值时清空，由 RecordingSource 回落 mobile_app，
 		// 避免列表/状态/事件路由/导出载荷读到与存储位置不符的来源。
@@ -516,6 +522,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	now := nowISO()
 	if idx := s.findIndexLocked(recordingID); idx >= 0 {
 		entry := &s.index.Recordings[idx]
+		entry.LegacyCaptureDeleted = false
 		metadata.Extra = mergeMetadataExtra(entry.Metadata.Extra, metadata.Extra)
 		if metadata.RecordingType == nil {
 			metadata.RecordingType = entry.Metadata.RecordingType
@@ -535,6 +542,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		s.removeRelativeLocked(entry.TranscriptDataFile)
 		s.removeRelativeLocked(entry.TranscriptFile)
 		s.removeRelativeLocked(entry.SummaryFile)
+		s.removeRelativeLocked(entry.LegacyCaptureTranscript)
 		entry.Metadata = metadata
 		entry.ClientLabel = clientLabel
 		entry.Status = StatusSynced
@@ -545,6 +553,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
 		entry.SummaryData = nil
+		entry.LegacyCaptureTranscript = ""
 		entry.ResultExtra = nil
 		entry.Title = ""
 		entry.LastError = ""
@@ -610,6 +619,9 @@ func (s *Storage) LookupByID(id string) (Entry, bool, error) {
 	}
 	idx := s.findIndexLocked(id)
 	if idx < 0 {
+		return Entry{}, false, nil
+	}
+	if s.index.Recordings[idx].LegacyCaptureDeleted {
 		return Entry{}, false, nil
 	}
 	return s.index.Recordings[idx], true, nil
@@ -697,7 +709,12 @@ func (s *Storage) ListAll() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshIndexLocked()
-	out := append([]Entry(nil), s.index.Recordings...)
+	out := make([]Entry, 0, len(s.index.Recordings))
+	for _, entry := range s.index.Recordings {
+		if !entry.LegacyCaptureDeleted {
+			out = append(out, entry)
+		}
+	}
 	SortByCreatedDesc(out)
 	return out
 }
@@ -746,7 +763,7 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 		return false, nil
 	}
 	entry := &s.index.Recordings[idx]
-	for _, rel := range []string{entry.AudioFile, entry.SrtFile, entry.TranscriptDataFile, entry.TranscriptFile, entry.SummaryFile} {
+	for _, rel := range []string{entry.AudioFile, entry.SrtFile, entry.TranscriptDataFile, entry.TranscriptFile, entry.SummaryFile, entry.LegacyCaptureTranscript} {
 		s.removeRelativeLocked(rel)
 	}
 	if localOnly {
@@ -762,9 +779,13 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
+		entry.LegacyCaptureTranscript = ""
 		entry.SummaryData = nil
 		entry.ResultExtra = nil
 		entry.UpdatedAt = nowISO()
+	} else if entry.LegacyCapture {
+		// Retain only a shadow ID so immutable daily history cannot resurrect it.
+		*entry = Entry{ID: recordingID, SourceType: SourceCaptureApp, LegacyCapture: true, LegacyCaptureDeleted: true}
 	} else {
 		s.index.Recordings = append(s.index.Recordings[:idx], s.index.Recordings[idx+1:]...)
 	}

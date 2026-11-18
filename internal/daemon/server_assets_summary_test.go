@@ -129,7 +129,7 @@ func TestAssetsSummaryCredentialsAndRecordingScope(t *testing.T) {
 		if path == "/gateway/health" {
 			method = "POST"
 		}
-		if w := assetHTTP(s, method, path, "gateway-secret"); !strings.Contains(w.Body.String(), "assets.summary.read.v1") {
+		if w := assetHTTP(s, method, path, "gateway-secret"); !strings.Contains(w.Body.String(), "assets.summary.read.v1") || !strings.Contains(w.Body.String(), "assets.summary.recordings.sources.v1") {
 			t.Fatal("missing summary capability", path)
 		}
 	}

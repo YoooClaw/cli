@@ -154,8 +154,7 @@ GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种�
 - 旧每日历史按主机本地日查询，使用 `recorded_at` 判定归属；候选历史文件累计最多
   32 MiB，超限返回 `SOURCE_TOO_LARGE`。读取失败时不输出部分录音总数。
   文件存在性仅做元数据检查，不读取录音或转写正文。
-- 历史记录被纳入统计不代表已迁入当前录音网关索引；旧每日索引独有的录音仍可能
-  不支持现有 `recordings.status/export.start`，本次不扩展这些方法的历史读取能力。
+- `recordings.list/status/export.start` 在显式选择 `capture_app/all` 时也读取旧每日历史；默认仍只读手机。列表和详情不迁移数据，首次导出将选中记录登记到当前索引以持久化导出任务，音频和正文保持原位置。转写支持既有规范化 JSON、Model Proxy 响应和 DashScope `transcripts[].sentences[]`；未知正文格式明确失败，不静默丢弃。进行中的历史录音不可导出；已登记历史录音删除时保留内部遮蔽标记，避免每日索引再次返回该 UUID。
 - 客户端使用 `latest.data.recordingId` 查询详情或导出时，必须同时传递
   `latest.data.sourceType`；旧响应缺少该字段时才按 `mobile_app` 处理。
   忽略来源、直接用默认手机来源查询的客户端不能正确打开桌面 latest。
@@ -164,9 +163,19 @@ GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种�
 - `sources=all` 下任一已配置录音索引失败时，不显示手机来源的部分数量作为完整总数。
   此时仅 recordings 类别失败，其他资产类别仍可用；客户端应显示统计不可用，不能显示 0。
 - 库调用约定：手机 store 在手机/合并模式下为必需依赖，桌面 store 为可选扩展，以兼容旧调用方。
-  手机/合并模式下手机 store 为 nil 返回读取失败；桌面模式不要求手机 store；桌面 store 为 nil 表示未配置，不参与统计。
+  手机/合并模式下手机 store 为 nil 返回读取失败；桌面模式不要求手机 store；桌面 store 为 nil 表示当前索引未配置；旧历史由 CaptureVoiceRoot 独立控制。
 
 
 新 App 请求示例：`GET /assets/summary?date=2026-10-22&types=recordings&sources=all`。
 不传 `sources` 或传 `sources=mobile_app` 均只读手机索引，桌面索引损坏不会影响此模式。
 `sources` 空值、未知值或重复参数返回 400 `INVALID_PARAMS`；`sources=capture_app` 单独统计桌面当前索引及旧每日 JSONL，不读取手机索引。
+
+
+### 混版能力协商
+
+`assets.summary.read.v1` 表示基础汇总；新增 `assets.summary.recordings.sources.v1`
+表示支持 `sources=mobile_app/capture_app/all`。新 App 仅在能力列表包含后者时发送
+`sources`；否则省略此参数，沿用手机来源汇总，不能把旧 daemon 的结果展示成全来源总数。
+不通过 `INVALID_PARAMS` 自动猜测版本：新 daemon 对非法参数仍返回该码，避免掩盖调用错误。
+桌面当前索引与每日历史是独立配置：`CaptureRecordings=nil` 仅表示不读当前索引；
+`CaptureVoiceRoot` 非空时仍读取旧每日历史，空时才不读取历史。两者均未配置时桌面为空。

@@ -112,7 +112,7 @@ func (s *server) recordingExportCloud(label string) (recording.ExportCloud, erro
 // resolveRecordingExport prefers a retained task over UUID lookup so retries
 // remain bound to their source. An omitted sourceType selects mobile_app;
 // capture_app selects one store; all explicitly resolves across both stores.
-func (s *server) resolveRecordingExport(w http.ResponseWriter, auth authResult, source, id, requestID, exportID string) (*recording.Storage, recording.Entry, string, bool) {
+func (s *server) resolveRecordingExport(ctx context.Context, w http.ResponseWriter, auth authResult, source, id, requestID, exportID string) (*recording.Storage, recording.Entry, string, bool) {
 	sources, ok := s.recordingReadSources(w, source)
 	if !ok {
 		return nil, recording.Entry{}, "", false
@@ -121,7 +121,7 @@ func (s *server) resolveRecordingExport(w http.ResponseWriter, auth authResult, 
 	var matchedEntry, taskEntry recording.Entry
 	unavailable, duplicate := false, false
 	for _, candidate := range sources {
-		entry, found, err := candidate.store.LookupByID(id)
+		entry, found, err := candidate.store.LookupSourceByID(ctx, id)
 		if err != nil {
 			unavailable = true
 			continue
@@ -206,7 +206,7 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 	// Serialize source resolution and task creation across both stores.
 	s.recordingExportStartMu.Lock()
 	defer s.recordingExportStartMu.Unlock()
-	store, entry, sourceType, ok := s.resolveRecordingExport(w, auth, body.SourceType, recordingID, requestID, "")
+	store, entry, sourceType, ok := s.resolveRecordingExport(r.Context(), w, auth, body.SourceType, recordingID, requestID, "")
 	if !ok {
 		return
 	}
@@ -242,6 +242,18 @@ func (s *server) handleRecordingExportStart(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		gatewayErr(w, "EXPORT_UPLOAD_FAILED", err.Error())
 		return
+	}
+	if entry.LegacyCapture {
+		adopted, err := store.AdoptCaptureHistory(entry)
+		if err != nil {
+			writeRecordingExportError(w, err)
+			return
+		}
+		entry = adopted
+		if !clientlabel.Visible(entry.ClientLabel, auth.scope()) {
+			gatewayErr(w, "NOT_FOUND", "Recording not found")
+			return
+		}
 	}
 	result, err := s.exportServiceFor(store).Start(r.Context(), recording.ExportStartRequest{
 		RecordingID: recordingID, RequestID: requestID, ScopeKey: scopeKey,
@@ -293,7 +305,7 @@ func (s *server) handleRecordingExportStatus(w http.ResponseWriter, r *http.Requ
 		gatewayErr(w, "INVALID_PARAMS", "recordingId or exportId 含非法字符")
 		return
 	}
-	store, entry, sourceType, ok := s.resolveRecordingExport(w, auth, body.SourceType, recordingID, "", exportID)
+	store, entry, sourceType, ok := s.resolveRecordingExport(r.Context(), w, auth, body.SourceType, recordingID, "", exportID)
 	if !ok {
 		return
 	}

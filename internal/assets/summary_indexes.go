@@ -128,7 +128,6 @@ func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *
 	}
 	var newest time.Time
 	latestID := ""
-	captureIDs := map[string]bool{}
 	p := newPage()
 	for _, source := range []struct {
 		store *recording.Storage
@@ -137,19 +136,25 @@ func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *
 		{store, recording.SourceMobileApp}, {capture, recording.SourceCaptureApp},
 	} {
 		// Older embedders may not have a Capture store configured.
-		if source.store == nil {
-			continue
+		var entries []recording.Entry
+		var err error
+		if source.store != nil {
+			entries, err = source.store.ReadIndexSnapshot(ctx)
 		}
-		entries, err := source.store.ReadIndexSnapshot(ctx)
-		if errors.Is(err, recording.ErrSummaryIndexTooLarge) {
+		if err == nil && source.kind == recording.SourceCaptureApp && voiceRoot != "" {
+			start, _ := time.ParseInLocation(time.DateOnly, q.date, q.zone)
+			end := start.AddDate(0, 0, 1)
+			entries, err = recording.MergeCaptureHistory(ctx, voiceRoot, entries, capturerecording.Query{From: &start, To: &end})
+		}
+		if errors.Is(err, recording.ErrSummaryIndexTooLarge) || errors.Is(err, capturerecording.ErrIndexTooLarge) {
 			return tooLarge()
 		}
 		if err != nil {
 			return readFailed()
 		}
 		for _, entry := range entries {
-			if source.kind == recording.SourceCaptureApp {
-				captureIDs[entry.ID] = true
+			if entry.LegacyCaptureDeleted {
+				continue
 			}
 			if ctx.Err() != nil {
 				return readFailed()
@@ -171,41 +176,13 @@ func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *
 				data := map[string]any{"sourceType": source.kind, "recordingId": entry.ID, "name": entry.Metadata.Name, "created_at": entry.Metadata.CreatedAt,
 					"duration_sec": entry.Metadata.DurationSec, "duration_display": recording.FormatDurationDisplay(entry.Metadata.DurationSec),
 					"transfer_status": entry.Status, "audio_status": entry.AudioStatus,
-					"has_audio": entry.AudioFile != "", "has_transcript": entry.TranscriptFile != "", "has_srt": entry.SrtFile != ""}
+					"has_audio": entry.AudioFile != "", "has_transcript": entry.TranscriptFile != "" || entry.LegacyCaptureTranscript != "", "has_srt": entry.SrtFile != ""}
 				id := digest(s.profile, "recordings", entry.ID)
 				if source.kind == recording.SourceCaptureApp {
 					id = digest(s.profile, "recordings", source.kind, entry.ID)
 				}
 				it := item(id, "", data)
 				r.Latest, newest, latestID = &it, at, identity
-			}
-		}
-	}
-	// Legacy records have no clientLabel: use the summary endpoint shared-history
-	// visibility rule. New Capture IDs shadow history before any filtering.
-	if voiceRoot != "" && clientlabel.Visible("", scope) {
-		start, _ := time.ParseInLocation(time.DateOnly, q.date, q.zone)
-		end := start.AddDate(0, 0, 1)
-		legacy, err := capturerecording.List(ctx, voiceRoot, capturerecording.Query{From: &start, To: &end, MaxIndexBytes: 32 << 20})
-		if errors.Is(err, capturerecording.ErrIndexTooLarge) {
-			return tooLarge()
-		}
-		if err != nil {
-			return readFailed()
-		}
-		for _, entry := range legacy {
-			if captureIDs[entry.ID] {
-				continue
-			}
-			*r.Count++
-			identity := recording.SourceCaptureApp + ":" + entry.ID
-			if r.Latest == nil || entry.RecordedTime.After(newest) || entry.RecordedTime.Equal(newest) && identity > latestID {
-				duration := float64(entry.DurationMS) / 1000
-				data := map[string]any{"sourceType": recording.SourceCaptureApp, "recordingId": entry.ID, "name": entry.Title, "created_at": entry.RecordedAt,
-					"duration_sec": duration, "duration_display": recording.FormatDurationDisplay(duration), "transfer_status": entry.Status,
-					"audio_status": "", "has_audio": entry.HasAudio, "has_transcript": entry.HasTranscript, "has_srt": false}
-				it := item(digest(s.profile, "recordings", recording.SourceCaptureApp, entry.ID), "", data)
-				r.Latest, newest, latestID = &it, entry.RecordedTime, identity
 			}
 		}
 	}

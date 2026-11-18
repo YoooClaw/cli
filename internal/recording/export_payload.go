@@ -201,6 +201,17 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		}
 		doc = &parsed
 	}
+	if entry.LegacyCaptureTranscript != "" && len(dataRaw) == 0 {
+		legacyRaw, _, legacyErr := readExportText(root, entry.LegacyCaptureTranscript)
+		if legacyErr != nil {
+			return exportSource{}, wrapExportSource(ExportSourceTranscriptData, entry.LegacyCaptureTranscript, legacyErr)
+		}
+		doc, legacyErr = parseCaptureTranscript(legacyRaw, entry)
+		if legacyErr != nil {
+			return exportSource{}, wrapExportSource(ExportSourceTranscriptData, entry.LegacyCaptureTranscript, legacyErr)
+		}
+		dataRaw = legacyRaw
+	}
 	transcript, transcriptPresent := buildExportTranscript(doc, string(transcriptMD), string(srtRaw))
 	if transcript != nil {
 		transcript, transcriptPresent = appExportTranscript(transcript, transcriptPresent)

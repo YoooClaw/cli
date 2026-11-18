@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clientlabel"
 	"github.com/YoooClaw/cli/internal/config"
 	"github.com/YoooClaw/cli/internal/fsutil"
@@ -285,7 +286,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
 				return
 			}
-			snapshot, err := source.store.ReadIndexSnapshot(r.Context())
+			snapshot, err := source.store.ReadSourceSnapshot(r.Context(), capturerecording.Query{})
 			if err != nil {
 				s.logger.Warn("[recording-list] " + source.source + " 索引读取失败: " + err.Error())
 				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
@@ -338,7 +339,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		var match *recording.Entry
 		unavailable := false
 		for _, source := range sources {
-			entry, found, err := source.store.LookupByID(recordingID)
+			entry, found, err := source.store.LookupSourceByID(r.Context(), recordingID)
 			if err != nil {
 				unavailable = true
 				continue
@@ -503,7 +504,7 @@ func recordingListItem(entry recording.Entry, exportable bool) map[string]any {
 		"marker_count":       len(entry.Metadata.Markers),
 		"has_audio":          entry.AudioFile != "",
 		"has_srt":            entry.SrtFile != "",
-		"has_transcript":     entry.TranscriptFile != "",
+		"has_transcript":     entry.TranscriptFile != "" || entry.LegacyCaptureTranscript != "",
 		"has_summary":        entry.SummaryFile != "",
 		"exportable":         exportable,
 		"audioFile":          nilIfEmptyStr(entry.AudioFile),
