@@ -75,7 +75,7 @@ func TestAssetsSummaryHTTPGETAndClientBridge(t *testing.T) {
 			t.Fatal(err)
 		}
 		out := decodeSummaryHTTP(t, resp.StatusCode, resp.Header, raw)
-		if out.Partial || len(out.Assets) != 7 || *out.Assets["notifications"].Count != 125 || *out.Assets["recordings"].Count != 3 ||
+		if out.Partial || len(out.Assets) != 8 || *out.Assets["notifications"].Count != 125 || *out.Assets["recordings"].Count != 3 ||
 			out.Assets["health-data"].Count != nil || *out.Assets["health-data"].Latest.StorageDate != "2026-10-16" {
 			t.Fatalf("summary categories: %+v", out)
 		}
@@ -86,7 +86,7 @@ func TestAssetsSummaryHTTPGETAndClientBridge(t *testing.T) {
 		}
 	}
 	logs, err := os.ReadFile(s.logger.logFile)
-	if err != nil || !strings.Contains(string(logs), "assets.summary status=200 date=2026-10-22 categories=7 partial=false") {
+	if err != nil || !strings.Contains(string(logs), "assets.summary status=200 date=2026-10-22 categories=8 partial=false") {
 		t.Fatal("missing completed summary response log")
 	}
 	if strings.Contains(string(logs), `"content":"body"`) {
@@ -129,7 +129,7 @@ func TestAssetsSummaryCredentialsAndRecordingScope(t *testing.T) {
 		if path == "/gateway/health" {
 			method = "POST"
 		}
-		if w := assetHTTP(s, method, path, "gateway-secret"); !strings.Contains(w.Body.String(), "assets.summary.read.v1") || !strings.Contains(w.Body.String(), "assets.summary.recordings.sources.v1") {
+		if w := assetHTTP(s, method, path, "gateway-secret"); !strings.Contains(w.Body.String(), "assets.summary.read.v1") || !strings.Contains(w.Body.String(), "assets.summary.capture-recordings.v1") || strings.Contains(w.Body.String(), "assets.summary.recordings.sources.v1") {
 			t.Fatal("missing summary capability", path)
 		}
 	}
@@ -137,7 +137,7 @@ func TestAssetsSummaryCredentialsAndRecordingScope(t *testing.T) {
 
 func TestAssetsSummaryRejectsInvalidParamsAndWriteEnvelopes(t *testing.T) {
 	s, _ := newTestServer(t, "gateway-secret")
-	for _, query := range []string{"date=", "date=2026-02-30", "date=2026-10-22&date=2026-10-23", "types=", "types=notifications,notifications", "types=dictation", "limit=1", "timeZone=UTC", "date=%zz", "types=%ff", "date=2026-10-22;evil=1"} {
+	for _, query := range []string{"date=", "date=2026-02-30", "date=2026-10-22&date=2026-10-23", "types=", "types=notifications,notifications", "types=dictation", "limit=1", "sources=all", "timeZone=UTC", "date=%zz", "types=%ff", "date=2026-10-22;evil=1"} {
 		w := assetHTTP(s, "GET", "/assets/summary?"+query, "gateway-secret")
 		if w.Code != 400 || !strings.Contains(w.Body.String(), "INVALID_PARAMS") {
 			t.Fatalf("accepted query %q: %d %s", query, w.Code, w.Body.String())
@@ -276,10 +276,14 @@ func TestAssetsSummaryWiresCaptureStore(t *testing.T) {
 	if _, err := s.captureRecordingStorage.Ingest("desktop-latest", recording.Metadata{Name: "desktop", CreatedAt: time.Date(2026, 10, 22, 23, 59, 0, 0, time.Local).Format(time.RFC3339)}, "default"); err != nil {
 		t.Fatal(err)
 	}
-	w := assetHTTP(s, "GET", "/assets/summary?date=2026-10-22&sources=all", "gateway-secret")
+	w := assetHTTP(s, "GET", "/assets/summary?date=2026-10-22", "gateway-secret")
 	out := decodeSummaryHTTP(t, w.Code, w.Header(), w.Body.Bytes())
-	r := out.Assets["recordings"]
-	if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 4 || r.Latest.Data["recordingId"] != "desktop-latest" || r.Latest.Data["sourceType"] != recording.SourceCaptureApp {
+	hardware := out.Assets["recordings"]
+	if len(out.Assets) != 8 || hardware.Error != nil || hardware.Count == nil || *hardware.Count != 3 {
+		t.Fatalf("default hardware category: %+v", out)
+	}
+	r := out.Assets["capture-recordings"]
+	if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 1 || r.Latest.Data["recordingId"] != "desktop-latest" || r.Latest.Data["sourceType"] != recording.SourceCaptureApp {
 		t.Fatalf("capture missing: %+v", r)
 	}
 	history := filepath.Join(s.ctx.Paths.Voice, "recordings-jsonl")
@@ -291,10 +295,10 @@ func TestAssetsSummaryWiresCaptureStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(history, "2026-10-22.jsonl"), []byte(raw), 0600); err != nil {
 		t.Fatal(err)
 	}
-	w = assetHTTP(s, "GET", "/assets/summary?date=2026-10-22&sources=all", "gateway-secret")
+	w = assetHTTP(s, "GET", "/assets/summary?date=2026-10-22", "gateway-secret")
 	out = decodeSummaryHTTP(t, w.Code, w.Header(), w.Body.Bytes())
-	r = out.Assets["recordings"]
-	if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 5 || r.Latest.Data["recordingId"] != "legacy-latest" {
+	r = out.Assets["capture-recordings"]
+	if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 2 || r.Latest.Data["recordingId"] != "legacy-latest" {
 		t.Fatalf("legacy missing: %+v", r)
 	}
 }

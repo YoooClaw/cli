@@ -104,7 +104,7 @@ func TestSummaryAllCategoriesDailyCountsAndLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := getSummary(t, s, stores, url.Values{"date": {date}})
-	if out.Partial || len(out.Assets) != 7 {
+	if out.Partial || len(out.Assets) != 8 {
 		t.Fatalf("all categories: %+v", out)
 	}
 	for kind, count := range map[string]int64{"notifications": 200, "locations": 3, "calendars": 2, "reminders": 2, "web-pages": 2, "recordings": 2} {
@@ -311,14 +311,14 @@ func TestSummaryRecordingsIncludesCapture(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	q := url.Values{"date": {"2026-10-22"}, "types": {"recordings"}, "sources": {"all"}}
+	q := url.Values{"date": {"2026-10-22"}, "types": {"capture-recordings"}}
 	for _, tc := range []struct {
 		scope string
 		count int64
 		id    string
-	}{{"", 3, "other"}, {"phone-a", 2, "same"}, {"phone-b", 1, "other"}} {
+	}{{"", 2, "other"}, {"phone-a", 1, "same"}, {"phone-b", 1, "other"}} {
 		stores.RecordingScope = tc.scope
-		r := getSummary(t, s, stores, q).Assets["recordings"]
+		r := getSummary(t, s, stores, q).Assets["capture-recordings"]
 		if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != tc.count || r.Latest.Data["recordingId"] != tc.id || r.Latest.Data["sourceType"] != recording.SourceCaptureApp {
 			t.Fatalf("scope=%s result=%+v", tc.scope, r)
 		}
@@ -328,7 +328,7 @@ func TestSummaryRecordingsIncludesCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := getSummary(t, s, stores, q)
-	if !out.Partial || out.Assets["recordings"].Error == nil || out.Assets["recordings"].Count != nil || out.Assets["recordings"].Latest != nil {
+	if !out.Partial || out.Assets["capture-recordings"].Error == nil || out.Assets["capture-recordings"].Count != nil || out.Assets["capture-recordings"].Latest != nil {
 		t.Fatalf("partial totals: %+v", out)
 	}
 }
@@ -357,18 +357,15 @@ func TestSummaryLegacyCapture(t *testing.T) {
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
 	}
-	q := url.Values{"date": {"2026-10-22"}, "types": {"recordings"}, "sources": {"all"}}
+	q := url.Values{"date": {"2026-10-22"}, "types": {"capture-recordings"}}
 	check := func(count int64, id string) {
 		t.Helper()
-		r := getSummary(t, s, stores, q).Assets["recordings"]
+		r := getSummary(t, s, stores, q).Assets["capture-recordings"]
 		if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != count || r.Latest.Data["recordingId"] != id || r.Latest.Data["sourceType"] != "capture_app" {
 			t.Fatalf("result=%+v", r)
 		}
 	}
 	check(2, "same") // Legacy-only data; duplicate JSONL IDs counted once.
-	q.Set("sources", "capture_app")
-	check(2, "same")
-	q.Set("sources", "all")
 	// The new index shadows legacy even when its record is outside the day.
 	if _, err := stores.CaptureRecordings.Ingest("same", recording.Metadata{Name: "new", CreatedAt: "2026-10-21T03:00:00Z"}, "phone-b"); err != nil {
 		t.Fatal(err)
@@ -378,7 +375,7 @@ func TestSummaryLegacyCapture(t *testing.T) {
 	if _, err := stores.Recordings.Ingest("legacy", recording.Metadata{Name: "mobile", CreatedAt: "2026-10-22T00:00:00Z"}, "phone-a"); err != nil {
 		t.Fatal(err)
 	}
-	check(2, "legacy") // Same UUID across sources remains distinct.
+	check(1, "legacy") // Mobile UUID does not change the Capture category.
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -388,13 +385,13 @@ func TestSummaryLegacyCapture(t *testing.T) {
 	if err := os.WriteFile(history, []byte("not a directory"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	r := getSummary(t, s, stores, q).Assets["recordings"]
+	r := getSummary(t, s, stores, q).Assets["capture-recordings"]
 	if r.Error == nil || r.Count != nil || r.Latest != nil {
 		t.Fatalf("partial result on failure: %+v", r)
 	}
 }
 
-func TestSummaryRecordingSourcesOptIn(t *testing.T) {
+func TestSummaryRecordingCategories(t *testing.T) {
 	originalLocal := time.Local
 	time.Local = time.UTC
 	t.Cleanup(func() { time.Local = originalLocal })
@@ -415,31 +412,36 @@ func TestSummaryRecordingSourcesOptIn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, source := range []string{"", "mobile_app", "capture_app", "all"} {
-		q := url.Values{"date": {"2026-10-22"}, "types": {"recordings"}}
-		if source != "" {
-			q.Set("sources", source)
+	for _, types := range []string{"", "recordings", "capture-recordings", "recordings,capture-recordings"} {
+		q := url.Values{"date": {"2026-10-22"}}
+		if types != "" {
+			q.Set("types", types)
 		}
-		r := getSummary(t, s, stores, q).Assets["recordings"]
-		wantCount := int64(1)
-		wantSource := "mobile_app"
-		if source == "capture_app" {
-			wantSource = "capture_app"
-		}
-		if source == "all" {
-			wantCount = 2
-			wantSource = "capture_app"
-		}
-		if r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != wantCount || r.Latest.Data["sourceType"] != wantSource {
-			t.Fatalf("source=%q result=%+v", source, r)
+		out := getSummary(t, s, stores, q)
+		for kind, source := range map[string]string{"recordings": "mobile_app", "capture-recordings": "capture_app"} {
+			r, found := out.Assets[kind]
+			if types != "" && !strings.Contains(","+types+",", ","+kind+",") {
+				if found {
+					t.Fatalf("unrequested category %s", kind)
+				}
+				continue
+			}
+			if !found || r.Error != nil || r.Count == nil || r.Latest == nil || *r.Count != 1 || r.Latest.Data["sourceType"] != source {
+				t.Fatalf("types=%s kind=%s result=%+v", types, kind, r)
+			}
 		}
 	}
 	// Capture-only must not require or inspect the mobile store.
 	mobile := stores.Recordings
 	stores.Recordings = nil
-	captureOnly := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}, "types": {"recordings"}, "sources": {"capture_app"}}).Assets["recordings"]
+	captureOnly := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}, "types": {"capture-recordings"}}).Assets["capture-recordings"]
 	if captureOnly.Error != nil || captureOnly.Count == nil || *captureOnly.Count != 1 {
 		t.Fatalf("capture-only=%+v", captureOnly)
+	}
+	unavailable := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}})
+	capResult := unavailable.Assets["capture-recordings"]
+	if !unavailable.Partial || unavailable.Assets["recordings"].Error == nil || capResult.Error != nil || capResult.Count == nil || *capResult.Count != 1 {
+		t.Fatalf("hardware failure affected Capture: %+v", unavailable)
 	}
 	stores.Recordings = mobile
 	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{"), 0600); err != nil {
@@ -449,7 +451,12 @@ func TestSummaryRecordingSourcesOptIn(t *testing.T) {
 	if r.Error != nil || r.Count == nil || *r.Count != 1 {
 		t.Fatalf("unselected capture affected default: %+v", r)
 	}
-	for _, values := range [][]string{{""}, {"capture"}, {"invalid"}, {"all", "all"}} {
+	out := getSummary(t, s, stores, url.Values{"date": {"2026-10-22"}})
+	hardware, capture := out.Assets["recordings"], out.Assets["capture-recordings"]
+	if !out.Partial || hardware.Error != nil || hardware.Count == nil || *hardware.Count != 1 || hardware.Latest == nil || capture.Error == nil || capture.Count != nil || capture.Latest != nil {
+		t.Fatalf("category failures not isolated: %+v", out)
+	}
+	for _, values := range [][]string{{""}, {"capture"}, {"invalid"}, {"all"}, {"mobile_app"}, {"capture_app"}, {"all", "all"}} {
 		if _, err := s.ReadSummary(context.Background(), url.Values{"sources": values}, stores); err == nil {
 			t.Fatalf("accepted sources=%v", values)
 		}

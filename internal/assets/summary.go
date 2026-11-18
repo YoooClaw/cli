@@ -15,7 +15,7 @@ import (
 
 const SummaryLatestLimit = 32 << 10
 
-var summaryKinds = []string{"notifications", "locations", "calendars", "reminders", "web-pages", "recordings", "health-data"}
+var summaryKinds = []string{"notifications", "locations", "calendars", "reminders", "web-pages", "recordings", "capture-recordings", "health-data"}
 
 type SummaryResult struct {
 	Status   string    `json:"status"`
@@ -49,24 +49,17 @@ type SummaryStores struct {
 }
 
 type summaryQuery struct {
-	date            string
-	zone            *time.Location
-	kinds           []string
-	recordingSource string
+	date  string
+	zone  *time.Location
+	kinds []string
 }
 
 func (s *Service) summaryQuery(values url.Values) (summaryQuery, *Error) {
 	q := summaryQuery{date: s.now().In(time.Local).Format(time.DateOnly), zone: time.Local, kinds: summaryKinds}
 	for name, values := range values {
-		if (name != "date" && name != "types" && name != "sources") || len(values) != 1 || values[0] == "" {
+		if (name != "date" && name != "types") || len(values) != 1 || values[0] == "" {
 			return q, invalid()
 		}
-	}
-	if source := values.Get("sources"); source != "" {
-		if source != recording.SourceAll && source != recording.SourceMobileApp && source != recording.SourceCaptureApp {
-			return q, invalid()
-		}
-		q.recordingSource = source
 	}
 	if date := values.Get("date"); date != "" {
 		if !validDate(date) {
@@ -93,7 +86,7 @@ func (s *Service) summaryQuery(values url.Values) (summaryQuery, *Error) {
 
 func emptySummary(kind string) SummaryResult {
 	count := int64(0)
-	by := map[string]string{"notifications": "timestamp", "locations": "timestamp", "calendars": "startAt", "reminders": "due", "web-pages": "capturedAt", "recordings": "created_at", "health-data": "date"}
+	by := map[string]string{"notifications": "timestamp", "locations": "timestamp", "calendars": "startAt", "reminders": "due", "web-pages": "capturedAt", "recordings": "created_at", "capture-recordings": "created_at", "health-data": "date"}
 	r := SummaryResult{Status: "ok", Count: &count, LatestBy: by[kind], Warnings: []Warning{}}
 	if kind == "health-data" {
 		r.Count = nil
@@ -130,7 +123,9 @@ func (s *Service) ReadSummary(ctx context.Context, values url.Values, stores Sum
 			case "web-pages":
 				e = s.summaryWeb(ctx, q, &r)
 			case "recordings":
-				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r, stores.CaptureRecordings, stores.CaptureVoiceRoot)
+				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r, recording.SourceMobileApp, "")
+			case "capture-recordings":
+				e = s.summaryRecordings(ctx, q, stores.CaptureRecordings, stores.RecordingScope, &r, recording.SourceCaptureApp, stores.CaptureVoiceRoot)
 			case "health-data":
 				e = s.summaryHealth(ctx, &r)
 			}
