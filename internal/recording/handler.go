@@ -3,6 +3,8 @@ package recording
 import (
 	"context"
 	"fmt"
+
+	"github.com/YoooClaw/cli/internal/diagnostics"
 )
 
 // SyncOptions 控制录音后台流程（转写、result.write 音频下载）。
@@ -23,11 +25,11 @@ func TriggerTranscription(recordingID string, storage *Storage, asr AsrConfig, l
 	defer func() { finish(success) }()
 	entry, ok := storage.FindByID(recordingID)
 	if !ok {
-		logger.Warn("[asr-trigger] 录音不存在: " + recordingID)
+		logger.Warn(diagnostics.SafeLogText("[asr-trigger] 录音不存在: " + recordingID))
 		return nil
 	}
 	if !CanStartTranscription(entry.Status) {
-		logger.Warn("[asr-trigger] 当前状态不允许转写: " + recordingID + " (status=" + entry.Status + ")")
+		logger.Warn(diagnostics.SafeLogText("[asr-trigger] 当前状态不允许转写: " + recordingID + " (status=" + entry.Status + ")"))
 		return nil
 	}
 	if _, err := storage.UpdateStatus(recordingID, StatusTranscribing); err != nil {
@@ -40,7 +42,7 @@ func TriggerTranscription(recordingID string, storage *Storage, asr AsrConfig, l
 	result := RunTranscriptionWorkflow(storage, entry, asr, logger)
 	if !result.OK {
 		message := "转写失败: " + result.Error
-		logger.Error("[asr-trigger] " + message + ": " + recordingID)
+		logger.Error(diagnostics.SafeLogText("[asr-trigger] " + message + ": " + recordingID))
 		_, _ = storage.UpdateStatus(recordingID, StatusTranscribeFailed)
 		_ = storage.SetLastError(recordingID, message)
 		emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, message, nil)
@@ -65,7 +67,7 @@ func TriggerTranscription(recordingID string, storage *Storage, asr AsrConfig, l
 	}
 	_ = storage.SetLastError(recordingID, "")
 	success = true
-	logger.Info("[asr-trigger] 转写完成: " + recordingID + ", summary=\"" + result.Title + "\"")
+	logger.Info(diagnostics.SafeLogText("[asr-trigger] 转写完成: " + recordingID + ", summary=\"" + result.Title + "\""))
 	emitRecordingStatus(recordingID, storage, logger, opts.NotifyStatus, "", &StatusEvent{
 		Transcript: result.Transcript,
 		Summary:    result.Summary,
@@ -117,7 +119,7 @@ func emitRecordingStatus(recordingID string, storage *Storage, logger Logger, no
 	}
 	defer func() {
 		if rec := recover(); rec != nil {
-			logger.Error(fmt.Sprintf("[recording-status] 状态事件发送失败: %s, %v", recordingID, rec))
+			logger.Error(diagnostics.SafeLogText(fmt.Sprintf("[recording-status] 状态事件发送失败: %s, %v", recordingID, rec)))
 		}
 	}()
 	notify(event)

@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
@@ -99,7 +101,7 @@ func (s *Storage) ValidateResultWrite(params ResultWriteParams) error {
 		return errors.New("recordingId is required")
 	}
 	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
-	if !fsutil.IsSafeName(recordingID) {
+	if !fsutil.IsSafeName(recordingID) || strings.ContainsFunc(params.RecordingID, unicode.IsControl) {
 		return errors.New("recordingId is invalid")
 	}
 	oss := resultOssURL(params)
@@ -152,10 +154,10 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		if !ok {
 			return ResultWriteResult{}, fmt.Errorf("Recording not found: %s", recordingID)
 		}
-		logger.Info("[recording-result] 录音不存在，已按结果写入新建: " + recordingID +
-			", client=" + entry.ClientLabel)
-		logger.Info("[recording-result] 录音时间已入库: " + recordingID +
-			", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+		logger.Info(diagnostics.SafeLogText("[recording-result] 录音不存在，已按结果写入新建: " + recordingID +
+			", client=" + entry.ClientLabel))
+		logger.Info(diagnostics.SafeLogText("[recording-result] 录音时间已入库: " + recordingID +
+			", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource))
 	} else {
 		// 已有录音：来源 label 以本次推送为准，顺带把早期写成 default 的老数据纠回来。
 		if clientLabel != "" && entry.ClientLabel != clientLabel {
@@ -165,7 +167,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 				return ResultWriteResult{}, err
 			}
 			entry, _ = storage.FindByID(recordingID)
-			logger.Info("[recording-result] 录音来源已更新: " + recordingID + ", client=" + clientLabel)
+			logger.Info(diagnostics.SafeLogText("[recording-result] 录音来源已更新: " + recordingID + ", client=" + clientLabel))
 		}
 		if merged, timeSource, changed := mergeResultMetadata(entry.Metadata, params); changed {
 			if err := storage.updateEntry(recordingID, func(current *Entry) {
@@ -175,8 +177,8 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 			}
 			entry, _ = storage.FindByID(recordingID)
 			if timeSource != "" {
-				logger.Info("[recording-result] 录音时间已更新: " + recordingID +
-					", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+				logger.Info(diagnostics.SafeLogText("[recording-result] 录音时间已更新: " + recordingID +
+					", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource))
 			}
 		}
 	}
@@ -429,7 +431,7 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 	if err := storage.SetTitle(recordingID, title); err != nil {
 		return "", nil, err
 	}
-	logger.Info("[recording-result] 转录文本已写入: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 转录文本已写入: " + recordingID))
 
 	return title, ExtractSourceTextListFromDocument(doc), nil
 }
@@ -452,7 +454,7 @@ func writeResultSummary(recordingID string, sm ResultSummary, storage *Storage, 
 	if err := storage.SetSummaryFile(recordingID, name); err != nil {
 		return "", err
 	}
-	logger.Info("[recording-result] 总结已写入: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 总结已写入: " + recordingID))
 	return strings.TrimSpace(markdown), nil
 }
 
@@ -462,17 +464,17 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 
 	current, err := storage.SetResultAudioDownloading(recordingID, ossURL)
 	if err != nil {
-		logger.Error("[recording-result] 音频下载状态写入失败: " + err.Error() + ": " + recordingID)
+		logger.Error(diagnostics.SafeLogText("[recording-result] 音频下载状态写入失败: " + err.Error() + ": " + recordingID))
 		return
 	}
 	if !current {
-		logger.Info("[recording-result] 音频已存在或 OSS URL 已更新，跳过重复任务: " + recordingID)
+		logger.Info(diagnostics.SafeLogText("[recording-result] 音频已存在或 OSS URL 已更新，跳过重复任务: " + recordingID))
 		return
 	}
 	dest := storage.AudioFilePath(recordingID, ossURL)
 	staged := dest + ".incoming"
 	defer os.Remove(staged)
-	logger.Info("[recording-result] 开始下载音频: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 开始下载音频: " + recordingID))
 	downloadOpts := opts.DownloadOptions
 	entry, _ := storage.FindByID(recordingID)
 	isCurrent := func() bool {
@@ -504,9 +506,9 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 		if initialErr == nil && (initial.ExpiresAt.IsZero() || initial.ExpiresAt.After(time.Now().Add(downloadLinkRefreshWindow))) {
 			downloadOpts.InitialLink = &initial
 		} else if initialErr == nil {
-			logger.Warn("[recording-result] 初始签名链接有效期不足，使用原始链接: " + recordingID)
+			logger.Warn(diagnostics.SafeLogText("[recording-result] 初始签名链接有效期不足，使用原始链接: " + recordingID))
 		} else {
-			logger.Warn("[recording-result] 初始签名链接刷新失败，使用原始链接: " + safeDownloadError(initialErr) + ": " + recordingID)
+			logger.Warn(diagnostics.SafeLogText("[recording-result] 初始签名链接刷新失败，使用原始链接: " + safeDownloadError(initialErr) + ": " + recordingID))
 		}
 	}
 	result := DownloadFile(ossURL, staged, logger, downloadOpts)
@@ -515,14 +517,14 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 	}
 	if !result.OK {
 		message := "音频下载失败: " + result.Error
-		logger.Error("[recording-result] " + message + ": " + recordingID)
+		logger.Error(diagnostics.SafeLogText("[recording-result] " + message + ": " + recordingID))
 		applied, setErr := storage.SetResultAudioFailedWithCode(recordingID, ossURL, message, result.ErrorCode)
 		if setErr != nil {
-			logger.Error("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID)
+			logger.Error(diagnostics.SafeLogText("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID))
 			return
 		}
 		if !applied {
-			logger.Info("[recording-result] OSS URL 已更新，忽略旧音频失败结果: " + recordingID)
+			logger.Info(diagnostics.SafeLogText("[recording-result] OSS URL 已更新，忽略旧音频失败结果: " + recordingID))
 			return
 		}
 		emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
@@ -532,14 +534,14 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 		recordingID, ossURL, staged, AudioFilename(recordingID, ossURL),
 	)
 	if setErr != nil {
-		logger.Error("[recording-result] 音频成功状态写入失败: " + setErr.Error() + ": " + recordingID)
+		logger.Error(diagnostics.SafeLogText("[recording-result] 音频成功状态写入失败: " + setErr.Error() + ": " + recordingID))
 		return
 	}
 	if !applied {
-		logger.Info("[recording-result] OSS URL 已更新，忽略旧音频成功结果: " + recordingID)
+		logger.Info(diagnostics.SafeLogText("[recording-result] OSS URL 已更新，忽略旧音频成功结果: " + recordingID))
 		return
 	}
-	logger.Info("[recording-result] 音频已更新: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 音频已更新: " + recordingID))
 	emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
 }
 
@@ -560,13 +562,13 @@ func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions
 			}
 			retry, err := storage.prepareResultAudioRecovery(entry)
 			if err != nil {
-				logger.Error("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error())
+				logger.Error(diagnostics.SafeLogText("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error()))
 				continue
 			}
 			if !retry {
 				continue
 			}
-			logger.Info("[recording-recovery] 补偿缺失音频: " + entry.ID)
+			logger.Info(diagnostics.SafeLogText("[recording-recovery] 补偿缺失音频: " + entry.ID))
 			downloadResultAudio(entry.ID, ossURL, storage, logger, opts)
 		}
 	}()
@@ -612,7 +614,7 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 	}
 	defer func() {
 		if rec := recover(); rec != nil {
-			logger.Error(fmt.Sprintf("[recording-result] 状态事件发送失败: %s, %v", recordingID, rec))
+			logger.Error(diagnostics.SafeLogText(fmt.Sprintf("[recording-result] 状态事件发送失败: %s, %v", recordingID, rec)))
 		}
 	}()
 	notify(event)

@@ -4,10 +4,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clientlabel"
 	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
@@ -138,9 +140,18 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 	case "recordings.result.write":
 		defer s.beginRecordingWrite()()
 		var body recording.ResultWriteParams
-		if !decodeBody(w, r, &body) {
+		stage, reason := "decode", ""
+		observed := &recordingWriteResponse{ResponseWriter: w}
+		w = observed
+		defer func() {
+			if observed.code != "" && stage != "write" {
+				s.logRecordingWriteRejection(r, observed.code, stage, reason, body.RecordingID, body.SourceType)
+			}
+		}()
+		if !decodeRecordingWrite(w, r, &body, &reason) {
 			return
 		}
+		stage, reason = "recording_id", "recordingId_required"
 		recordingID := strings.TrimSpace(body.RecordingID)
 		if recordingID == "" {
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
@@ -148,15 +159,22 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		}
 		// recordingID 直接拼进 transcript/summary/audio 的落盘文件名，
 		// 必须在入口挡掉 ../ 之类的穿越。
-		if !fsutil.IsSafeName(recordingID) {
+		if !fsutil.IsSafeName(recordingID) || strings.ContainsFunc(body.RecordingID, unicode.IsControl) {
+			reason = "recordingId_unsafe"
 			gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符（不允许路径分隔符等）")
 			return
+		}
+		stage, reason = "source", "sourceType_invalid"
+		switch strings.TrimSpace(body.SourceType) {
+		case "", recording.SourceMobileApp, recording.SourceCaptureApp:
+			reason = "recording_storage_unavailable"
 		}
 		store, ok := s.recordingStore(w, body.SourceType, method)
 		if !ok {
 			return
 		}
 		if err := store.ValidateResultWrite(body); err != nil {
+			stage, reason = "validate", recordingValidationReason(err)
 			gatewayErr(w, "INVALID_PARAMS", err.Error())
 			return
 		}
@@ -170,6 +188,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			other = s.recordingStorage
 			if existing, found := store.FindByID(recordingID); found {
 				if !clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+					stage, reason = "visibility", "recording_not_visible_to_caller"
 					gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 					return
 				}
@@ -179,14 +198,17 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if other != nil {
 			if existing, found := other.FindByID(recordingID); found {
 				if !clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+					stage, reason = "visibility", "recording_not_visible_to_caller"
 					gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 					return
 				}
+				stage, reason = "source_conflict", "recordingId_exists_in_other_source"
 				gatewayErr(w, "SOURCE_CONFLICT", "recordingId already belongs to a different sourceType")
 				return
 			}
 		}
 		if store == s.captureRecordingStorage {
+			stage, reason = "capture_prepare", "capture_lookup_visibility_or_adoption_failed"
 			existing, ok := prepareRecordingMutation(w, r, auth, store, recordingID, true)
 			if !ok {
 				return
@@ -195,6 +217,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				label = existing.ClientLabel
 			}
 		}
+		stage = "write"
 		body.RecordingID = recordingID
 		result, err := recording.HandleRecordingResultWrite(body, store, s.logger, recording.SyncOptions{
 			OnContentCommit: s.notifyRecordingContent,
@@ -221,9 +244,9 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, code, err.Error())
 			return
 		}
-		s.logger.Info("[recording-result] 写入受理: recordingId=" + recordingID +
+		s.logger.Info(diagnostics.SafeLogText("[recording-result] 写入受理: recordingId=" + recordingID +
 			", sourceType=" + result.SourceType + ", audio_status=" + result.AudioStatus +
-			", relay=" + r.Header.Get(relay.InternalRequestIDHeader))
+			", relay=" + r.Header.Get(relay.InternalRequestIDHeader)))
 		gatewayOK(w, result)
 
 	case "recordings.export.start", "recordings.export.status":
@@ -244,7 +267,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
 			return
 		}
-		if !fsutil.IsSafeName(recordingID) {
+		if !fsutil.IsSafeName(recordingID) || strings.ContainsFunc(body.RecordingID, unicode.IsControl) {
 			gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符（不允许路径分隔符等）")
 			return
 		}
@@ -284,7 +307,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if body.ASR == nil {
-			s.logger.Info("[recording-retranscribe] 使用本地 asr-config.json（mode=" + asr.Mode + maskedKeyLog(asr) + "）")
+			s.logger.Info(diagnostics.SafeLogText("[recording-retranscribe] 使用本地 asr-config.json（mode=" + asr.Mode + maskedKeyLog(asr) + "）"))
 		}
 		finishRecording := s.beginRecordingWrite()
 		go func() {
@@ -293,7 +316,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				OnContentCommit: s.notifyRecordingContent,
 				NotifyStatus:    s.notifyRecordingStatus,
 			}); err != nil {
-				s.logger.Error("[recording-retranscribe] 重试转写失败: " + recordingID + ", " + err.Error())
+				s.logger.Error(diagnostics.SafeLogText("[recording-retranscribe] 重试转写失败: " + recordingID + ", " + err.Error()))
 			}
 		}()
 		gatewayOK(w, map[string]any{"ok": true, "recordingId": recordingID, "message": "转写已重新触发"})
@@ -344,13 +367,13 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 			if err := source.store.LoadError(); err != nil {
-				s.logger.Warn("[recording-list] " + source.source + " 索引不可用: " + err.Error())
+				s.logger.Warn(diagnostics.SafeLogText("[recording-list] " + source.source + " 索引不可用: " + err.Error()))
 				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
 				return
 			}
 			snapshot, err := source.store.ReadSourceSnapshot(r.Context(), capturerecording.Query{})
 			if err != nil {
-				s.logger.Warn("[recording-list] " + source.source + " 索引读取失败: " + err.Error())
+				s.logger.Warn(diagnostics.SafeLogText("[recording-list] " + source.source + " 索引读取失败: " + err.Error()))
 				gatewayErr(w, "RECORDING_LIST_UNAVAILABLE", "recording list unavailable")
 				return
 			}
@@ -378,8 +401,8 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if logStatus == "" {
 			logStatus = "all"
 		}
-		s.logger.Info("[recording-list] indexed " + strings.Join(indexedBySource, " ") +
-			", status=" + logStatus + ", returned=" + strconv.Itoa(len(items)))
+		s.logger.Info(diagnostics.SafeLogText("[recording-list] indexed " + strings.Join(indexedBySource, " ") +
+			", status=" + logStatus + ", returned=" + strconv.Itoa(len(items))))
 		gatewayOK(w, map[string]any{"total": len(items), "recordings": items})
 
 	case "recordings.status":
@@ -495,9 +518,9 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		if body.DeleteRemote {
-			s.logger.Info("录音已删除: " + recordingID + ", sourceType=" + source)
+			s.logger.Info(diagnostics.SafeLogText("录音已删除: " + recordingID + ", sourceType=" + source))
 		} else {
-			s.logger.Info("录音本地文件已清理: " + recordingID + ", sourceType=" + source)
+			s.logger.Info(diagnostics.SafeLogText("录音本地文件已清理: " + recordingID + ", sourceType=" + source))
 		}
 		gatewayOK(w, map[string]any{"ok": true, "recordingId": recordingID, "sourceType": source, "deletedRemote": body.DeleteRemote})
 
@@ -522,14 +545,14 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 	if event.Error != "" {
 		message += " err=" + event.Error
 	}
-	s.logger.Info(message)
+	s.logger.Info(diagnostics.SafeLogText(message))
 	store, eventLog := s.recordingStorage, s.recordingEventLog
 	if event.SourceType == recording.SourceCaptureApp {
 		store, eventLog = s.captureRecordingStorage, s.captureRecordingEventLog
 	}
 	if eventLog != nil {
 		if err := eventLog.Append(event); err != nil {
-			s.logger.Warn("[recording-status] 事件落盘失败: " + err.Error())
+			s.logger.Warn(diagnostics.SafeLogText("[recording-status] 事件落盘失败: " + err.Error()))
 		}
 	}
 	// 事件只回给这条录音的来源客户端；来源不明的历史数据（label 空/default）
@@ -542,7 +565,7 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 	}
 	if egress := s.currentEgress(); egress != nil {
 		if err := egress.PushEventTo(label, "recording.status", event); err != nil {
-			s.logger.Warn("[recording-status] 出站事件投递失败: " + err.Error())
+			s.logger.Warn(diagnostics.SafeLogText("[recording-status] 出站事件投递失败: " + err.Error()))
 		}
 	}
 }
