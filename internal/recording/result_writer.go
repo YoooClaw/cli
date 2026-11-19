@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
@@ -100,7 +101,7 @@ func (s *Storage) ValidateResultWrite(params ResultWriteParams) error {
 		return errors.New("recordingId is required")
 	}
 	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
-	if !fsutil.IsSafeName(recordingID) {
+	if !fsutil.IsSafeName(recordingID) || strings.ContainsFunc(params.RecordingID, unicode.IsControl) {
 		return errors.New("recordingId is invalid")
 	}
 	oss := resultOssURL(params)

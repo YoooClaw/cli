@@ -17,7 +17,7 @@ func TestIsSafeName(t *testing.T) {
 		"", ".", "..",
 		"../evil", "..\\evil", "a/b", `a\b`,
 		"/abs", "C:evil", "a:b",
-		"nul\x00byte",
+		"nul\x00byte", "abc\nforged", "abc\rforged", "abc\tdef", "abc\x1b[31m", "abc\x7f", "abc\u0085",
 		strings.Repeat("x", 201),
 	}
 	for _, s := range invalid {

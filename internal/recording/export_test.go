@@ -869,3 +869,28 @@ func TestExportReadyRejectsReplacedUnsupportedSource(t *testing.T) {
 		t.Fatalf("status=%+v", status)
 	}
 }
+
+func TestLegacyRecordingIDsCannotInjectExportOrASRLogs(t *testing.T) {
+	storage := newResultStorage(t)
+	id := "legacy\nforged-log-line"
+	// Seed an old index entry directly, bypassing the new result.write validation.
+	if _, err := storage.Ingest(id, Metadata{Name: "legacy"}, "phone-a"); err != nil {
+		t.Fatal(err)
+	}
+	logger := &captureLogger{}
+	service := NewExportService(storage, logger)
+	defer service.Close()
+	_, err := service.Start(context.Background(), ExportStartRequest{RecordingID: id, RequestID: "legacy-test"}, nil)
+	if !errors.Is(err, ErrExportNotExportable) {
+		t.Fatal(err)
+	}
+	if err := TriggerTranscription("missing\nforged-log-line", storage, AsrConfig{}, logger, SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if logger.contains("\nforged-log-line") {
+		t.Fatal("unescaped log line")
+	}
+	if !logger.contains(`legacy\nforged-log-line`) || !logger.contains(`missing\nforged-log-line`) {
+		t.Fatal("missing escaped export/ASR diagnostic")
+	}
+}

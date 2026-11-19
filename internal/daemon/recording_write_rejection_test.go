@@ -107,7 +107,10 @@ func TestRecordingWriteLogsEscapeInjection(t *testing.T) {
 	id := "abc\nforged-line-here"
 	body, _ := json.Marshal(map[string]any{"recordingId": id, "transcript": map[string]any{"text": "test"}})
 	resp := asClient(t, "POST", ts.URL+"/gateway/recordings.result.write", "phone-a", string(body))
-	gatewayData(t, resp) // Logging changes must not reject previously accepted IDs.
+	if errorCode(resp) != "INVALID_PARAMS" {
+		t.Fatal(resp)
+	}
+	s.notifyRecordingStatus(recording.StatusEvent{RecordingID: id})
 	s.logRecordingWriteFailure(id, "relay\nforged-relay", errors.New("write failed\nforged-error token=secret-value https://example.test/audio?Signature=private"))
 	raw, err := os.ReadFile(s.logger.logFile)
 	if err != nil {
@@ -119,7 +122,7 @@ func TestRecordingWriteLogsEscapeInjection(t *testing.T) {
 			t.Fatalf("unsafe log %q: %s", fragment, logs)
 		}
 	}
-	for _, fragment := range []string{"写入受理", "转录文本已写入", "[recording-status]", "写入失败", `abc\nforged-line-here`} {
+	for _, fragment := range []string{"recording.write.rejected", "[recording-status]", "写入失败", `abc\nforged-line-here`} {
 		if !strings.Contains(logs, fragment) {
 			t.Fatalf("missing %q: %s", fragment, logs)
 		}
@@ -154,5 +157,41 @@ func TestRecordingRejectionCorrelationAndNormalization(t *testing.T) {
 		if !strings.Contains(string(raw), fragment) {
 			t.Fatalf("missing %s: %s", fragment, raw)
 		}
+	}
+}
+
+func TestRecordingWriteRejectsControlIDs(t *testing.T) {
+	s, ts := newTestServer(t, "")
+	store := withRecordings(t, s)
+	for _, id := range []string{"abc\nforged", "abc\tdef", "abc\rdef", "abc\x1b[31m", "\nabc", "abc\t", "abc\u0085"} {
+		body, _ := json.Marshal(map[string]any{"recordingId": id, "transcript": map[string]any{"text": "test"}})
+		resp := asClient(t, "POST", ts.URL+"/gateway/recordings.result.write", "phone-a", string(body))
+		if errorCode(resp) != "INVALID_PARAMS" {
+			t.Fatalf("id=%q response=%v", id, resp)
+		}
+		if _, exists := store.FindByID(strings.TrimSpace(id)); exists {
+			t.Fatalf("persisted rejected id %q", id)
+		}
+	}
+}
+
+func TestRecordingDeleteRejectsLegacyControlID(t *testing.T) {
+	s, ts := newTestServer(t, "")
+	store := withRecordings(t, s)
+	id := "abc\ndelete-forged-line"
+	if _, err := store.Ingest(id, recording.Metadata{Name: "legacy"}, "phone-a"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"recordingId": id, "deleteRemote": true})
+	resp := asClient(t, "POST", ts.URL+"/gateway/recordings.delete", "phone-a", string(body))
+	if errorCode(resp) != "INVALID_PARAMS" {
+		t.Fatal(resp)
+	}
+	raw, err := os.ReadFile(s.logger.logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "\ndelete-forged-line") {
+		t.Fatalf("injected log: %s", raw)
 	}
 }

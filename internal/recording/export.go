@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/YoooClaw/cli/internal/ossdownload"
+
+	"github.com/YoooClaw/cli/internal/diagnostics"
 )
 
 const (
@@ -142,11 +144,11 @@ func (s *ExportService) Close() {
 func (s *ExportService) RecoverInterrupted() int {
 	count, err := s.storage.RecoverInterruptedExports(s.stamp())
 	if err != nil {
-		s.logger.Error("[recording-export] 中断导出恢复失败: " + err.Error())
+		s.logger.Error(diagnostics.SafeLogText("[recording-export] 中断导出恢复失败: " + err.Error()))
 		return 0
 	}
 	if count > 0 {
-		s.logger.Info(fmt.Sprintf("[recording-export] 已标记 %d 个中断导出", count))
+		s.logger.Info(diagnostics.SafeLogText(fmt.Sprintf("[recording-export] 已标记 %d 个中断导出", count)))
 	}
 	return count
 }
@@ -182,8 +184,8 @@ func (s *ExportService) Start(ctx context.Context, req ExportStartRequest, cloud
 	if !s.storage.Exportable(entry) {
 		// 导出前置条件失败发生在状态机之前，原先没有任何日志；这里记录索引
 		// 里的音频状态和相对路径，便于区分"还没下载"和"文件被删"。
-		s.logger.Warn("[recording-export] 录音不可导出: recording=" + recordingID + ", status=" + entry.Status +
-			", audioStatus=" + entry.AudioStatus + ", audioFile=" + entry.AudioFile)
+		s.logger.Warn(diagnostics.SafeLogText("[recording-export] 录音不可导出: recording=" + recordingID + ", status=" + entry.Status +
+			", audioStatus=" + entry.AudioStatus + ", audioFile=" + entry.AudioFile))
 		return ExportStartResult{}, ErrExportNotExportable
 	}
 	if cloud == nil {
@@ -251,7 +253,7 @@ func (s *ExportService) Status(ctx context.Context, req ExportStatusRequest, clo
 		if errors.Is(err, ErrExportObjectGone) {
 			return s.expireStatus(recordingID, exportID), nil
 		}
-		s.logger.Warn("[recording-export] 签名链接刷新失败: " + exportErrorLog(err) + ": " + exportID)
+		s.logger.Warn(diagnostics.SafeLogText("[recording-export] 签名链接刷新失败: " + exportErrorLog(err) + ": " + exportID))
 		return status, ErrExportLinkUnavailable
 	}
 	// 刷新签名可能耗时，返回前再复核一次来源；仍使用廉价文件身份和文本
@@ -305,14 +307,14 @@ func (s *ExportService) failStatusWithSource(recordingID, exportID, code, messag
 // 相对路径。状态一旦落为 failed，后续 status 会走早返回，不会重复刷日志。
 func (s *ExportService) failReadySource(recordingID, exportID string, err error) ExportStatus {
 	code := readySourceFailureCode(err)
-	s.logger.Warn("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
-		", code=" + code + ", err=" + exportErrorLog(err))
+	s.logger.Warn(diagnostics.SafeLogText("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
+		", code=" + code + ", err=" + exportErrorLog(err)))
 	return s.failStatusWithSource(recordingID, exportID, code, readySourceFailureMessage(err),
 		string(exportSourceKindOf(err)), "item", false)
 }
 
 func (s *ExportService) failSourceChanged(recordingID, exportID string) ExportStatus {
-	s.logger.Warn("[recording-export] 导出源已变化: " + exportID + ", recording=" + recordingID)
+	s.logger.Warn(diagnostics.SafeLogText("[recording-export] 导出源已变化: " + exportID + ", recording=" + recordingID))
 	return s.failStatus(recordingID, exportID, "SOURCE_CHANGED", "Recording source changed", "item", false)
 }
 
@@ -326,7 +328,7 @@ func (s *ExportService) expireStatus(recordingID, exportID string) ExportStatus 
 		return true
 	})
 	if err != nil {
-		s.logger.Error("[recording-export] 导出过期状态写入失败: " + err.Error() + ": " + exportID)
+		s.logger.Error(diagnostics.SafeLogText("[recording-export] 导出过期状态写入失败: " + err.Error() + ": " + exportID))
 	}
 	entry, record, ok := s.storage.FindExport(recordingID, exportID)
 	if !ok {
@@ -352,7 +354,7 @@ func (s *ExportService) failWithSource(recordingID, exportID, code, message, sou
 		return true
 	})
 	if err != nil {
-		s.logger.Error("[recording-export] 导出失败状态写入失败: " + err.Error() + ": " + exportID)
+		s.logger.Error(diagnostics.SafeLogText("[recording-export] 导出失败状态写入失败: " + err.Error() + ": " + exportID))
 	}
 }
 
@@ -423,7 +425,7 @@ func (s *ExportService) runExport(recordingID, exportID string, cloud ExportClou
 	})
 	if err != nil {
 		code, message, scope, retryable := exportRunFailure(err)
-		s.logger.Warn("[recording-export] 导出失败: " + exportID + ", recordingId=" + recordingID + ", " + exportErrorLog(err))
+		s.logger.Warn(diagnostics.SafeLogText("[recording-export] 导出失败: " + exportID + ", recordingId=" + recordingID + ", " + exportErrorLog(err)))
 		s.fail(recordingID, exportID, code, message, scope, retryable)
 		return
 	}
@@ -459,7 +461,7 @@ func (s *ExportService) runExport(recordingID, exportID string, cloud ExportClou
 		return
 	}
 	s.setInitialLink(exportID, DownloadLink{URL: upload.SignedURL, ExpiresAt: upload.ExpiresAt}, cloud, upload.TaskID)
-	s.logger.Info("[recording-export] 导出就绪: " + exportID + ", recording=" + recordingID + ", bytes=" + fmt.Sprint(upload.SizeBytes))
+	s.logger.Info(diagnostics.SafeLogText("[recording-export] 导出就绪: " + exportID + ", recording=" + recordingID + ", bytes=" + fmt.Sprint(upload.SizeBytes)))
 }
 
 func (s *ExportService) failSource(recordingID, exportID string, err error) {
@@ -467,8 +469,8 @@ func (s *ExportService) failSource(recordingID, exportID string, err error) {
 	// 源文件错误以前完全静默，线上只能看到 SOURCE_NOT_FOUND；这里把类别、
 	// 相对路径和底层错误写进本地日志，便于定位是哪个文件被删/被改。
 	// 先写日志再落状态，避免轮询方先看到 failed 而日志尚未输出。
-	s.logger.Warn("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
-		", code=" + code + ", err=" + exportErrorLog(err))
+	s.logger.Warn(diagnostics.SafeLogText("[recording-export] 导出源不可用: " + exportID + ", recording=" + recordingID +
+		", code=" + code + ", err=" + exportErrorLog(err)))
 	s.failWithSource(recordingID, exportID, code, sourceFailureMessage(err), string(exportSourceKindOf(err)), "item", false)
 }
 
