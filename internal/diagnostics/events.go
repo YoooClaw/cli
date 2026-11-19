@@ -4,10 +4,12 @@ package diagnostics
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -66,3 +68,15 @@ func Write(root, level, event string, fields map[string]any) {
 		fmt.Fprintf(os.Stderr, "diagnostic log write failed path=%q: %s\n%s", path, SafeError(err), line)
 	}
 }
+
+// SafeLogText keeps untrusted diagnostic text on one line and removes credentials.
+// It is for diagnostic messages, never request bodies or transcript content.
+func SafeLogText(value string) string {
+	value = logURL.ReplaceAllString(value, "[redacted-url]")
+	value = underscoreAPIKey.ReplaceAllString(value, "[redacted]")
+	quoted := strconv.Quote(SafeError(errors.New(value)))
+	return quoted[1 : len(quoted)-1]
+}
+
+var logURL = regexp.MustCompile(`https?://[^\s"<>]+`)
+var underscoreAPIKey = regexp.MustCompile(`ock_[a-zA-Z0-9_-]+`)

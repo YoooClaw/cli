@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/YoooClaw/cli/internal/diagnostics"
+	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/relay"
 )
 
@@ -30,16 +30,15 @@ func (w *recordingWriteResponse) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-var recordingLogID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-
 func safeRecordingLogID(s string) string {
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
-	if !recordingLogID.MatchString(s) || strings.HasPrefix(s, "ock_") || strings.HasPrefix(s, "ock-") {
+	if !fsutil.IsSafeName(s) || strings.HasPrefix(s, "ock_") || strings.HasPrefix(s, "ock-") {
 		return "[redacted]"
 	}
-	return s
+	return diagnostics.SafeLogText(s)
 }
 func recordingDecodeReason(err error) string {
 	var syntax *json.SyntaxError
@@ -49,13 +48,9 @@ func recordingDecodeReason(err error) string {
 	var typed *json.UnmarshalTypeError
 	if errors.As(err, &typed) {
 		// Field names can originate in arbitrary maps; only retain known protocol names.
-		names := map[string]bool{}
-		for _, name := range strings.Fields("recordingId sourceType ossUrl ossTaskId durationMillis recording transcript summary segments text startMs endMs speakerId speakerName name created_at duration_sec duration_display recording_type markers timestamp_ms location title category brief markdown generatedAt source provider taskId requestId status format structured") {
-			names[name] = true
-		}
 		field := typed.Field
 		for _, part := range strings.Split(field, ".") {
-			if !names[part] {
+			if !recordingProtocolFields[part] {
 				field = "[redacted]"
 				break
 			}
@@ -86,6 +81,7 @@ func decodeRecordingWrite(w http.ResponseWriter, r *http.Request, out any, reaso
 	return true
 }
 func (s *server) logRecordingWriteRejection(r *http.Request, code, stage, reason, id, source string) {
+	source = strings.TrimSpace(source)
 	if source != "" && source != "mobile_app" && source != "capture_app" {
 		source = "[redacted]"
 	}
@@ -107,3 +103,11 @@ func recordingValidationReason(err error) string {
 	}
 	return "result_write_validation_failed"
 }
+
+var recordingProtocolFields = func() map[string]bool {
+	names := map[string]bool{}
+	for _, name := range strings.Fields("recordingId sourceType ossUrl ossTaskId durationMillis recording transcript summary segments text startMs endMs speakerId speakerName name created_at duration_sec duration_display file_size_display transfer_status oss_audio_url oss_srt_url index recording_type markers timestamp_ms location title category brief markdown generatedAt source provider taskId requestId status format structured") {
+		names[name] = true
+	}
+	return names
+}()

@@ -8,6 +8,7 @@ import (
 	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clientlabel"
 	"github.com/YoooClaw/cli/internal/config"
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/relay"
@@ -242,9 +243,9 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			gatewayErr(w, code, err.Error())
 			return
 		}
-		s.logger.Info("[recording-result] 写入受理: recordingId=" + recordingID +
+		s.logger.Info(diagnostics.SafeLogText("[recording-result] 写入受理: recordingId=" + recordingID +
 			", sourceType=" + result.SourceType + ", audio_status=" + result.AudioStatus +
-			", relay=" + r.Header.Get(relay.InternalRequestIDHeader))
+			", relay=" + r.Header.Get(relay.InternalRequestIDHeader)))
 		gatewayOK(w, result)
 
 	case "recordings.export.start", "recordings.export.status":
@@ -543,7 +544,7 @@ func (s *server) notifyRecordingStatus(event recording.StatusEvent) {
 	if event.Error != "" {
 		message += " err=" + event.Error
 	}
-	s.logger.Info(message)
+	s.logger.Info(diagnostics.SafeLogText(message))
 	store, eventLog := s.recordingStorage, s.recordingEventLog
 	if event.SourceType == recording.SourceCaptureApp {
 		store, eventLog = s.captureRecordingStorage, s.captureRecordingEventLog

@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
@@ -240,13 +241,13 @@ func (s *Storage) Init() error {
 		if err := fsutil.EnsureDir(dir, fsutil.DirMode); err != nil {
 			// 录音目录不可用时只降级录音域，不阻断其他 daemon 域启动。
 			s.loadErr = err
-			s.logger.Error("录音目录初始化失败，录音域降级: " + err.Error())
+			s.logger.Error(diagnostics.SafeLogText("录音目录初始化失败，录音域降级: " + err.Error()))
 			return nil
 		}
 	}
 	if err := s.loadIndex(); err != nil {
 		s.loadErr = err
-		s.logger.Error("录音索引读取失败，录音域降级: " + err.Error())
+		s.logger.Error(diagnostics.SafeLogText("录音索引读取失败，录音域降级: " + err.Error()))
 		return nil
 	}
 	s.logger.Info("录音存储已初始化: " + s.dir)
@@ -426,7 +427,7 @@ func (s *Storage) refreshIndexLocked() {
 	}
 	wrapper, exists, err := readRecordingIndex(s.indexPath)
 	if err != nil {
-		s.logger.Error("录音索引被外部修改后无法解析，保留内存索引: " + err.Error())
+		s.logger.Error(diagnostics.SafeLogText("录音索引被外部修改后无法解析，保留内存索引: " + err.Error()))
 		return
 	}
 	if !exists {
@@ -439,7 +440,7 @@ func (s *Storage) refreshIndexLocked() {
 	s.logger.Info("检测到录音索引被外部修改，已按磁盘内容重新加载: " + s.indexPath)
 	if needsRewrite {
 		if err := s.saveIndexLocked(); err != nil {
-			s.logger.Error("重新加载后规范化录音索引失败: " + err.Error())
+			s.logger.Error(diagnostics.SafeLogText("重新加载后规范化录音索引失败: " + err.Error()))
 		}
 	}
 }
@@ -535,7 +536,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 			if err := s.saveIndexLocked(); err != nil {
 				return Entry{}, err
 			}
-			s.logger.Info("录音元数据已更新: " + recordingID + "（同音频，保留状态 " + entry.Status + "）")
+			s.logger.Info(diagnostics.SafeLogText("录音元数据已更新: " + recordingID + "（同音频，保留状态 " + entry.Status + "）"))
 			return *entry, nil
 		}
 
@@ -561,7 +562,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		if err := s.saveIndexLocked(); err != nil {
 			return Entry{}, err
 		}
-		s.logger.Info("录音元数据已更新: " + recordingID)
+		s.logger.Info(diagnostics.SafeLogText("录音元数据已更新: " + recordingID))
 		return *entry, nil
 	}
 
@@ -587,7 +588,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		s.index.Recordings = s.index.Recordings[:len(s.index.Recordings)-1]
 		return Entry{}, err
 	}
-	s.logger.Info("录音元数据已入库: " + recordingID)
+	s.logger.Info(diagnostics.SafeLogText("录音元数据已入库: " + recordingID))
 	return entry, nil
 }
 
@@ -816,7 +817,7 @@ func (s *Storage) UpdateStatus(recordingID, newStatus string) (Entry, error) {
 	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, err
 	}
-	s.logger.Info("录音状态更新: " + recordingID + " -> " + newStatus)
+	s.logger.Info(diagnostics.SafeLogText("录音状态更新: " + recordingID + " -> " + newStatus))
 	return entry, nil
 }
 
@@ -843,7 +844,7 @@ func (s *Storage) MarkResultWritten(recordingID string) (Entry, error) {
 	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, err
 	}
-	s.logger.Info("录音结果已写入: " + recordingID)
+	s.logger.Info(diagnostics.SafeLogText("录音结果已写入: " + recordingID))
 	return entry, nil
 }
 
@@ -1027,7 +1028,7 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 		// 否则查询仍会看到 downloading。
 		s.index.Recordings[idx] = entry
 		if saveErr := s.saveIndexLocked(); saveErr != nil {
-			s.logger.Error("录音音频失败状态写入失败: " + saveErr.Error())
+			s.logger.Error(diagnostics.SafeLogText("录音音频失败状态写入失败: " + saveErr.Error()))
 		}
 		return false, err
 	}
