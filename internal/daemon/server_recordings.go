@@ -138,9 +138,18 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 	case "recordings.result.write":
 		defer s.beginRecordingWrite()()
 		var body recording.ResultWriteParams
-		if !decodeBody(w, r, &body) {
+		stage, reason := "decode", ""
+		observed := &recordingWriteResponse{ResponseWriter: w}
+		w = observed
+		defer func() {
+			if observed.code != "" && stage != "write" {
+				s.logRecordingWriteRejection(r, observed.code, stage, reason, body.RecordingID, body.SourceType)
+			}
+		}()
+		if !decodeRecordingWrite(w, r, &body, &reason) {
 			return
 		}
+		stage, reason = "recording_id", "recordingId_required"
 		recordingID := strings.TrimSpace(body.RecordingID)
 		if recordingID == "" {
 			gatewayErr(w, "INVALID_PARAMS", "recordingId is required")
@@ -149,14 +158,21 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		// recordingID 直接拼进 transcript/summary/audio 的落盘文件名，
 		// 必须在入口挡掉 ../ 之类的穿越。
 		if !fsutil.IsSafeName(recordingID) {
+			reason = "recordingId_unsafe"
 			gatewayErr(w, "INVALID_PARAMS", "recordingId 含非法字符（不允许路径分隔符等）")
 			return
+		}
+		stage, reason = "source", "sourceType_invalid"
+		switch strings.TrimSpace(body.SourceType) {
+		case "", recording.SourceMobileApp, recording.SourceCaptureApp:
+			reason = "recording_storage_unavailable"
 		}
 		store, ok := s.recordingStore(w, body.SourceType, method)
 		if !ok {
 			return
 		}
 		if err := store.ValidateResultWrite(body); err != nil {
+			stage, reason = "validate", recordingValidationReason(err)
 			gatewayErr(w, "INVALID_PARAMS", err.Error())
 			return
 		}
@@ -170,6 +186,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 			other = s.recordingStorage
 			if existing, found := store.FindByID(recordingID); found {
 				if !clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+					stage, reason = "visibility", "recording_not_visible_to_caller"
 					gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 					return
 				}
@@ -179,14 +196,17 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 		if other != nil {
 			if existing, found := other.FindByID(recordingID); found {
 				if !clientlabel.Visible(existing.ClientLabel, auth.scope()) {
+					stage, reason = "visibility", "recording_not_visible_to_caller"
 					gatewayErr(w, "NOT_FOUND", "Recording not found: "+recordingID)
 					return
 				}
+				stage, reason = "source_conflict", "recordingId_exists_in_other_source"
 				gatewayErr(w, "SOURCE_CONFLICT", "recordingId already belongs to a different sourceType")
 				return
 			}
 		}
 		if store == s.captureRecordingStorage {
+			stage, reason = "capture_prepare", "capture_lookup_visibility_or_adoption_failed"
 			existing, ok := prepareRecordingMutation(w, r, auth, store, recordingID, true)
 			if !ok {
 				return
@@ -195,6 +215,7 @@ func (s *server) handleRecordingGateway(w http.ResponseWriter, r *http.Request, 
 				label = existing.ClientLabel
 			}
 		}
+		stage = "write"
 		body.RecordingID = recordingID
 		result, err := recording.HandleRecordingResultWrite(body, store, s.logger, recording.SyncOptions{
 			OnContentCommit: s.notifyRecordingContent,
