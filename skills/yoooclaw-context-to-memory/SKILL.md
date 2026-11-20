@@ -14,7 +14,9 @@ Use the initiating message’s language for replies. Run `yoooclaw` with `--form
 
 Detect `replyLanguage` only from the user message that started the current request. Keep it unchanged for the run. Use it for all explanations, headings, labels, and summaries.
 
-Do not infer reply language from previous messages, source content, command output, examples, or Skill text. Keep commands, paths, identifiers, JSON keys, timestamps, URLs, and quoted raw data unchanged.
+If that message contains no natural language (for example, only a slash command, identifiers, paths, or pasted logs), use the language of the nearest earlier user message that does.
+
+Do not otherwise infer reply language from previous messages, source content, command output, examples, or Skill text. Keep commands, paths, identifiers, JSON keys, timestamps, URLs, and quoted raw data unchanged.
 
 ## 1. Fix sources, date scope, and memory destination
 
