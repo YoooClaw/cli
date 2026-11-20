@@ -104,7 +104,7 @@ jobs:
             exit 1
           fi
 
-      - name: Build Go npm distribution
+      - name: Build Go binaries
         run: scripts/build-go.sh "$VERSION"
 
       - name: Smoke test current macOS binary
@@ -182,17 +182,6 @@ jobs:
             fi
           done
 
-          cp dist-native/yoooclaw-darwin-arm64 dist-npm/cli-darwin-arm64/bin/yc
-          cp dist-native/yoooclaw-darwin-x64 dist-npm/cli-darwin-x64/bin/yc
-          chmod +x dist-npm/cli-darwin-arm64/bin/yc dist-npm/cli-darwin-x64/bin/yc
-
-          for file in \
-            dist-npm/cli-darwin-arm64/bin/yc \
-            dist-npm/cli-darwin-x64/bin/yc
-          do
-            codesign --verify --strict --verbose=2 "$file"
-          done
-
       - name: Notarize Darwin binaries
         env:
           APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
@@ -239,54 +228,11 @@ jobs:
             exit 1
           fi
 
-      - name: Verify npm package layout
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const version = process.env.VERSION;
-          const root = 'dist-npm';
-          const dirs = fs.readdirSync(root).sort();
-          const expected = [
-            'cli',
-            'cli-darwin-arm64',
-            'cli-darwin-x64',
-            'cli-linux-arm64',
-            'cli-linux-x64',
-            'cli-win32-x64',
-          ];
-          for (const dir of expected) {
-            if (!dirs.includes(dir)) throw new Error(`missing ${dir}`);
-            const pkg = JSON.parse(fs.readFileSync(path.join(root, dir, 'package.json'), 'utf8'));
-            if (pkg.version !== version) throw new Error(`${pkg.name} version ${pkg.version} != ${version}`);
-          }
-          const main = JSON.parse(fs.readFileSync(path.join(root, 'cli', 'package.json'), 'utf8'));
-          for (const dep of [
-            '@yoooclaw/cli-darwin-arm64',
-            '@yoooclaw/cli-darwin-x64',
-            '@yoooclaw/cli-linux-arm64',
-            '@yoooclaw/cli-linux-x64',
-            '@yoooclaw/cli-win32-x64',
-          ]) {
-            if (main.optionalDependencies?.[dep] !== version) {
-              throw new Error(`optional dependency ${dep} is not pinned to ${version}`);
-            }
-          }
-          NODE
-
       - name: Upload native binaries
         uses: actions/upload-artifact@v4
         with:
           name: cli-native
           path: dist-native/
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload npm packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-npm
-          path: dist-npm/
           if-no-files-found: error
           compression-level: 0
 
@@ -369,7 +315,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
       - uses: actions/setup-go@v5
         with:
@@ -382,12 +327,6 @@ jobs:
           name: cli-native
           path: dist-native
 
-      - name: Download npm packages
-        uses: actions/download-artifact@v4
-        with:
-          name: cli-npm
-          path: dist-npm
-
       - name: Resolve version and channel
         run: |
           VERSION="$(node -p "require('./package.json').version")"
@@ -399,20 +338,9 @@ jobs:
 
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           if [[ "$VERSION" == *-* ]]; then
-            echo "NPM_TAG=beta" >> "$GITHUB_ENV"
             echo "PRERELEASE=1" >> "$GITHUB_ENV"
           else
-            echo "NPM_TAG=latest" >> "$GITHUB_ENV"
             echo "PRERELEASE=0" >> "$GITHUB_ENV"
-          fi
-
-      - name: Verify npm token
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::error::发布 npm 需要配置 NPM_TOKEN"
-            exit 1
           fi
 
       - name: Smoke test Linux binary
@@ -423,56 +351,6 @@ jobs:
             echo "::error::linux native --version 输出 $VERSION_OUT，期望 $VERSION"
             exit 1
           fi
-
-      - name: Pack npm tarballs
-        run: |
-          mkdir -p release-tarballs
-          for dir in dist-npm/cli-* dist-npm/cli; do
-            npm pack "./$dir" --pack-destination release-tarballs --json
-          done
-
-      - name: Publish npm packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          # npm 已限制自动化 token 做账号/权限类变更（2FA bypass 收紧），
-          # `npm access set status=public` 会返回 403。发布本身用 --access public
-          # 就已经是公开的，这里只作为兜底，失败不阻塞发布。
-          ensure_public() {
-            npm access set status=public "$1" \
-              || echo "::warning::npm access set status=public $1 失败（token 无权限），已忽略"
-          }
-
-          publish_pkg() {
-            local dir="$1"
-            local name
-            local version
-            name="$(node -p "require('./${dir}/package.json').name")"
-            version="$(node -p "require('./${dir}/package.json').version")"
-
-            if npm view "$name@$version" version >/dev/null 2>&1; then
-              echo "::notice::$name@$version 已存在，跳过"
-              ensure_public "$name"
-              return
-            fi
-
-            echo "::notice::发布 $name@$version --tag $NPM_TAG"
-            npm publish "./$dir" --access public --tag "$NPM_TAG"
-            ensure_public "$name"
-          }
-
-          for dir in dist-npm/cli-*; do
-            publish_pkg "$dir"
-          done
-          publish_pkg dist-npm/cli
-
-      - name: Deprecate broken beta.0
-        if: env.VERSION == '0.2.0-beta.1'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          message="@yoooclaw/cli 0.2.0-beta.0 的平台二进制缺少 executable bit，请升级到 0.2.0-beta.1。"
-          npm deprecate "@yoooclaw/cli@0.2.0-beta.0" "$message"
 
       - name: Compute checksums
         run: |
@@ -496,8 +374,7 @@ jobs:
             dist-native/yoooclaw-linux-arm64 \
             dist-native/yoooclaw-linux-x64 \
             dist-native/yoooclaw-win32-x64.exe \
-            dist-native/checksums.txt \
-            release-tarballs/*.tgz
+            dist-native/checksums.txt
           )
 
           if gh release view "cli-v$VERSION" >/dev/null 2>&1; then
