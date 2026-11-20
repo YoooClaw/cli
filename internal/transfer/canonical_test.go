@@ -61,11 +61,11 @@ func TestRecordHashesMatchPluginGolden(t *testing.T) {
 	}
 }
 
-func TestPortableNormalizesRecordingMetadataLikePlugin(t *testing.T) {
+func TestPortableRetainsRecordingMetadataExtensions(t *testing.T) {
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(`{"id":"r","status":"synced","audioFile":"audio/r.m4a","metadata":{"name":"n","duration_sec":3725.9,"duration_display":"stale","created_at":"2026-01-01T00:00:00Z","oss_audio_url":"https://signed","size_bytes":9,"markers":[{"index":1,"timestamp_ms":2,"x":1},{"index":"bad"}],"location":{"latitude":1,"longitude":2,"alt":3}}}`), &raw)
 	got := canonical(portable(TypeRecordings, raw))
-	want := `{"id":"r","metadata":{"created_at":"2026-01-01T00:00:00Z","duration_display":"1h 2m 5s","duration_sec":3725,"location":{"latitude":1,"longitude":2},"markers":[{"index":1,"timestamp_ms":2}],"name":"n"}}`
+	want := `{"id":"r","metadata":{"created_at":"2026-01-01T00:00:00Z","duration_display":"1h 2m 5s","duration_sec":3725,"location":{"alt":3,"latitude":1,"longitude":2},"markers":[{"index":1,"timestamp_ms":2,"x":1},{"index":"bad"}],"name":"n","size_bytes":9}}`
 	if got != want {
 		t.Fatalf("portable = %s\nwant       %s", got, want)
 	}
@@ -84,5 +84,26 @@ func TestCheckCapabilitiesAcceptsPluginFile(t *testing.T) {
 	delete(plugin, "notificationImportPolicyVersion")
 	if ErrorCode(CheckCapabilities(plugin)) != "VERSION_UNSUPPORTED" {
 		t.Fatal("expected VERSION_UNSUPPORTED")
+	}
+}
+
+func TestRecordingTypePortableParity(t *testing.T) {
+	for _, kind := range []string{"normal", "call"} {
+		var data map[string]any
+		err := json.Unmarshal([]byte(`{"id":"r","metadata":{"name":"n","created_at":"2026-01-01T00:00:00Z","duration_sec":0,"duration_display":"0s","recording_type":"`+kind+`"}}`), &data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateData(TypeRecordings, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := portable(TypeRecordings, data)["metadata"].(map[string]any)["recording_type"]; got != kind {
+			t.Fatalf("recording_type=%v", got)
+		}
+	}
+	var historical map[string]any
+	_ = json.Unmarshal([]byte(`{"id":"r","metadata":{"name":"n","created_at":"2026-01-01T00:00:00Z","duration_sec":0,"duration_display":"0s"}}`), &historical)
+	if _, ok := portable(TypeRecordings, historical)["metadata"].(map[string]any)["recording_type"]; ok {
+		t.Fatal("historical record must retain original hash")
 	}
 }

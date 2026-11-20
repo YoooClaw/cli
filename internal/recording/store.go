@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
@@ -42,8 +43,9 @@ type Logger interface {
 
 // Marker 是录音关键点标记。
 type Marker struct {
-	Index       int     `json:"index"`
-	TimestampMS float64 `json:"timestamp_ms"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Index       int                        `json:"index"`
+	TimestampMS float64                    `json:"timestamp_ms"`
 }
 
 const (
@@ -53,16 +55,17 @@ const (
 
 // Metadata 是录音元数据（index.json entry.metadata）。
 type Metadata struct {
-	Name            string   `json:"name"`
-	DurationSec     float64  `json:"duration_sec"`
-	DurationDisplay string   `json:"duration_display"`
-	FileSizeDisplay string   `json:"file_size_display,omitempty"`
-	CreatedAt       string   `json:"created_at"`
-	Status          string   `json:"transfer_status,omitempty"`
-	Location        any      `json:"location,omitempty"`
-	OssAudioURL     string   `json:"oss_audio_url"`
-	OssSrtURL       string   `json:"oss_srt_url,omitempty"`
-	Markers         []Marker `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
+	Extra           map[string]json.RawMessage `json:"-"`
+	Name            string                     `json:"name"`
+	DurationSec     float64                    `json:"duration_sec"`
+	DurationDisplay string                     `json:"duration_display"`
+	FileSizeDisplay string                     `json:"file_size_display,omitempty"`
+	CreatedAt       string                     `json:"created_at"`
+	Status          string                     `json:"transfer_status,omitempty"`
+	Location        any                        `json:"location,omitempty"`
+	OssAudioURL     string                     `json:"oss_audio_url"`
+	OssSrtURL       string                     `json:"oss_srt_url,omitempty"`
+	Markers         []Marker                   `json:"markers,omitzero"` // omitzero：保留 [] 与缺省的区别（迁移包按此区分）
 	// RecordingType 只在请求显式携带时写入。nil 表示未提供（历史数据或
 	// update 省略），读取时按 normal 输出；空串及其他值在写入入口拒绝。
 	RecordingType *string `json:"recording_type,omitempty"`
@@ -132,23 +135,28 @@ type ExportAudioIdentity struct {
 
 // Entry 是一条录音索引项。
 type Entry struct {
+	LegacyCaptureDeleted    bool   `json:"legacyCaptureDeleted,omitempty"`
+	LegacyCapture           bool   `json:"legacyCapture,omitempty"`
+	LegacyCaptureTranscript string `json:"legacyCaptureTranscript,omitempty"`
 	// ContextRevision is populated only for the committed-content callback.
-	ContextRevision    string   `json:"-"`
-	OssTaskID          string   `json:"ossTaskId,omitempty"`
-	ID                 string   `json:"id"`
-	SourceType         string   `json:"sourceType,omitempty"`
-	ClientLabel        string   `json:"clientLabel,omitempty"`
-	Metadata           Metadata `json:"metadata"`
-	Status             string   `json:"status"`
-	AudioStatus        string   `json:"audioStatus,omitempty"`
-	AudioSourceURL     string   `json:"audioSourceUrl,omitempty"`
-	AudioFile          string   `json:"audioFile,omitempty"`
-	SrtFile            string   `json:"srtFile,omitempty"`
-	TranscriptDataFile string   `json:"transcriptDataFile,omitempty"`
-	TranscriptFile     string   `json:"transcriptFile,omitempty"`
-	SummaryFile        string   `json:"summaryFile,omitempty"`
-	Title              string   `json:"title,omitempty"`
-	LastError          string   `json:"lastError,omitempty"`
+	ContextRevision    string                     `json:"-"`
+	ResultExtra        map[string]json.RawMessage `json:"resultExtra,omitempty"`
+	SummaryData        *ResultSummary             `json:"summaryData,omitempty"`
+	OssTaskID          string                     `json:"ossTaskId,omitempty"`
+	ID                 string                     `json:"id"`
+	SourceType         string                     `json:"sourceType,omitempty"`
+	ClientLabel        string                     `json:"clientLabel,omitempty"`
+	Metadata           Metadata                   `json:"metadata"`
+	Status             string                     `json:"status"`
+	AudioStatus        string                     `json:"audioStatus,omitempty"`
+	AudioSourceURL     string                     `json:"audioSourceUrl,omitempty"`
+	AudioFile          string                     `json:"audioFile,omitempty"`
+	SrtFile            string                     `json:"srtFile,omitempty"`
+	TranscriptDataFile string                     `json:"transcriptDataFile,omitempty"`
+	TranscriptFile     string                     `json:"transcriptFile,omitempty"`
+	SummaryFile        string                     `json:"summaryFile,omitempty"`
+	Title              string                     `json:"title,omitempty"`
+	LastError          string                     `json:"lastError,omitempty"`
 	// ErrorCode 是可选的可分类错误；成功或新尝试开始时清除，旧客户端可忽略。
 	ErrorCode  string `json:"errorCode,omitempty"`
 	IngestedAt string `json:"ingestedAt"`
@@ -233,13 +241,13 @@ func (s *Storage) Init() error {
 		if err := fsutil.EnsureDir(dir, fsutil.DirMode); err != nil {
 			// 录音目录不可用时只降级录音域，不阻断其他 daemon 域启动。
 			s.loadErr = err
-			s.logger.Error("录音目录初始化失败，录音域降级: " + err.Error())
+			s.logger.Error(diagnostics.SafeLogText("录音目录初始化失败，录音域降级: " + err.Error()))
 			return nil
 		}
 	}
 	if err := s.loadIndex(); err != nil {
 		s.loadErr = err
-		s.logger.Error("录音索引读取失败，录音域降级: " + err.Error())
+		s.logger.Error(diagnostics.SafeLogText("录音索引读取失败，录音域降级: " + err.Error()))
 		return nil
 	}
 	s.logger.Info("录音存储已初始化: " + s.dir)
@@ -311,6 +319,9 @@ func (s *Storage) normalizeIndexLocked(wrapper *indexWrapper) bool {
 	now := nowISO()
 	for i := range wrapper.Recordings {
 		entry := &wrapper.Recordings[i]
+		if entry.LegacyCaptureDeleted {
+			continue
+		}
 		// 条目来源由所在索引决定：Capture 索引归一到 capture_app；移动端索引
 		// 出现 capture_app 或未知值时清空，由 RecordingSource 回落 mobile_app，
 		// 避免列表/状态/事件路由/导出载荷读到与存储位置不符的来源。
@@ -416,7 +427,7 @@ func (s *Storage) refreshIndexLocked() {
 	}
 	wrapper, exists, err := readRecordingIndex(s.indexPath)
 	if err != nil {
-		s.logger.Error("录音索引被外部修改后无法解析，保留内存索引: " + err.Error())
+		s.logger.Error(diagnostics.SafeLogText("录音索引被外部修改后无法解析，保留内存索引: " + err.Error()))
 		return
 	}
 	if !exists {
@@ -429,7 +440,7 @@ func (s *Storage) refreshIndexLocked() {
 	s.logger.Info("检测到录音索引被外部修改，已按磁盘内容重新加载: " + s.indexPath)
 	if needsRewrite {
 		if err := s.saveIndexLocked(); err != nil {
-			s.logger.Error("重新加载后规范化录音索引失败: " + err.Error())
+			s.logger.Error(diagnostics.SafeLogText("重新加载后规范化录音索引失败: " + err.Error()))
 		}
 	}
 }
@@ -512,6 +523,8 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 	now := nowISO()
 	if idx := s.findIndexLocked(recordingID); idx >= 0 {
 		entry := &s.index.Recordings[idx]
+		entry.LegacyCaptureDeleted = false
+		metadata.Extra = mergeMetadataExtra(entry.Metadata.Extra, metadata.Extra)
 		if metadata.RecordingType == nil {
 			metadata.RecordingType = entry.Metadata.RecordingType
 		}
@@ -523,13 +536,14 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 			if err := s.saveIndexLocked(); err != nil {
 				return Entry{}, err
 			}
-			s.logger.Info("录音元数据已更新: " + recordingID + "（同音频，保留状态 " + entry.Status + "）")
+			s.logger.Info(diagnostics.SafeLogText("录音元数据已更新: " + recordingID + "（同音频，保留状态 " + entry.Status + "）"))
 			return *entry, nil
 		}
 
 		s.removeRelativeLocked(entry.TranscriptDataFile)
 		s.removeRelativeLocked(entry.TranscriptFile)
 		s.removeRelativeLocked(entry.SummaryFile)
+		s.removeRelativeLocked(entry.LegacyCaptureTranscript)
 		entry.Metadata = metadata
 		entry.ClientLabel = clientLabel
 		entry.Status = StatusSynced
@@ -539,13 +553,16 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
+		entry.SummaryData = nil
+		entry.LegacyCaptureTranscript = ""
+		entry.ResultExtra = nil
 		entry.Title = ""
 		entry.LastError = ""
 		entry.UpdatedAt = now
 		if err := s.saveIndexLocked(); err != nil {
 			return Entry{}, err
 		}
-		s.logger.Info("录音元数据已更新: " + recordingID)
+		s.logger.Info(diagnostics.SafeLogText("录音元数据已更新: " + recordingID))
 		return *entry, nil
 	}
 
@@ -571,7 +588,7 @@ func (s *Storage) Ingest(recordingID string, metadata Metadata, clientLabel stri
 		s.index.Recordings = s.index.Recordings[:len(s.index.Recordings)-1]
 		return Entry{}, err
 	}
-	s.logger.Info("录音元数据已入库: " + recordingID)
+	s.logger.Info(diagnostics.SafeLogText("录音元数据已入库: " + recordingID))
 	return entry, nil
 }
 
@@ -603,6 +620,9 @@ func (s *Storage) LookupByID(id string) (Entry, bool, error) {
 	}
 	idx := s.findIndexLocked(id)
 	if idx < 0 {
+		return Entry{}, false, nil
+	}
+	if s.index.Recordings[idx].LegacyCaptureDeleted {
 		return Entry{}, false, nil
 	}
 	return s.index.Recordings[idx], true, nil
@@ -690,7 +710,12 @@ func (s *Storage) ListAll() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshIndexLocked()
-	out := append([]Entry(nil), s.index.Recordings...)
+	out := make([]Entry, 0, len(s.index.Recordings))
+	for _, entry := range s.index.Recordings {
+		if !entry.LegacyCaptureDeleted {
+			out = append(out, entry)
+		}
+	}
 	SortByCreatedDesc(out)
 	return out
 }
@@ -720,6 +745,7 @@ func (s *Storage) Rename(recordingID, name string) (Entry, bool, error) {
 	}
 	entry := s.index.Recordings[idx]
 	entry.Metadata.Name = name
+	entry.Title = name
 	entry.UpdatedAt = nowISO()
 	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, false, err
@@ -739,7 +765,7 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 		return false, nil
 	}
 	entry := &s.index.Recordings[idx]
-	for _, rel := range []string{entry.AudioFile, entry.SrtFile, entry.TranscriptDataFile, entry.TranscriptFile, entry.SummaryFile} {
+	for _, rel := range []string{entry.AudioFile, entry.SrtFile, entry.TranscriptDataFile, entry.TranscriptFile, entry.SummaryFile, entry.LegacyCaptureTranscript} {
 		s.removeRelativeLocked(rel)
 	}
 	if localOnly {
@@ -755,7 +781,13 @@ func (s *Storage) Delete(recordingID string, localOnly bool) (bool, error) {
 		entry.TranscriptDataFile = ""
 		entry.TranscriptFile = ""
 		entry.SummaryFile = ""
+		entry.LegacyCaptureTranscript = ""
+		entry.SummaryData = nil
+		entry.ResultExtra = nil
 		entry.UpdatedAt = nowISO()
+	} else if entry.LegacyCapture {
+		// Retain only a shadow ID so immutable daily history cannot resurrect it.
+		*entry = Entry{ID: recordingID, SourceType: SourceCaptureApp, LegacyCapture: true, LegacyCaptureDeleted: true}
 	} else {
 		s.index.Recordings = append(s.index.Recordings[:idx], s.index.Recordings[idx+1:]...)
 	}
@@ -785,7 +817,7 @@ func (s *Storage) UpdateStatus(recordingID, newStatus string) (Entry, error) {
 	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, err
 	}
-	s.logger.Info("录音状态更新: " + recordingID + " -> " + newStatus)
+	s.logger.Info(diagnostics.SafeLogText("录音状态更新: " + recordingID + " -> " + newStatus))
 	return entry, nil
 }
 
@@ -812,7 +844,7 @@ func (s *Storage) MarkResultWritten(recordingID string) (Entry, error) {
 	if err := s.replaceEntryLocked(idx, entry); err != nil {
 		return Entry{}, err
 	}
-	s.logger.Info("录音结果已写入: " + recordingID)
+	s.logger.Info(diagnostics.SafeLogText("录音结果已写入: " + recordingID))
 	return entry, nil
 }
 
@@ -996,7 +1028,7 @@ func (s *Storage) CommitResultAudioDownloaded(recordingID, ossURL, stagedPath, f
 		// 否则查询仍会看到 downloading。
 		s.index.Recordings[idx] = entry
 		if saveErr := s.saveIndexLocked(); saveErr != nil {
-			s.logger.Error("录音音频失败状态写入失败: " + saveErr.Error())
+			s.logger.Error(diagnostics.SafeLogText("录音音频失败状态写入失败: " + saveErr.Error()))
 		}
 		return false, err
 	}
@@ -1047,6 +1079,9 @@ func (s *Storage) ImportEntry(recordingID string, merge func(current *Entry) (*E
 	next, err := merge(current)
 	if err != nil || next == nil {
 		return err
+	}
+	if current != nil {
+		next.Metadata.Extra = mergeMetadataExtra(current.Metadata.Extra, next.Metadata.Extra)
 	}
 	if current != nil && next.Metadata.RecordingType == nil {
 		next.Metadata.RecordingType = current.Metadata.RecordingType

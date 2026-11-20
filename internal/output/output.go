@@ -6,6 +6,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -95,9 +96,7 @@ func RenderResult(w io.Writer, data any, format Format) {
 func RenderError(w io.Writer, err error, format Format) {
 	var payloadErr map[string]any
 	var ye *errs.Error
-	if e, ok := err.(*errs.Error); ok {
-		ye = e
-	}
+	errors.As(err, &ye)
 	if ye != nil {
 		payloadErr = ye.Payload()
 	} else {

@@ -249,6 +249,9 @@ func queryRecordings(queryCtx context.Context, ctx *clictx.Context, status, clie
 	items := make([]recordingQueryItem, 0)
 	appendEntries := func(entries []recording.Entry, sourceType string) {
 		for _, entry := range entries {
+			if entry.LegacyCaptureDeleted {
+				continue
+			}
 			if status != "" && entry.Status != status ||
 				client != "" && client != "all" && labelOrLegacy2(entry.ClientLabel) != client {
 				continue

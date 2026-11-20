@@ -10,36 +10,41 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/YoooClaw/cli/internal/diagnostics"
 	"github.com/YoooClaw/cli/internal/fsutil"
 )
 
 // ResultTranscriptSource 是 result.write 入参里转写的上游来源。
 type ResultTranscriptSource struct {
-	Provider  string `json:"provider,omitempty"`
-	TaskID    string `json:"taskId,omitempty"`
-	RequestID string `json:"requestId,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Extra     map[string]json.RawMessage `json:"-"`
+	Provider  string                     `json:"provider,omitempty"`
+	TaskID    string                     `json:"taskId,omitempty"`
+	RequestID string                     `json:"requestId,omitempty"`
+	Status    string                     `json:"status,omitempty"`
 }
 
 // ResultTranscriptSegment 是 result.write 入参里的转写分段。
 type ResultTranscriptSegment struct {
-	Text        string   `json:"text"`
-	StartMS     *float64 `json:"startMs,omitempty"`
-	EndMS       *float64 `json:"endMs,omitempty"`
-	SpeakerID   *int     `json:"speakerId,omitempty"`
-	SpeakerName string   `json:"speakerName,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Text        string                     `json:"text"`
+	StartMS     *float64                   `json:"startMs,omitempty"`
+	EndMS       *float64                   `json:"endMs,omitempty"`
+	SpeakerID   *int                       `json:"speakerId,omitempty"`
+	SpeakerName string                     `json:"speakerName,omitempty"`
 }
 
 // ResultTranscript 是 result.write 写入的转写结果。
 type ResultTranscript struct {
-	GeneratedAt string                    `json:"generatedAt,omitempty"`
-	Source      *ResultTranscriptSource   `json:"source,omitempty"`
-	Title       string                    `json:"title,omitempty"`
-	Category    string                    `json:"category,omitempty"`
-	Brief       string                    `json:"brief,omitempty"`
-	Text        string                    `json:"text,omitempty"`
-	Segments    []ResultTranscriptSegment `json:"segments,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	GeneratedAt string                     `json:"generatedAt,omitempty"`
+	Source      *ResultTranscriptSource    `json:"source,omitempty"`
+	Title       string                     `json:"title,omitempty"`
+	Category    string                     `json:"category,omitempty"`
+	Brief       string                     `json:"brief,omitempty"`
+	Text        string                     `json:"text,omitempty"`
+	Segments    []ResultTranscriptSegment  `json:"segments,omitempty"`
 	// Markdown, when supplied, is authoritative to preserve App formatting.
 	// Callers changing segments/speaker names must regenerate it or omit it.
 	Markdown string `json:"markdown,omitempty"`
@@ -47,24 +52,26 @@ type ResultTranscript struct {
 
 // ResultSummary 是 result.write 写入的总结结果。
 type ResultSummary struct {
-	GeneratedAt string          `json:"generatedAt,omitempty"`
-	Format      string          `json:"format,omitempty"`
-	Markdown    string          `json:"markdown,omitempty"`
-	Structured  json.RawMessage `json:"structured,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	GeneratedAt string                     `json:"generatedAt,omitempty"`
+	Format      string                     `json:"format,omitempty"`
+	Markdown    string                     `json:"markdown,omitempty"`
+	Structured  json.RawMessage            `json:"structured,omitempty"`
 }
 
 // ResultWriteParams 是 recordings.result.write 的入参。
 type ResultWriteParams struct {
-	OssTaskID      *string           `json:"ossTaskId,omitempty"`
-	RecordingID    string            `json:"recordingId"`
-	SourceType     string            `json:"sourceType,omitempty"`
-	OssURL         string            `json:"ossUrl,omitempty"`
-	DurationMillis *float64          `json:"durationMillis,omitempty"`
-	Recording      *Metadata         `json:"recording,omitempty"`
-	CreatedAt      string            `json:"createdAt,omitempty"`
-	CreatedAtSnake string            `json:"created_at,omitempty"`
-	Transcript     *ResultTranscript `json:"transcript,omitempty"`
-	Summary        *ResultSummary    `json:"summary,omitempty"`
+	Extra          map[string]json.RawMessage `json:"-"`
+	OssTaskID      *string                    `json:"ossTaskId,omitempty"`
+	RecordingID    string                     `json:"recordingId"`
+	SourceType     string                     `json:"sourceType,omitempty"`
+	OssURL         string                     `json:"ossUrl,omitempty"`
+	DurationMillis *float64                   `json:"durationMillis,omitempty"`
+	Recording      *Metadata                  `json:"recording,omitempty"`
+	CreatedAt      string                     `json:"createdAt,omitempty"`
+	CreatedAtSnake string                     `json:"created_at,omitempty"`
+	Transcript     *ResultTranscript          `json:"transcript,omitempty"`
+	Summary        *ResultSummary             `json:"summary,omitempty"`
 }
 
 // ResultWriteStored 记录 result.write 落盘的相对路径。
@@ -85,6 +92,38 @@ type ResultWriteResult struct {
 	Stored         ResultWriteStored `json:"stored"`
 }
 
+// ValidateResultWrite checks request-only constraints without reading or writing
+// storage. Gateways call it before registering historical entries; the writer
+// repeats it for non-gateway callers.
+func (s *Storage) ValidateResultWrite(params ResultWriteParams) error {
+	recordingID := strings.TrimSpace(params.RecordingID)
+	if recordingID == "" {
+		return errors.New("recordingId is required")
+	}
+	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
+	if !fsutil.IsSafeName(recordingID) || strings.ContainsFunc(params.RecordingID, unicode.IsControl) {
+		return errors.New("recordingId is invalid")
+	}
+	oss := resultOssURL(params)
+	hasResult := params.Transcript != nil || params.Summary != nil
+	if !hasResult && (!s.capture || oss == "") {
+		return errors.New("transcript or summary is required")
+	}
+
+	if params.OssTaskID != nil {
+		taskID := strings.TrimSpace(*params.OssTaskID)
+		if taskID == "" || len(taskID) > 256 || oss == "" {
+			return errors.New("ossTaskId requires a nonempty task ID (max 256 bytes) and ossUrl")
+		}
+	}
+	if params.Recording != nil {
+		if err := ValidateRecordingType(params.Recording.RecordingType); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // HandleRecordingResultWrite 处理 recordings.result.write：写入 App / 云端生成的
 // 转录与总结，覆盖同一录音的 transcript-data/transcripts/summaries 文件。
 // 找不到录音时按占位元数据 upsert 新建；
@@ -93,31 +132,15 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 	finish := observeContent(storage, params.RecordingID, opts.OnContentCommit)
 	success := false
 	defer func() { finish(success) }()
+	if err := storage.ValidateResultWrite(params); err != nil {
+		return ResultWriteResult{}, err
+	}
 	recordingID := strings.TrimSpace(params.RecordingID)
-	if recordingID == "" {
-		return ResultWriteResult{}, errors.New("recordingId is required")
-	}
-	// 兜底（daemon 入口已校验）：recordingID 会拼进落盘文件名。
-	if !fsutil.IsSafeName(recordingID) {
-		return ResultWriteResult{}, errors.New("recordingId is invalid")
-	}
 	oss := resultOssURL(params)
 	hasResult := params.Transcript != nil || params.Summary != nil
-	if !hasResult && (!storage.capture || oss == "") {
-		return ResultWriteResult{}, errors.New("transcript or summary is required")
-	}
-
 	taskID := ""
 	if params.OssTaskID != nil {
 		taskID = strings.TrimSpace(*params.OssTaskID)
-		if taskID == "" || len(taskID) > 256 || oss == "" {
-			return ResultWriteResult{}, errors.New("ossTaskId requires a nonempty task ID (max 256 bytes) and ossUrl")
-		}
-	}
-	if params.Recording != nil {
-		if err := ValidateRecordingType(params.Recording.RecordingType); err != nil {
-			return ResultWriteResult{}, err
-		}
 	}
 	entry, found := storage.FindByID(recordingID)
 	clientLabel := strings.TrimSpace(opts.ClientLabel)
@@ -131,10 +154,10 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 		if !ok {
 			return ResultWriteResult{}, fmt.Errorf("Recording not found: %s", recordingID)
 		}
-		logger.Info("[recording-result] 录音不存在，已按结果写入新建: " + recordingID +
-			", client=" + entry.ClientLabel)
-		logger.Info("[recording-result] 录音时间已入库: " + recordingID +
-			", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+		logger.Info(diagnostics.SafeLogText("[recording-result] 录音不存在，已按结果写入新建: " + recordingID +
+			", client=" + entry.ClientLabel))
+		logger.Info(diagnostics.SafeLogText("[recording-result] 录音时间已入库: " + recordingID +
+			", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource))
 	} else {
 		// 已有录音：来源 label 以本次推送为准，顺带把早期写成 default 的老数据纠回来。
 		if clientLabel != "" && entry.ClientLabel != clientLabel {
@@ -144,7 +167,7 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 				return ResultWriteResult{}, err
 			}
 			entry, _ = storage.FindByID(recordingID)
-			logger.Info("[recording-result] 录音来源已更新: " + recordingID + ", client=" + clientLabel)
+			logger.Info(diagnostics.SafeLogText("[recording-result] 录音来源已更新: " + recordingID + ", client=" + clientLabel))
 		}
 		if merged, timeSource, changed := mergeResultMetadata(entry.Metadata, params); changed {
 			if err := storage.updateEntry(recordingID, func(current *Entry) {
@@ -154,8 +177,8 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 			}
 			entry, _ = storage.FindByID(recordingID)
 			if timeSource != "" {
-				logger.Info("[recording-result] 录音时间已更新: " + recordingID +
-					", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource)
+				logger.Info(diagnostics.SafeLogText("[recording-result] 录音时间已更新: " + recordingID +
+					", created_at=" + entry.Metadata.CreatedAt + ", source=" + timeSource))
 			}
 		}
 	}
@@ -179,6 +202,17 @@ func HandleRecordingResultWrite(params ResultWriteParams, storage *Storage, logg
 			return ResultWriteResult{}, err
 		}
 		summaryText = st
+	}
+
+	if len(params.Extra) > 0 || params.Summary != nil {
+		if err := storage.updateEntry(recordingID, func(current *Entry) {
+			current.ResultExtra = mergeMetadataExtra(current.ResultExtra, params.Extra)
+			if params.Summary != nil {
+				current.SummaryData = mergeSummaryData(current.SummaryData, params.Summary)
+			}
+		}); err != nil {
+			return ResultWriteResult{}, err
+		}
 	}
 
 	updated := entry
@@ -284,6 +318,10 @@ func mergeResultMetadata(current Metadata, params ResultWriteParams) (Metadata, 
 	merged := current
 	changed := false
 	if incoming := params.Recording; incoming != nil {
+		if len(incoming.Extra) > 0 {
+			merged.Extra = mergeMetadataExtra(current.Extra, incoming.Extra)
+			changed = !metadataExtrasEqual(current.Extra, merged.Extra)
+		}
 		if value := strings.TrimSpace(incoming.Name); value != "" && value != merged.Name {
 			merged.Name, changed = value, true
 		}
@@ -355,12 +393,14 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 		if p := strings.TrimSpace(t.Source.Provider); p != "" {
 			source.Provider = p
 		}
+		source.Extra = mergeMetadataExtra(nil, t.Source.Extra)
 		source.TaskID = strings.TrimSpace(t.Source.TaskID)
 		source.RequestID = strings.TrimSpace(t.Source.RequestID)
 		source.Status = strings.TrimSpace(t.Source.Status)
 	}
 
-	doc := BuildTranscriptDocument(recordingID, source, title, strings.TrimSpace(t.Category), normalizeMultiline(t.Brief), text, segments, t)
+	doc := BuildTranscriptDocument(recordingID, source, title, strings.TrimSpace(t.Category), normalizeMultiline(t.Brief), text, segments, nil)
+	doc.ResultExtra = mergeMetadataExtra(nil, t.Extra)
 	if g := strings.TrimSpace(t.GeneratedAt); g != "" {
 		doc.GeneratedAt = g
 	}
@@ -391,7 +431,7 @@ func writeResultTranscript(recordingID string, meta Metadata, t ResultTranscript
 	if err := storage.SetTitle(recordingID, title); err != nil {
 		return "", nil, err
 	}
-	logger.Info("[recording-result] 转录文本已写入: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 转录文本已写入: " + recordingID))
 
 	return title, ExtractSourceTextListFromDocument(doc), nil
 }
@@ -414,7 +454,7 @@ func writeResultSummary(recordingID string, sm ResultSummary, storage *Storage, 
 	if err := storage.SetSummaryFile(recordingID, name); err != nil {
 		return "", err
 	}
-	logger.Info("[recording-result] 总结已写入: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 总结已写入: " + recordingID))
 	return strings.TrimSpace(markdown), nil
 }
 
@@ -424,17 +464,17 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 
 	current, err := storage.SetResultAudioDownloading(recordingID, ossURL)
 	if err != nil {
-		logger.Error("[recording-result] 音频下载状态写入失败: " + err.Error() + ": " + recordingID)
+		logger.Error(diagnostics.SafeLogText("[recording-result] 音频下载状态写入失败: " + err.Error() + ": " + recordingID))
 		return
 	}
 	if !current {
-		logger.Info("[recording-result] 音频已存在或 OSS URL 已更新，跳过重复任务: " + recordingID)
+		logger.Info(diagnostics.SafeLogText("[recording-result] 音频已存在或 OSS URL 已更新，跳过重复任务: " + recordingID))
 		return
 	}
 	dest := storage.AudioFilePath(recordingID, ossURL)
 	staged := dest + ".incoming"
 	defer os.Remove(staged)
-	logger.Info("[recording-result] 开始下载音频: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 开始下载音频: " + recordingID))
 	downloadOpts := opts.DownloadOptions
 	entry, _ := storage.FindByID(recordingID)
 	isCurrent := func() bool {
@@ -466,9 +506,9 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 		if initialErr == nil && (initial.ExpiresAt.IsZero() || initial.ExpiresAt.After(time.Now().Add(downloadLinkRefreshWindow))) {
 			downloadOpts.InitialLink = &initial
 		} else if initialErr == nil {
-			logger.Warn("[recording-result] 初始签名链接有效期不足，使用原始链接: " + recordingID)
+			logger.Warn(diagnostics.SafeLogText("[recording-result] 初始签名链接有效期不足，使用原始链接: " + recordingID))
 		} else {
-			logger.Warn("[recording-result] 初始签名链接刷新失败，使用原始链接: " + safeDownloadError(initialErr) + ": " + recordingID)
+			logger.Warn(diagnostics.SafeLogText("[recording-result] 初始签名链接刷新失败，使用原始链接: " + safeDownloadError(initialErr) + ": " + recordingID))
 		}
 	}
 	result := DownloadFile(ossURL, staged, logger, downloadOpts)
@@ -477,14 +517,14 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 	}
 	if !result.OK {
 		message := "音频下载失败: " + result.Error
-		logger.Error("[recording-result] " + message + ": " + recordingID)
+		logger.Error(diagnostics.SafeLogText("[recording-result] " + message + ": " + recordingID))
 		applied, setErr := storage.SetResultAudioFailedWithCode(recordingID, ossURL, message, result.ErrorCode)
 		if setErr != nil {
-			logger.Error("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID)
+			logger.Error(diagnostics.SafeLogText("[recording-result] 音频失败状态写入失败: " + setErr.Error() + ": " + recordingID))
 			return
 		}
 		if !applied {
-			logger.Info("[recording-result] OSS URL 已更新，忽略旧音频失败结果: " + recordingID)
+			logger.Info(diagnostics.SafeLogText("[recording-result] OSS URL 已更新，忽略旧音频失败结果: " + recordingID))
 			return
 		}
 		emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
@@ -494,14 +534,14 @@ func downloadResultAudio(recordingID, ossURL string, storage *Storage, logger Lo
 		recordingID, ossURL, staged, AudioFilename(recordingID, ossURL),
 	)
 	if setErr != nil {
-		logger.Error("[recording-result] 音频成功状态写入失败: " + setErr.Error() + ": " + recordingID)
+		logger.Error(diagnostics.SafeLogText("[recording-result] 音频成功状态写入失败: " + setErr.Error() + ": " + recordingID))
 		return
 	}
 	if !applied {
-		logger.Info("[recording-result] OSS URL 已更新，忽略旧音频成功结果: " + recordingID)
+		logger.Info(diagnostics.SafeLogText("[recording-result] OSS URL 已更新，忽略旧音频成功结果: " + recordingID))
 		return
 	}
-	logger.Info("[recording-result] 音频已更新: " + recordingID)
+	logger.Info(diagnostics.SafeLogText("[recording-result] 音频已更新: " + recordingID))
 	emitResultDownloadStatus(recordingID, storage, logger, opts.NotifyStatus)
 }
 
@@ -522,13 +562,13 @@ func RecoverMissingResultAudio(storage *Storage, logger Logger, opts SyncOptions
 			}
 			retry, err := storage.prepareResultAudioRecovery(entry)
 			if err != nil {
-				logger.Error("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error())
+				logger.Error(diagnostics.SafeLogText("[recording-recovery] 音频补偿状态写入失败: " + entry.ID + ", " + err.Error()))
 				continue
 			}
 			if !retry {
 				continue
 			}
-			logger.Info("[recording-recovery] 补偿缺失音频: " + entry.ID)
+			logger.Info(diagnostics.SafeLogText("[recording-recovery] 补偿缺失音频: " + entry.ID))
 			downloadResultAudio(entry.ID, ossURL, storage, logger, opts)
 		}
 	}()
@@ -574,7 +614,7 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 	}
 	defer func() {
 		if rec := recover(); rec != nil {
-			logger.Error(fmt.Sprintf("[recording-result] 状态事件发送失败: %s, %v", recordingID, rec))
+			logger.Error(diagnostics.SafeLogText(fmt.Sprintf("[recording-result] 状态事件发送失败: %s, %v", recordingID, rec)))
 		}
 	}()
 	notify(event)
@@ -583,12 +623,9 @@ func emitResultStatus(recordingID string, storage *Storage, logger Logger, notif
 func normalizeResultSegments(segments []ResultTranscriptSegment) []TranscriptSegment {
 	out := make([]TranscriptSegment, 0, len(segments))
 	for _, seg := range segments {
-		text := strings.TrimSpace(seg.Text)
-		if text == "" {
-			continue
-		}
 		out = append(out, TranscriptSegment{
-			Text:        text,
+			Extra:       mergeMetadataExtra(nil, seg.Extra),
+			Text:        strings.TrimSpace(seg.Text),
 			StartMS:     seg.StartMS,
 			EndMS:       seg.EndMS,
 			SpeakerID:   seg.SpeakerID,

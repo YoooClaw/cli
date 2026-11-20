@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YoooClaw/cli/internal/capturerecording"
 	"github.com/YoooClaw/cli/internal/clientlabel"
 	"github.com/YoooClaw/cli/internal/recording"
 	"github.com/YoooClaw/cli/internal/reminders"
@@ -115,21 +116,34 @@ func (s *Service) summaryReminders(ctx context.Context, q summaryQuery, store *r
 	return nil
 }
 
-func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *recording.Storage, scope string, r *SummaryResult) *Error {
-	if store == nil {
-		return readFailed()
-	}
-	entries, err := store.ReadIndexSnapshot(ctx)
-	if errors.Is(err, recording.ErrSummaryIndexTooLarge) {
-		return tooLarge()
-	}
-	if err != nil {
+func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *recording.Storage, scope string, r *SummaryResult, sourceType string, voiceRoot string) *Error {
+	if store == nil && sourceType == recording.SourceMobileApp {
 		return readFailed()
 	}
 	var newest time.Time
 	latestID := ""
 	p := newPage()
+	// Older embedders may not have a Capture store configured.
+	var entries []recording.Entry
+	var err error
+	if store != nil {
+		entries, err = store.ReadIndexSnapshot(ctx)
+	}
+	if err == nil && sourceType == recording.SourceCaptureApp && voiceRoot != "" {
+		start, _ := time.ParseInLocation(time.DateOnly, q.date, q.zone)
+		end := start.AddDate(0, 0, 1)
+		entries, err = recording.MergeCaptureHistory(ctx, voiceRoot, entries, capturerecording.Query{From: &start, To: &end})
+	}
+	if errors.Is(err, recording.ErrSummaryIndexTooLarge) || errors.Is(err, capturerecording.ErrIndexTooLarge) {
+		return tooLarge()
+	}
+	if err != nil {
+		return readFailed()
+	}
 	for _, entry := range entries {
+		if entry.LegacyCaptureDeleted {
+			continue
+		}
 		if ctx.Err() != nil {
 			return readFailed()
 		}
@@ -145,13 +159,18 @@ func (s *Service) summaryRecordings(ctx context.Context, q summaryQuery, store *
 			continue
 		}
 		*r.Count++
-		if r.Latest == nil || at.After(newest) || at.Equal(newest) && entry.ID > latestID {
-			data := map[string]any{"recordingId": entry.ID, "name": entry.Metadata.Name, "created_at": entry.Metadata.CreatedAt,
+		identity := sourceType + ":" + entry.ID
+		if r.Latest == nil || at.After(newest) || at.Equal(newest) && identity > latestID {
+			data := map[string]any{"sourceType": sourceType, "recordingId": entry.ID, "name": entry.Metadata.Name, "created_at": entry.Metadata.CreatedAt,
 				"duration_sec": entry.Metadata.DurationSec, "duration_display": recording.FormatDurationDisplay(entry.Metadata.DurationSec),
 				"transfer_status": entry.Status, "audio_status": entry.AudioStatus,
-				"has_audio": entry.AudioFile != "", "has_transcript": entry.TranscriptFile != "", "has_srt": entry.SrtFile != ""}
-			it := item(digest(s.profile, "recordings", entry.ID), "", data)
-			r.Latest, newest, latestID = &it, at, entry.ID
+				"has_audio": entry.AudioFile != "", "has_transcript": entry.TranscriptFile != "" || entry.LegacyCaptureTranscript != "", "has_srt": entry.SrtFile != ""}
+			id := digest(s.profile, "recordings", entry.ID)
+			if sourceType == recording.SourceCaptureApp {
+				id = digest(s.profile, "recordings", sourceType, entry.ID)
+			}
+			it := item(id, "", data)
+			r.Latest, newest, latestID = &it, at, identity
 		}
 	}
 	r.Warnings = p.Warnings

@@ -28,3 +28,15 @@ func TestWriteEscapesLinesAndPreservesEvents(t *testing.T) {
 		t.Fatalf("invalid event output: %s", raw)
 	}
 }
+
+func TestSafeLogTextEscapesAndRedacts(t *testing.T) {
+	got := SafeLogText("failure\nforged\r\x1b[31m token=private-token Bearer private-bearer ock_private https://oss.test/a?Signature=private-signature")
+	for _, value := range []string{"\n", "\r", "\x1b", "private-token", "private-bearer", "ock_private", "private-signature"} {
+		if strings.Contains(got, value) {
+			t.Fatalf("leaked %q in %s", value, got)
+		}
+	}
+	if !strings.Contains(got, `\nforged\r\x1b`) {
+		t.Fatal(got)
+	}
+}

@@ -35,6 +35,8 @@ type Query struct {
 	From   *time.Time
 	To     *time.Time
 	Status string
+	// MaxIndexBytes bounds total selected index bytes; zero preserves the CLI list behavior.
+	MaxIndexBytes int64
 }
 
 // Item 是一条 Capture 会议录音索引及当前产物事实。status 仅原样透传，
@@ -85,14 +87,17 @@ func HistoryPath(voiceRoot string) string { return filepath.Join(voiceRoot, hist
 func RecordingsPath(voiceRoot string) string { return filepath.Join(voiceRoot, recordingsDirName) }
 
 // List 读取并查询 Capture 会议录音。索引目录尚未创建时，该来源按空集合处理。
+var ErrIndexTooLarge = errors.New("capture history index exceeds read budget")
+
 func List(ctx context.Context, voiceRoot string, query Query) ([]Item, error) {
 	files, err := listIndexFiles(ctx, voiceRoot, query)
 	if err != nil {
 		return nil, err
 	}
 	all := make([]sourceItem, 0)
+	remaining := query.MaxIndexBytes
 	for _, index := range files {
-		items, err := readIndexFile(ctx, index.path)
+		items, err := readIndexFileBudget(ctx, index.path, &remaining, query.MaxIndexBytes > 0)
 		if err != nil {
 			return nil, err
 		}
@@ -175,6 +180,10 @@ func listIndexFiles(ctx context.Context, voiceRoot string, query Query) ([]index
 }
 
 func readIndexFile(ctx context.Context, path string) ([]sourceItem, error) {
+	return readIndexFileBudget(ctx, path, nil, false)
+}
+
+func readIndexFileBudget(ctx context.Context, path string, remaining *int64, bounded bool) ([]sourceItem, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -189,6 +198,12 @@ func readIndexFile(ctx context.Context, path string) ([]sourceItem, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, storageError(path, "YoooClaw Capture 会议录音索引不是普通文件", nil)
+	}
+	if bounded {
+		if info.Size() > *remaining {
+			return nil, ErrIndexTooLarge
+		}
+		*remaining -= info.Size()
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, info.Size()))
 	if err != nil {

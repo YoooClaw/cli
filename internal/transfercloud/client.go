@@ -206,28 +206,7 @@ func httpFailure(req *http.Request, resp *http.Response, apiKey string) (message
 }
 
 func errorBodyExcerpt(raw []byte, apiKey string) string {
-	text := strings.ToValidUTF8(string(raw), "")
-	if apiKey != "" {
-		text = strings.ReplaceAll(text, apiKey, "[redacted]")
-	}
-	text = strings.Map(func(r rune) rune {
-		switch r {
-		case '\r', '\n', '\t':
-			return ' '
-		}
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, text)
-	text = strings.Join(strings.Fields(text), " ")
-	if text == "" {
-		return ""
-	}
-	if runes := []rune(text); len(runes) > maxHTTPErrorRunes {
-		text = string(runes[:maxHTTPErrorRunes]) + "…"
-	}
-	return text
+	return redactDiagnostic(string(raw), apiKey)
 }
 
 func validateOSSURL(raw string) (*url.URL, error) {

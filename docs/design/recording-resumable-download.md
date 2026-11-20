@@ -171,3 +171,27 @@ transfercloud ──┘
 - 所选来源不可用且没有找到原任务时返回 `RECORDING_LIST_UNAVAILABLE`，避免误判旧任务不存在或重复创建。已有原任务在健康来源中命中则可以继续查询／重放。
 - 新任务来源解析及受理在 daemon 内串行，防止并发请求重复创建同一个请求键。后台上传仍异步执行。原有权限、上传流程和写入来源规则保持不变。
 - 同一录音已有其他 `requestId` 的导出处于 `preparing`/`uploading` 时，新的 start 返回 `EXPORT_BUSY`。忙碌任务属于当前客户端作用域时，错误体的 `details` 附带 `{exportId, state, sourceType, updatedAt, sizeBytes, retryable: true}`，App 可直接用该 `exportId` 调用 `recordings.export.status` 继续轮询，无需等待或更换 `requestId`。跨作用域的忙碌任务不返回 `details`：status 同样按作用域隔离，客户端本就不能续查，也不应借此推断其他客户端的状态。
+
+
+## 录音元数据扩展字段兼容
+
+App 的 `recording`（索引中的 `metadata`）支持未知扩展字段，不再因为增加字段而要求 CLI 同步更新白名单。扩展字段以原始 JSON 保存在原层级，支持对象、数组及 null；更新省略的扩展字段保留，显式携带的值覆盖旧值。列表/详情在不覆盖 CLI 管理字段的前提下返回扩展字段；单条导出与整包迁移均透传，并纳入导出版本判断。
+
+迁移仍重建签名音频/SRT URL、传输状态和本地文件大小展示，时长展示沿用现有规范化逻辑。记录层的文件路径、状态、ID 和已知字段类型仍按原契约处理；本次不放宽路径安全或文件完整性检查，不涉及通知、图片、网页的字段规则。旧版 CLI/插件未必接受新的扩展字段，接收端需要配套升级。
+
+转写分段同样保留未知扩展字段：`result.write`、ASR `sourceTextList`、`normalized.segments`、分段读取保留全部分段；单条导出对 mobile_app 和 capture_app 均过滤空文本分段，其余分段的扩展字段透传。`speakerName` 沿用去首尾空白及 Markdown 安全展示；未知扩展字段只保存在结构化 JSON 中，不自动拼入 Markdown。
+
+### 扩展字段的重置与迁移边界
+
+- 旧版及新版迁移包都在写入新录音前移除 `oss_audio_url`、`oss_srt_url`、`transfer_status`、`file_size_display`、`ossTaskId`；未知业务字段继续保留。先校验源包哈希，再清理落盘字段，不把源设备下载地址带入目标恢复逻辑。
+- 重新同步并重置转写结果、仅删除本地结果时，同步清空 `resultExtra` 和 `summaryData`。新摘要正文或结构化内容替换旧摘要元信息，避免新正文配旧结构；仅元信息更新仍支持合并。
+- 本次不调整录音索引现有 32 MiB 读取限制，也不新增单条扩展字段写入限制。大索引可写但不可读的风险仍存在，另行评估读取内存、持锁时间及容量方案后处理。
+- 迁移沿用原有已知字段校验，不新增 metadata 整体严格反序列化，避免历史类型异常在 schema v1 中扩大为整包拒绝。
+- `summary.format` 未明确限定为 Markdown 文件格式；保留 App 本次显式提供的值。替换摘要内容时不继承旧 format，未提供时导出默认 markdown。
+- 结构化分段读取保留空文本分段及其扩展字段、原有数组顺序；只有摘要元信息的纯音频导出仍提供旧客户端所需的空对象。
+
+### App 导出空文本分段兼容
+
+`recordings.export.start/status` 对 mobile_app 和 capture_app 的 `writePayload.transcript.segments` 过滤文本为空或仅含空白的分段（含 Kotlin／JS 的控制字符和 BOM 空白边界），避免 Android／鸿蒙的逐段非空校验拒绝整条录音。其余分段的顺序、声纹和扩展字段保留；全部分段为空时仍可使用非空全文，没有有效全文或分段时沿用既有内容判定；本次不改变 transcript-data 与独立 Markdown 的优先关系。
+
+过滤仅发生在 App 导出载荷组装阶段，不修改原始转写文件、结构化读取或迁移包；空分段携带的业务字段仍随迁移包保留。

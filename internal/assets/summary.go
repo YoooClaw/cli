@@ -13,9 +13,10 @@ import (
 	"github.com/YoooClaw/cli/internal/reminders"
 )
 
-const SummaryLatestLimit = 32 << 10
+// Eight latest items leave 32 KiB for envelopes, warnings and metadata.
+const SummaryLatestLimit = 28 << 10
 
-var summaryKinds = []string{"notifications", "locations", "calendars", "reminders", "web-pages", "recordings", "health-data"}
+var summaryKinds = []string{"notifications", "locations", "calendars", "reminders", "web-pages", "recordings", "capture-recordings", "health-data"}
 
 type SummaryResult struct {
 	Status   string    `json:"status"`
@@ -40,10 +41,12 @@ type SummaryResponse struct {
 // SummaryStores injects existing stores rather than introducing new writers or
 // HTTP clients. Recordings retain their legacy credential/source visibility.
 type SummaryStores struct {
-	Notifications  *notif.Storage
-	Reminders      *reminders.Storage
-	Recordings     *recording.Storage
-	RecordingScope string
+	Notifications     *notif.Storage
+	Reminders         *reminders.Storage
+	Recordings        *recording.Storage
+	CaptureRecordings *recording.Storage
+	CaptureVoiceRoot  string
+	RecordingScope    string
 }
 
 type summaryQuery struct {
@@ -84,7 +87,7 @@ func (s *Service) summaryQuery(values url.Values) (summaryQuery, *Error) {
 
 func emptySummary(kind string) SummaryResult {
 	count := int64(0)
-	by := map[string]string{"notifications": "timestamp", "locations": "timestamp", "calendars": "startAt", "reminders": "due", "web-pages": "capturedAt", "recordings": "created_at", "health-data": "date"}
+	by := map[string]string{"notifications": "timestamp", "locations": "timestamp", "calendars": "startAt", "reminders": "due", "web-pages": "capturedAt", "recordings": "created_at", "capture-recordings": "created_at", "health-data": "date"}
 	r := SummaryResult{Status: "ok", Count: &count, LatestBy: by[kind], Warnings: []Warning{}}
 	if kind == "health-data" {
 		r.Count = nil
@@ -121,9 +124,13 @@ func (s *Service) ReadSummary(ctx context.Context, values url.Values, stores Sum
 			case "web-pages":
 				e = s.summaryWeb(ctx, q, &r)
 			case "recordings":
-				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r)
+				e = s.summaryRecordings(ctx, q, stores.Recordings, stores.RecordingScope, &r, recording.SourceMobileApp, "")
+			case "capture-recordings":
+				e = s.summaryRecordings(ctx, q, stores.CaptureRecordings, stores.RecordingScope, &r, recording.SourceCaptureApp, stores.CaptureVoiceRoot)
 			case "health-data":
 				e = s.summaryHealth(ctx, &r)
+			default:
+				e = readFailed()
 			}
 			if e != nil {
 				r.Status, r.Error, r.Count, r.Latest = "error", e, nil, nil

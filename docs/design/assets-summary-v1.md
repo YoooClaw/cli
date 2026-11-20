@@ -1,6 +1,6 @@
 # 资产每日汇总接口 V1
 
-`GET /assets/summary` 一次返回七类资产的每日数量及最新展示记录。
+`GET /assets/summary` 一次返回八类资产的每日数量及最新展示记录。
 健康只返回最新一个有效业务日的快照，不统计或返回 `count`。
 接口复用 daemon 鉴权、只读 messageBridge 信封、完成日志和 Relay 转发。
 能力标记为 `assets.summary.read.v1`，由 `/health` 与 gateway health 同时返回。
@@ -16,12 +16,12 @@ GET /assets/summary?date=2026-10-30&types=notifications,health-data
 | 参数 | 规则 |
 | --- | --- |
 | `date` | 可选 `YYYY-MM-DD`，默认 CLI 主机本地今天 |
-| `types` | 可选逗号分隔类别；默认全部七类，仅查询选中类别 |
+| `types` | 可选逗号分隔类别；默认全部八类，仅查询选中类别 |
 
 类别为 `notifications`、`locations`、`calendars`、`reminders`、`web-pages`、
-`recordings`、`health-data`。空值、重复类别、重复参数、未知参数/类别及非法日期
+`recordings`（硬件录音）、`capture-recordings`（桌面录音）、`health-data`。空值、重复类别、重复参数、未知参数/类别及非法日期
 均返回 400 `INVALID_PARAMS`。不接受分页、profile、路径或任意时区参数。
-本次未新增图片、口述历史或桌面采集器的汇总能力。
+本次未新增图片或口述历史的汇总能力；录音汇总覆盖手机、桌面当前索引及旧 Capture 每日 JSONL。
 
 客户端沿用现有 `POST /api/message/messageBridge/send`：
 
@@ -45,7 +45,8 @@ GET /assets/summary?date=2026-10-30&types=notifications,health-data
 | 日程 | 目标日文件内的展示项，包括覆盖当天的跨天事件 | `startAt` 最大，同刻取后行 | 单个日期文件，不跨日填页 |
 | 提醒事项 | `due.date` 等于目标日，含已完成与未完成，无截止日期项排除 | 当天到期墙上时间最大；仅日期排在带时间之前；同值按 recordId 降序 | 当前镜像精简索引，不读取备注和详情 |
 | 网页剪藏 | 当前 URL 索引项的 `capturedAt` 换算主机本地日期后等于目标日 | `capturedAt` 最大，同刻按 urlHash 降序 | URL 索引，不读取网页正文/版本正文 |
-| 录音 | 当前可见索引中 `metadata.created_at` 换算本地日期后等于目标日 | `created_at` 最大，同刻按录音 ID 降序 | 持写锁读取已提交元数据，不读取音频或转写 |
+| 硬件录音 `recordings` | `mobile_app` 存储中 `metadata.created_at` 换算本地日期后等于目标日 | `created_at` 最大，同刻按录音 ID 降序 | 读取硬件/App 同步录音索引 |
+| 桌面录音 `capture-recordings` | Capture 当前索引及旧历史中录音时间属于目标日 | `created_at` 最大，同刻按录音 ID 降序 | 读取当前索引及旧 Capture 每日 JSONL，不读取音频或转写正文 |
 | 健康 | 不统计数量；不受请求 `date` 限制 | 最新业务日期的有效 v3 快照 | 日期倒序查找，返回日指标和睡眠摘要，不带阶段详情 |
 
 请求的默认“今天”来自主机时区；原始存储的日期归属不变：通知按通知时间、
@@ -100,7 +101,7 @@ clientLabel 可见性（当前来源与共享历史），不会借新接口扩�
 
 每个类别独立返回 `status`、`latestBy`、`latest`、`warnings`，成功计数类型还有 `count`。
 `latest` 沿用资产 Item 信封和展示字段投影，网页只返回 title/url；
-录音只返回 recordingId/name/created_at/时长/状态/产物可用布尔值，不返回本机文件路径。
+录音只返回 sourceType/recordingId/name/created_at/时长/状态/产物可用布尔值，不返回本机文件路径。
 通知/位置/日程的汇总 recordId 是摘要标识，不保证与逐条列表中的行 ID 相同；
 提醒沿用原详情 recordId，健康沿用原业务日期 ID，均不产生分页 cursor。
 
@@ -119,7 +120,7 @@ clientLabel 可见性（当前来源与共享历史），不会借新接口扩�
   预算不足不会把已扫描的部分计数当完整数量，也不会把尚未查完的健康当作无数据。
 - 位置/日程 JSONL 坏行跳过并返回累计警告；通知索引沿用有效记录统计规则，
   不额外返回历史坏行数量。网页和录音的无效时间不能归入指定日期，跳过并返回警告。
-- 每类最新展示项最多 32 KiB，总响应最多 256 KiB。长展示文本裁剪并标记
+- 每类最新展示项最多 28 KiB，八类合计最多 224 KiB，预留 32 KiB 给信封、警告与元数据；总响应最多 256 KiB。长展示文本裁剪并标记
   `truncatedFields`；无法缩小的健康快照/URL/ID 返回 `status:oversized, data:null` 占位，
   已成功算出的数量仍有效。完整列表及详情继续走原接口。
 
@@ -135,7 +136,52 @@ HTTP 返回 `application/json; charset=utf-8` 和 `Cache-Control:no-store`。
 - `internal/notif`：复用每日摘要，新增可取消、带冷重建预算的读取入口。
 - `internal/recording/read_snapshot.go`：只读已提交索引并显式返回损坏/超大等错误。
 
-测试覆盖七类统计/最新/健康无 count、默认/指定日期、按需类别、空数据、UTC/本地日及夏令时、
+测试覆盖八类统计/最新/健康无 count、默认/指定日期、按需类别、空数据、UTC/本地日及夏令时、
 高精度数字、去重与迟到通知、部分失败、读取/响应预算、原录音可见性、鉴权、
 GET/POST 信封一致、实际 loopback HTTP/完成日志、模拟 Relay 两种方法及并发上传查询。
 所有数据与网络验证使用临时目录和本地测试服务，不修改运行中 CLI 的用户数据。
+
+### 独立资产类别与 Capture 历史
+
+默认 `GET /assets/summary` 返回全部八类，不需要额外启用录音来源。硬件录音保留
+`assets.recordings`，来源为 `mobile_app`；桌面录音使用独立的 `assets.capture-recordings`，
+来源为 `capture_app`。两类分别计算当天 count/latest，跨类别相同 UUID 分别计数，互不合并。
+只有 `types` 用于选择资产类别；`sources` 不再属于 summary 参数，传入返回 400 `INVALID_PARAMS`。
+
+```http
+GET /assets/summary
+GET /assets/summary?date=2026-11-18
+GET /assets/summary?types=recordings,capture-recordings
+GET /assets/summary?types=capture-recordings
+```
+
+- 两类遵循相同的 clientLabel 可见性规则；无 clientLabel 的旧 Capture 历史按共享历史处理。
+- 桌面同时读取 `voice/recordings/index.json` 与 `voice/recordings-jsonl/<date>.jsonl`，
+  复用历史日期筛选、UUID 去重及完整行规则；当前索引 ID 在日期/权限过滤前遮蔽旧历史。
+  当天候选历史文件累计最多 32 MiB，超限返回 `SOURCE_TOO_LARGE`，不输出部分桌面数量。
+- 错误按资产类别隔离：Capture 索引或历史失败只使 `capture-recordings` 出错，
+  硬件 `recordings` 和其他类别仍正常返回；反向亦然。顶层 `partial=true`，失败类不显示 count=0。
+- `types=recordings` 不读取 Capture；`types=capture-recordings` 不读取或依赖硬件存储。
+  `CaptureRecordings=nil` 仅表示未配置当前索引；`CaptureVoiceRoot` 独立控制历史读取。
+  两者均未配置则桌面类别为空。硬件 store 缺失则仅硬件类别读取失败。
+- `latest.data.sourceType` 保留实际录音来源，客户端调用录音详情或导出时仍须携带该字段。
+  summary 的资产分类不改变 `recordings.list/status/export` 的 `sourceType` 契约。
+- 录音读取与导出继续支持原有历史解析；summary 本身只读索引和产物存在性，不迁移数据。
+
+### 混版能力协商
+
+基础能力仍为 `assets.summary.read.v1`，新能力 `assets.summary.capture-recordings.v1`
+表示 Capture 是独立资产类别。默认请求在新 daemon 返回全部八类；客户端若需要显式传
+`types=capture-recordings`，应先核对新能力。旧 daemon 缺少该类别不代表桌面录音数量为零。
+
+移除测试版曾提供的 `assets.summary.recordings.sources.v1` 和 `sources` 参数。使用旧测试版
+`sources=all` 的客户端应改为省略筛选（全部资产）或传 `types=recordings,capture-recordings`。
+不为 summary 新增另一套录音来源筛选，不修改录音接口本身。
+
+### 历史录音写操作
+
+`recordings.rename/delete/result.write` 在明确选择 `capture_app` 时也查找旧每日历史，先校验可见性，再登记选中记录并复用现有写入流程；无需先导出。`result.write` 的请求参数校验在登记历史记录前完成；后续 I/O 失败不保证无落盘。改名同时更新 `metadata.name` 与 `title`，保证列表及详情使用新名称。完整删除保留遮蔽 ID，本地清理保留记录。`result.write` 保留未被请求更新的历史元数据和音频。
+
+历史 Capture 的 `recordings.retranscribe` 暂不支持，返回 `SOURCE_UNREADABLE`，且不因被拒绝的请求登记历史记录。现有 ASR 需要云端音频 URL 和标准音频路径；仅把本地历史登记进索引并不能满足，需要在 Capture 端重新转写后同步。
+
+本轮不引入历史缓存；显式 Capture/all 查询仍有累计 32 MiB 的扫描预算。CLI 的历史 `status` 继续保留 Capture 原始值，App 使用统一状态映射，两者状态展示口径尚未统一。未知历史转写格式继续明确报错，不把缺失文本的结果默认为完整同步。

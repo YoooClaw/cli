@@ -101,10 +101,12 @@ var indexKeys = map[string]string{TypeRecordings: "recordings", TypeWebPages: "p
 // 显式的元数据白名单：本地路径、签名 URL、凭据都不能进入包。
 var allowedKeys = map[string][]string{
 	TypeNotifications: {"clientLabel", "appName", "appDisplayName", "title", "content", "timestamp", "senderName", "conversationType", "conversationName"},
-	TypeRecordings:    {"id", "clientLabel", "title", "metadata"},
+	TypeRecordings:    {"id", "clientLabel", "title", "metadata", "resultExtra", "summaryData"},
 	TypeWebPages:      {"urlHash", "canonicalUrl", "url", "title", "siteName", "capturedAt", "firstCapturedAt", "captureCount", "contentHash", "clientLabel"},
 	TypeImages:        {"imageId", "clientLabel", "metadata"},
 }
+
+var recordingRuntimeMetadataFields = []string{"oss_audio_url", "oss_srt_url", "file_size_display", "transfer_status", "ossTaskId"}
 
 var metadataKeys = []string{"name", "created_at", "duration_sec", "duration_display", "size_bytes", "mime_type", "width", "height", "source_app", "caption"}
 
@@ -149,30 +151,6 @@ func isScalar(v any) bool {
 	return false
 }
 
-func isFiniteNumber(v any) bool {
-	f, ok := v.(float64)
-	return ok && f-f == 0
-}
-
-// normalizeRecordingMetadata 对齐插件 recording/metadata-display.ts 的同名函数：
-// 时长取整、按单位重算展示串，只留下规范字段。
-func normalizeRecordingMetadata(m map[string]any) map[string]any {
-	sec := 0.0
-	if f, ok := m["duration_sec"].(float64); ok && f-f == 0 && f > 0 {
-		sec = float64(int64(f))
-	}
-	out := map[string]any{
-		"duration_sec":     sec,
-		"duration_display": formatDurationDisplay(int64(sec)),
-	}
-	for _, k := range []string{"name", "created_at", "location", "markers"} {
-		if v, ok := m[k]; ok {
-			out[k] = v
-		}
-	}
-	return out
-}
-
 func formatDurationDisplay(total int64) string {
 	h, m, s := total/3600, (total%3600)/60, total%60
 	switch {
@@ -190,19 +168,14 @@ func portable(typ string, input map[string]any) map[string]any {
 	if input == nil {
 		return out
 	}
-	if typ == TypeRecordings {
-		if meta, ok := input["metadata"].(map[string]any); ok {
-			copied := make(map[string]any, len(input))
-			for k, v := range input {
-				copied[k] = v
-			}
-			copied["metadata"] = normalizeRecordingMetadata(meta)
-			input = copied
-		}
-	}
+
 	for _, key := range allowedKeys[typ] {
 		value, present := input[key]
 		if !present {
+			continue
+		}
+		if typ == TypeRecordings && (key == "resultExtra" || key == "summaryData") {
+			out[key] = value
 			continue
 		}
 		if key != "metadata" {
@@ -212,27 +185,32 @@ func portable(typ string, input map[string]any) map[string]any {
 			continue
 		}
 		src, _ := value.(map[string]any)
+		if typ == TypeRecordings {
+			meta := make(map[string]any, len(src))
+			for k, v := range src {
+				meta[k] = v
+			}
+			// Runtime URLs/status and local size display are regenerated on the target.
+			// Keep all other App metadata, including unknown nested extensions.
+			for _, key := range recordingRuntimeMetadataFields {
+				delete(meta, key)
+			}
+			sec := 0.0
+			if value, ok := meta["duration_sec"].(float64); ok && value-value == 0 && value > 0 {
+				sec = float64(int64(value))
+			}
+			meta["duration_sec"] = sec
+			meta["duration_display"] = formatDurationDisplay(int64(sec))
+			out["metadata"] = meta
+			continue
+		}
 		meta := map[string]any{}
 		for _, k := range metadataKeys {
 			if v, ok := src[k]; ok && isScalar(v) {
 				meta[k] = v
 			}
 		}
-		if typ == TypeRecordings {
-			if markers, ok := src["markers"].([]any); ok {
-				kept := []any{}
-				for _, raw := range markers {
-					m, _ := raw.(map[string]any)
-					if isFiniteNumber(m["index"]) && isFiniteNumber(m["timestamp_ms"]) {
-						kept = append(kept, map[string]any{"index": m["index"], "timestamp_ms": m["timestamp_ms"]})
-					}
-				}
-				meta["markers"] = kept
-			}
-			if loc, ok := src["location"].(map[string]any); ok && isFiniteNumber(loc["latitude"]) && isFiniteNumber(loc["longitude"]) {
-				meta["location"] = map[string]any{"latitude": loc["latitude"], "longitude": loc["longitude"]}
-			}
-		}
+
 		out["metadata"] = meta
 	}
 	return out
@@ -280,7 +258,13 @@ func safeStorageID(v string) error {
 }
 
 func validateData(typ string, d map[string]any) error {
-	if d == nil || canonical(portable(typ, d)) != canonical(d) {
+	projected := portable(typ, d)
+	if typ == TypeRecordings && d != nil {
+		// Preserve the original metadata for source hash validation. materialize
+		// strips runtime fields before a new recording is persisted.
+		projected["metadata"] = d["metadata"]
+	}
+	if d == nil || canonical(projected) != canonical(d) {
 		return fail("INVALID_RECORD_DATA")
 	}
 	id := identity(typ, d)
@@ -427,11 +411,7 @@ func readJSONFile(path string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return decodeTransferValue(raw)
 }
 
 // entries 读取某类数据的已落盘记录（原始 JSON 对象）。

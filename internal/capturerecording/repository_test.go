@@ -127,3 +127,22 @@ func TestListMissingHistoryIsEmptyAndUnreadableIndexErrors(t *testing.T) {
 		t.Fatalf("existing non-file index should be storage unavailable: %v", err)
 	}
 }
+
+func TestListIndexBudget(t *testing.T) {
+	root := t.TempDir()
+	dir := HistoryPath(root)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, day := range []string{"2026-10-21", "2026-10-22"} {
+		if err := os.WriteFile(filepath.Join(dir, day+".jsonl"), []byte("\n\n\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := List(context.Background(), root, Query{MaxIndexBytes: 5}); !errors.Is(err, ErrIndexTooLarge) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := List(context.Background(), root, Query{MaxIndexBytes: 6}); err != nil {
+		t.Fatal(err)
+	}
+}

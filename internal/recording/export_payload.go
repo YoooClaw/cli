@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const maxExportTextBytes int64 = 64 << 20
@@ -69,25 +70,27 @@ func exportSourceKindOf(err error) ExportSourceKind {
 // ExportRecording is the metadata projection allowed in writePayload. It
 // deliberately omits the old OSS URL and local paths.
 type ExportRecording struct {
-	Name            string   `json:"name"`
-	CreatedAt       string   `json:"created_at"`
-	DurationSec     float64  `json:"duration_sec"`
-	DurationDisplay string   `json:"duration_display"`
-	RecordingType   string   `json:"recording_type"`
-	Location        any      `json:"location,omitempty"`
-	Markers         []Marker `json:"markers"`
+	Extra           map[string]json.RawMessage `json:"-"`
+	Name            string                     `json:"name"`
+	CreatedAt       string                     `json:"created_at"`
+	DurationSec     float64                    `json:"duration_sec"`
+	DurationDisplay string                     `json:"duration_display"`
+	RecordingType   string                     `json:"recording_type"`
+	Location        any                        `json:"location,omitempty"`
+	Markers         []Marker                   `json:"markers"`
 }
 
 // ExportPayload mirrors recordings.result.write params.
 type ExportPayload struct {
-	RecordingID    string            `json:"recordingId"`
-	SourceType     string            `json:"sourceType"`
-	OssTaskID      string            `json:"ossTaskId"`
-	OssURL         string            `json:"ossUrl"`
-	DurationMillis *float64          `json:"durationMillis,omitempty"`
-	Recording      ExportRecording   `json:"recording"`
-	Transcript     *ResultTranscript `json:"transcript,omitempty"`
-	Summary        *ResultSummary    `json:"summary,omitempty"`
+	Extra          map[string]json.RawMessage `json:"-"`
+	RecordingID    string                     `json:"recordingId"`
+	SourceType     string                     `json:"sourceType"`
+	OssTaskID      string                     `json:"ossTaskId"`
+	OssURL         string                     `json:"ossUrl"`
+	DurationMillis *float64                   `json:"durationMillis,omitempty"`
+	Recording      ExportRecording            `json:"recording"`
+	Transcript     *ResultTranscript          `json:"transcript,omitempty"`
+	Summary        *ResultSummary             `json:"summary,omitempty"`
 }
 
 type ExportContentPresent struct {
@@ -109,19 +112,22 @@ type exportSource struct {
 }
 
 type exportVersionMaterial struct {
-	RecordingID           string              `json:"recordingId"`
-	Name                  string              `json:"name"`
-	Title                 string              `json:"title,omitempty"`
-	CreatedAt             string              `json:"createdAt"`
-	DurationSec           float64             `json:"durationSec"`
-	RecordingType         string              `json:"recordingType"`
-	Location              any                 `json:"location,omitempty"`
-	Markers               []Marker            `json:"markers,omitempty"`
-	TranscriptDataSHA256  string              `json:"transcriptDataSha256,omitempty"`
-	TranscriptMarkdownSHA string              `json:"transcriptMarkdownSha256,omitempty"`
-	SummaryMarkdownSHA    string              `json:"summaryMarkdownSha256,omitempty"`
-	SrtSHA256             string              `json:"srtSha256,omitempty"`
-	Audio                 ExportAudioIdentity `json:"audio"`
+	ResultExtra           map[string]json.RawMessage `json:"resultExtra,omitempty"`
+	SummaryData           *ResultSummary             `json:"summaryData,omitempty"`
+	MetadataExtra         map[string]json.RawMessage `json:"metadataExtra,omitempty"`
+	RecordingID           string                     `json:"recordingId"`
+	Name                  string                     `json:"name"`
+	Title                 string                     `json:"title,omitempty"`
+	CreatedAt             string                     `json:"createdAt"`
+	DurationSec           float64                    `json:"durationSec"`
+	RecordingType         string                     `json:"recordingType"`
+	Location              any                        `json:"location,omitempty"`
+	Markers               []Marker                   `json:"markers,omitempty"`
+	TranscriptDataSHA256  string                     `json:"transcriptDataSha256,omitempty"`
+	TranscriptMarkdownSHA string                     `json:"transcriptMarkdownSha256,omitempty"`
+	SummaryMarkdownSHA    string                     `json:"summaryMarkdownSha256,omitempty"`
+	SrtSHA256             string                     `json:"srtSha256,omitempty"`
+	Audio                 ExportAudioIdentity        `json:"audio"`
 }
 
 // prepareExportSource reads one consistent snapshot of the audio and text
@@ -195,23 +201,53 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		}
 		doc = &parsed
 	}
+	if entry.LegacyCaptureTranscript != "" && len(dataRaw) == 0 {
+		legacyRaw, _, legacyErr := readExportText(root, entry.LegacyCaptureTranscript)
+		if legacyErr != nil {
+			return exportSource{}, wrapExportSource(ExportSourceTranscriptData, entry.LegacyCaptureTranscript, legacyErr)
+		}
+		doc, legacyErr = parseCaptureTranscript(legacyRaw, entry)
+		if legacyErr != nil {
+			return exportSource{}, wrapExportSource(ExportSourceTranscriptData, entry.LegacyCaptureTranscript, legacyErr)
+		}
+		dataRaw = legacyRaw
+	}
 	transcript, transcriptPresent := buildExportTranscript(doc, string(transcriptMD), string(srtRaw))
+	if transcript != nil {
+		transcript, transcriptPresent = appExportTranscript(transcript, transcriptPresent)
+	}
 	summary, summaryPresent := buildExportSummary(string(summaryMD))
-	if transcript == nil && summary == nil {
+	if entry.SummaryData != nil {
+		value := *entry.SummaryData
+		value.Extra = mergeMetadataExtra(nil, value.Extra)
+		value.Markdown = string(summaryMD)
+		if value.Format == "" {
+			value.Format = "markdown"
+		}
+		summary = &value
+		summaryPresent = summaryPresent || len(value.Structured) > 0
+	}
+	if !transcriptPresent && !summaryPresent {
 		// Audio-only compatibility: old DTOs carry empty objects.
-		transcript = &ResultTranscript{Segments: []ResultTranscriptSegment{}}
-		summary = &ResultSummary{Format: "markdown", Markdown: ""}
+		if transcript == nil {
+			transcript = &ResultTranscript{Segments: []ResultTranscriptSegment{}}
+		}
+		if summary == nil {
+			summary = &ResultSummary{Format: "markdown", Markdown: ""}
+		}
 	}
 	markers := entry.Metadata.Markers
 	if markers == nil {
 		markers = []Marker{}
 	}
 	payload := ExportPayload{
+		Extra:       mergeMetadataExtra(nil, entry.ResultExtra),
 		RecordingID: entry.ID,
 		// 接收方按 sourceType 把导出的录音写回对应来源；旧索引条目回退 mobile_app。
 		SourceType: entry.RecordingSource(),
 		Recording: ExportRecording{
-			Name: entry.Metadata.Name, CreatedAt: entry.Metadata.CreatedAt,
+			Extra: mergeMetadataExtra(nil, entry.Metadata.Extra),
+			Name:  entry.Metadata.Name, CreatedAt: entry.Metadata.CreatedAt,
 			DurationSec: entry.Metadata.DurationSec, DurationDisplay: entry.Metadata.DurationDisplay,
 			RecordingType: NormalizeRecordingType(entry.Metadata.RecordingType),
 			Location:      entry.Metadata.Location, Markers: markers,
@@ -224,7 +260,10 @@ func prepareExportSource(storage *Storage, recordingID string, hashAudio bool) (
 		payload.DurationMillis = &millis
 	}
 	material := exportVersionMaterial{
-		RecordingID: entry.ID, Name: entry.Metadata.Name, Title: entry.Title, CreatedAt: entry.Metadata.CreatedAt,
+		ResultExtra:   entry.ResultExtra,
+		SummaryData:   entry.SummaryData,
+		MetadataExtra: entry.Metadata.Extra,
+		RecordingID:   entry.ID, Name: entry.Metadata.Name, Title: entry.Title, CreatedAt: entry.Metadata.CreatedAt,
 		DurationSec: entry.Metadata.DurationSec, RecordingType: NormalizeRecordingType(entry.Metadata.RecordingType),
 		Location: entry.Metadata.Location, Markers: entry.Metadata.Markers,
 		TranscriptDataSHA256:  hashBytes(dataRaw),
@@ -273,15 +312,18 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 		segments := make([]ResultTranscriptSegment, 0, len(doc.Normalized.Segments))
 		for _, segment := range doc.Normalized.Segments {
 			segments = append(segments, ResultTranscriptSegment{
-				Text: segment.Text, StartMS: segment.StartMS, EndMS: segment.EndMS, SpeakerID: segment.SpeakerID, SpeakerName: strings.TrimSpace(segment.SpeakerName),
+				Extra: mergeMetadataExtra(nil, segment.Extra),
+				Text:  segment.Text, StartMS: segment.StartMS, EndMS: segment.EndMS, SpeakerID: segment.SpeakerID, SpeakerName: strings.TrimSpace(segment.SpeakerName),
 			})
 		}
 		out := &ResultTranscript{
+			Extra:       mergeMetadataExtra(nil, doc.ResultExtra),
 			GeneratedAt: doc.GeneratedAt, Title: doc.Normalized.Title, Category: doc.Normalized.Category,
 			Brief: doc.Normalized.Summary, Text: doc.Normalized.Text, Segments: segments, Markdown: markdown,
 		}
-		if doc.Source.Provider != "" || doc.Source.TaskID != "" || doc.Source.RequestID != "" || doc.Source.Status != "" {
+		if len(doc.Source.Extra) > 0 || doc.Source.Provider != "" || doc.Source.TaskID != "" || doc.Source.RequestID != "" || doc.Source.Status != "" {
 			out.Source = &ResultTranscriptSource{
+				Extra:    mergeMetadataExtra(nil, doc.Source.Extra),
 				Provider: doc.Source.Provider, TaskID: doc.Source.TaskID,
 				RequestID: doc.Source.RequestID, Status: doc.Source.Status,
 			}
@@ -296,6 +338,29 @@ func buildExportTranscript(doc *TranscriptDocument, markdown, srt string) (*Resu
 		return parsed, hasTranscriptContent(parsed)
 	}
 	return nil, false
+}
+
+// App export filters blank segments from either source; stored data and migration keep them.
+func appExportTranscript(transcript *ResultTranscript, present bool) (*ResultTranscript, bool) {
+	out := *transcript
+	out.Segments = make([]ResultTranscriptSegment, 0, len(transcript.Segments))
+	for _, segment := range transcript.Segments {
+		if !appBlankText(segment.Text) {
+			out.Segments = append(out.Segments, segment)
+		}
+	}
+	// Preserve the existing Markdown-only fallback, but don't classify text
+	// rejected by Kotlin/JS whitespace rules as transcript content.
+	if len(transcript.Segments) > 0 || transcript.Text != "" {
+		present = len(out.Segments) > 0 || !appBlankText(out.Text)
+	}
+	return &out, present
+}
+
+func appBlankText(text string) bool {
+	return strings.TrimFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || r <= 0x20 || r == '\uFEFF'
+	}) == ""
 }
 
 func hasTranscriptContent(t *ResultTranscript) bool {
