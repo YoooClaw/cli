@@ -187,7 +187,7 @@ func (s *Storage) Ingest(items []RawNotification, clientLabel string) IngestResu
 
 		entry := s.buildStored(n, clientLabel)
 		if entry.AppDisplayName == "" {
-			entry.AppDisplayName = entry.AppName
+			entry.AppDisplayName = ResolveAppDisplayName(entry.AppName)
 		}
 		label := labelOrLegacy(entry.ClientLabel)
 		normalizedID := strings.TrimSpace(n.ID)
