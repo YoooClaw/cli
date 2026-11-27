@@ -185,6 +185,7 @@ npx skills@latest add YoooClaw/skills --skill yoooclaw-cli --global --agent clau
 | `yoooclaw-context-query`        | 查询最新通知、日程、位置、健康统计、语音输入、录音/转写、已抓取网页、同步图片及跨来源本地上下文的唯一查询 Skill |
 | `yoooclaw-context-to-memory` | 从通知、日程、位置、健康与网页提炼有来源的记忆，验证持久写入后确认精确批次 |
 | `yoooclaw-recordings-process`   | 用一套录音来源流程路由会议纪要、翻译、思维导图、采访整理和实体提取 |
+| `yoooclaw-voice-hotwords`        | 查看、添加、调权和删除云端语音识别热词 |
 | `yoooclaw-light`                | 通过独立 CLI 播放一次性灯效并管理「通知 → 灯效」持久规则 |
 | `yoooclaw-todo`                 | 个人待办的查询、创建、修改、完成 / 恢复与删除；泛指日程 / 待办时默认使用，删除前确认 |
 | `yoooclaw-data-transfer`        | 默认通过 OSS 任务 ID、也可用本地包在两个环境之间迁移数据（通知、录音、网页，可选音频/图片），与 OpenClaw 插件 `ntf transfer` 的包互通 |
@@ -388,6 +389,7 @@ yoooclaw voice apps                                # 最近 7 天去重后的 Ap
 yoooclaw voice search "项目" --app com.microsoft.VSCode
 yoooclaw voice hotwords list --format json
 yoooclaw voice hotwords add "Hermes" "YoooClaw Capture" --weight 4
+yoooclaw voice hotwords update "Hermes" "YoooClaw Capture" --weight 5
 yoooclaw voice hotwords delete "Hermes" "YoooClaw Capture"
 yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20

@@ -59,6 +59,9 @@ func (c HotwordClient) Mutate(ctx context.Context, action, text string, weight i
 	}
 	resp, requestErr := c.request(ctx, http.MethodPost, "", bytes.NewReader(body), http.StatusNoContent)
 	if requestErr != nil {
+		if action == "update" && requestErr.Details["http_status"] == http.StatusNotFound {
+			requestErr.Code = errs.CodeNotFound
+		}
 		return requestErr
 	}
 	resp.Body.Close()

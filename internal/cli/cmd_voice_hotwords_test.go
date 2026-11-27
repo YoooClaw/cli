@@ -48,7 +48,8 @@ func TestVoiceHotwordWrites(t *testing.T) {
 	})
 	for _, args := range [][]string{
 		{"add", "星桥", "YoooClaw Capture"}, {"add", "轻", "--weight", "1"},
-		{"add", "强", "--weight", "5"}, {"delete", "星桥", "YoooClaw Capture"},
+		{"add", "强", "--weight", "5"}, {"update", "星桥", "YoooClaw Capture", "--weight", "5"},
+		{"update", "轻", "--weight", "1"}, {"delete", "星桥", "YoooClaw Capture"},
 	} {
 		out, code := execCLI(t, append([]string{"voice", "hotwords"}, args...)...)
 		if code != 0 || decode(t, out)["ok"] != true {
@@ -58,6 +59,8 @@ func TestVoiceHotwordWrites(t *testing.T) {
 	want := []map[string]any{
 		{"action": "add", "text": "星桥", "weight": 4.0}, {"action": "add", "text": "YoooClaw Capture", "weight": 4.0},
 		{"action": "add", "text": "轻", "weight": 1.0}, {"action": "add", "text": "强", "weight": 5.0},
+		{"action": "update", "text": "星桥", "weight": 5.0}, {"action": "update", "text": "YoooClaw Capture", "weight": 5.0},
+		{"action": "update", "text": "轻", "weight": 1.0},
 		{"action": "delete", "text": "星桥"}, {"action": "delete", "text": "YoooClaw Capture"},
 	}
 	if !reflect.DeepEqual(writes, want) {
@@ -69,6 +72,8 @@ func TestVoiceHotwordRejectsInvalidInputsBeforeWriting(t *testing.T) {
 	serveHotwords(t, func(http.ResponseWriter, *http.Request) { t.Error("unexpected HTTP request") })
 	for _, args := range [][]string{
 		{"add", "word", "--weight", "0"}, {"add", "word", "--weight", "6"}, {"add", "word", " "},
+		{"update", "word"}, {"update", "word", "--weight", "0"}, {"update", "word", "--weight", "6"},
+		{"update", "word", " ", "--weight", "3"},
 		{"delete", "word", ""}, {"list", "--limit", "101"}, {"list", "--cursor", "-1"},
 	} {
 		out, code := execCLI(t, append([]string{"voice", "hotwords"}, args...)...)
@@ -76,10 +81,43 @@ func TestVoiceHotwordRejectsInvalidInputsBeforeWriting(t *testing.T) {
 			t.Fatalf("%v did not fail: %s", args, out)
 		}
 	}
-	root := newRootCmd()
-	root.SetArgs([]string{"voice", "hotwords", "add", "word", "--weight", "1.5"})
-	if err := root.Execute(); err == nil {
-		t.Fatal("fractional weight accepted")
+	for _, action := range []string{"add", "update"} {
+		root := newRootCmd()
+		root.SetArgs([]string{"voice", "hotwords", action, "word", "--weight", "1.5"})
+		if err := root.Execute(); err == nil {
+			t.Fatalf("%s accepted fractional weight", action)
+		}
+	}
+}
+
+func TestVoiceHotwordUpdateContinuesAfterMissingWord(t *testing.T) {
+	var requests []string
+	serveHotwords(t, func(w http.ResponseWriter, r *http.Request) {
+		var op struct{ Action, Text string }
+		if err := json.NewDecoder(r.Body).Decode(&op); err != nil {
+			t.Error(err)
+		}
+		requests = append(requests, op.Action+"/"+op.Text)
+		if op.Text == "missing" {
+			http.Error(w, `{"detail":"word not found"}`, http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	out, code := execCLI(t, "voice", "hotwords", "update", "missing", "existing", "--weight", "3")
+	var reply struct {
+		Error struct {
+			Code    string
+			Results []struct{ Text, Status string }
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if code == 0 || reply.Error.Code != "YOOOCLAW_NOT_FOUND" ||
+		!reflect.DeepEqual(requests, []string{"update/missing", "update/existing"}) ||
+		!reflect.DeepEqual(reply.Error.Results, []struct{ Text, Status string }{{"missing", "error"}, {"existing", "ok"}}) {
+		t.Fatalf("code=%d requests=%v: %s", code, requests, out)
 	}
 }
 

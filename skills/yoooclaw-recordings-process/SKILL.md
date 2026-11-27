@@ -56,3 +56,4 @@ Finish when every requested artifact is present and each claim is source-grounde
 ## Boundary
 
 Recording lists, transcript lookup, content search, generic Q&A, progress diagnosis, and stored-summary lookup use `yoooclaw-context-query`.
+Use `yoooclaw-voice-hotwords` when the requested output is candidate hotwords or a change to the speech-recognition dictionary.

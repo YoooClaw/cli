@@ -72,6 +72,7 @@ func TestList(t *testing.T) {
 		"yoooclaw-recordings-process",
 		"yoooclaw-todo",
 		"yoooclaw-tunnel-debug",
+		"yoooclaw-voice-hotwords",
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("bundled skills = %v, want %v", names, want)

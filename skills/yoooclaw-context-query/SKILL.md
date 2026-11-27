@@ -93,4 +93,5 @@ Do not apply a shared per-source result cap. Process large scopes in batches ins
 - Learning from notifications, calendars, system reminders, locations, health data, or web pages uses `yoooclaw-context-to-memory`.
 - Immediate lighting and persistent notification-triggered lighting use `yoooclaw-light`.
 - Meeting minutes, translation, mind maps, interview restructuring, and entity extraction use `yoooclaw-recordings-process`.
+- Looking up or editing the cloud speech-recognition dictionary uses `yoooclaw-voice-hotwords`.
 - Relay, daemon, authentication, and ingest failures use `yoooclaw-tunnel-debug`.
