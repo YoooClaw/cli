@@ -6,7 +6,7 @@ Apply the parent `yoooclaw-context-query` rules.
 
 ```bash
 yoooclaw image storage-path --format json
-yoooclaw image list --last-days 7 --format json
+yoooclaw image list --format json
 yoooclaw image status <id> --format json
 yoooclaw image path <id> --format json
 yoooclaw image path <id> --thumbnail --format json
