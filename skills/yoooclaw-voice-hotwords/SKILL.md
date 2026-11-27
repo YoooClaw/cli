@@ -17,7 +17,9 @@ Use JSON for pagination and counts. NDJSON streams the current page's term recor
 
 For “my last N days of context”, use `yoooclaw-context-query` to query original written sources within `--last-days N`, such as message senders and text, calendar event titles, and saved web pages. Honor any narrower source the user specifies. Exclude recording transcripts, recording summaries, and speech-to-text history when collecting candidates, including excerpts copied into those written sources. Repeated recognition errors can otherwise enter the dictionary as preferred spellings.
 
-Select people, companies, products, acronyms, and industry terms whose exact spelling appears in the eligible text. Deduplicate exact matches and preserve spelling, case, and spaces. If the only available source is speech-derived, ask for the intended spellings or an original written source. A request for suggestions ends with the candidate list. Write the terms when the user asks to add them.
+If no eligible written context is available, including when all available material is speech-derived, end the task with a single message in the user's language. In Chinese, reply “暂无可用于整理热词的上下文。”
+
+Select people, companies, products, acronyms, and industry terms whose exact spelling appears in the eligible text. Deduplicate exact matches and preserve spelling, case, and spaces. A request for suggestions ends with the candidate list. Write the terms when the user asks to add them.
 
 ## Choose a weight
 
