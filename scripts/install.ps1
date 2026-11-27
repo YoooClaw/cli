@@ -512,13 +512,26 @@ try {
 
     # Keep the old npm package until task migration has succeeded. Surface the
     # structured error instead of hiding it behind an installation success.
-    $migrationOutput = @(& $target daemon autostart migrate --repair-permissions --format json)
-    $migrationExitCode = $LASTEXITCODE
-    $migrationOutput | ForEach-Object { Write-Host $_ }
+    # The CLI writes UTF-8 JSON even when Windows PowerShell uses a legacy
+    # console code page. Decode its stdout without changing the caller's console.
+    $migrationStart = [Diagnostics.ProcessStartInfo]::new($target, 'daemon autostart migrate --repair-permissions --format json')
+    $migrationStart.UseShellExecute = $false
+    $migrationStart.RedirectStandardOutput = $true
+    $migrationStart.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $migrationProcess = [Diagnostics.Process]::Start($migrationStart)
+    try {
+        $migrationOutput = $migrationProcess.StandardOutput.ReadToEnd().TrimEnd()
+        $migrationProcess.WaitForExit()
+        $migrationExitCode = $migrationProcess.ExitCode
+    }
+    finally {
+        $migrationProcess.Dispose()
+    }
+    Write-Host $migrationOutput
     if ($migrationExitCode -ne 0) {
         throw "Native CLI installed, but task migration failed. Old npm package and user data were preserved; installation is not complete."
     }
-    $migrationResult = ($migrationOutput -join "`n") | ConvertFrom-Json
+    $migrationResult = $migrationOutput | ConvertFrom-Json
     # Skipped migrations omit optional fields. StrictMode forbids direct access
     # to missing PSCustomObject properties; absence must mean unconfirmed.
     $taskMigrationConfirmed = $false

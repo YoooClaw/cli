@@ -132,6 +132,9 @@ jobs:
         # Use inbox Windows PowerShell 5.1; PowerShell 7 is backward-compatible
         # with the syntax exercised here.
         shell: powershell
+        env:
+          # PowerShell 5.1 reads the runner's BOM-less step script in the ANSI code page.
+          EXPECTED_MIGRATION_REASON: 用户已明确关闭自启
         run: |
           $ErrorActionPreference = 'Stop'
           $version = '0.0.0-alpha.1'
@@ -182,7 +185,7 @@ jobs:
           $version | Set-Content -Encoding ascii (Join-Path $serverRoot 'latest')
 
           $baseUrl = 'http://127.0.0.1:18765'
-          $installer = Get-Content -Raw scripts/install.ps1
+          $installer = Get-Content -Raw -Encoding UTF8 scripts/install.ps1
           $installer = $installer.Replace('__YOOOCLAW_CLI_OSS_BASE_URL__', $baseUrl)
           $installer = $installer.Replace('__YOOOCLAW_CLI_TEMPLATE_RENDERED__', '1')
           # Windows PowerShell 5.1's `Set-Content -Encoding utf8` adds a BOM.
@@ -226,7 +229,20 @@ jobs:
             } until ($ready -or (Get-Date) -ge $deadline)
             if (-not $ready) { throw 'local installer server did not start' }
 
-            Invoke-RestMethod "$baseUrl/install.ps1" | Invoke-Expression
+            # Reproduce a Chinese Windows console receiving UTF-8 migration JSON.
+            New-Item -ItemType Directory -Path $env:YOOOCLAW_HOME -Force | Out-Null
+            '{"version":1,"desired":"disabled"}' | Set-Content -Encoding ascii (Join-Path $env:YOOOCLAW_HOME 'autostart.json')
+            $previousEncoding = [Console]::OutputEncoding
+            try {
+              [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(936)
+              $installLog = Invoke-RestMethod "$baseUrl/install.ps1" | Invoke-Expression 6>&1
+              if ([Console]::OutputEncoding.CodePage -ne 936) { throw 'installer changed the caller console encoding' }
+            }
+            finally {
+              [Console]::OutputEncoding = $previousEncoding
+            }
+            $installLog | Out-Host
+            if (-not ($installLog -match $env:EXPECTED_MIGRATION_REASON)) { throw 'UTF-8 migration reason was lost' }
 
             $installDir = Join-Path $env:LOCALAPPDATA 'YoooClaw\bin'
             $yoooclawVersion = & (Join-Path $installDir 'yoooclaw.exe') --version
@@ -234,7 +250,7 @@ jobs:
             if ($yoooclawVersion -ne $version -or $ycVersion -ne $version) {
               throw "installed command versions do not match: yoooclaw=$yoooclawVersion yc=$ycVersion"
             }
-            # No profile is initialized, so task migration is skipped. Do not
+            # Autostart is disabled, so task migration is skipped. Do not
             # remove an old task's possible target without confirming migration.
             if (Test-Path -LiteralPath $env:MOCK_NPM_LOG) {
               throw 'old npm package was removed despite skipped task migration'
@@ -427,8 +443,8 @@ jobs:
           📥 macOS / Linux（固定本次版本）：
           curl -fsSL ${BASE_URL}/install.sh | sh -s -- --version ${VERSION} --force
 
-          📥 无影 / Claude（固定本次测试版本；新机器请替换测试环境 API Key，已有凭据可省略 --api-key）：
-          curl -fsSL ${BASE_URL}/install-wuying.sh | sh -s -- --version ${VERSION} --skill claude --env test --force --api-key '<测试环境_API_KEY>'
+          📥 无影 / Claude（固定本次测试版本）：
+          curl -fsSL ${BASE_URL}/install-wuying.sh | sh -s -- --version ${VERSION} --skill claude --env test --force
 
           📥 Windows PowerShell：
           & ([scriptblock]::Create((irm '${BASE_URL}/install.ps1'))) -Version ${VERSION} -Force
