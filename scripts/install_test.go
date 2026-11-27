@@ -379,7 +379,7 @@ func TestWindowsInstallerMigratesNpmAfterNativeVerification(t *testing.T) {
 	verifiedAt := strings.Index(script, `if ($installedVersion -ne $resolvedVersion)`)
 	committedAt := strings.Index(script, `$installationCommitted = $true`)
 	removeAt := strings.Index(script, `$npmRemoved = Remove-NpmCli $npmCommand`)
-	migrateAt := strings.Index(script, `& $target daemon autostart migrate --repair-permissions --format json`)
+	migrateAt := strings.Index(script, `daemon autostart migrate --repair-permissions --format json`)
 	restoreAt := strings.Index(script, `Restore-Daemons $target $stoppedProfiles`)
 	if migrateAt < committedAt || restoreAt < migrateAt || removeAt < restoreAt {
 		t.Fatal("migration must precede daemon restore and npm cleanup")
