@@ -132,6 +132,9 @@ jobs:
         # Use inbox Windows PowerShell 5.1; PowerShell 7 is backward-compatible
         # with the syntax exercised here.
         shell: powershell
+        env:
+          # PowerShell 5.1 reads the runner's BOM-less step script in the ANSI code page.
+          EXPECTED_MIGRATION_REASON: 用户已明确关闭自启
         run: |
           $ErrorActionPreference = 'Stop'
           $version = '0.0.0-alpha.1'
@@ -233,13 +236,13 @@ jobs:
             try {
               [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(936)
               $installLog = Invoke-RestMethod "$baseUrl/install.ps1" | Invoke-Expression 6>&1
-              $installLog | Out-Host
-              if (-not ($installLog -match '用户已明确关闭自启')) { throw 'UTF-8 migration reason was lost' }
               if ([Console]::OutputEncoding.CodePage -ne 936) { throw 'installer changed the caller console encoding' }
             }
             finally {
               [Console]::OutputEncoding = $previousEncoding
             }
+            $installLog | Out-Host
+            if (-not ($installLog -match $env:EXPECTED_MIGRATION_REASON)) { throw 'UTF-8 migration reason was lost' }
 
             $installDir = Join-Path $env:LOCALAPPDATA 'YoooClaw\bin'
             $yoooclawVersion = & (Join-Path $installDir 'yoooclaw.exe') --version
