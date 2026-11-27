@@ -69,7 +69,6 @@ func TestList(t *testing.T) {
 		"yoooclaw-data-transfer",
 		"yoooclaw-light",
 		"yoooclaw-media-generate",
-		"yoooclaw-recordings-process",
 		"yoooclaw-todo",
 		"yoooclaw-tunnel-debug",
 		"yoooclaw-voice-hotwords",
@@ -172,21 +171,16 @@ func TestContextQueryHidesNestedNotificationStatisticsRoute(t *testing.T) {
 	}
 }
 
-func TestRecordingReferencesDoNotFallbackDateRangesToLatest(t *testing.T) {
+func TestRecordingReferenceDoesNotFallbackDateRangesToLatest(t *testing.T) {
 	t.Parallel()
-	for _, file := range []string{
-		"skills/yoooclaw-context-query/references/recordings.md",
-		"skills/yoooclaw-recordings-process/references/recording-source.md",
-	} {
-		raw, err := fs.ReadFile(assets.SkillsFS, file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(raw)
-		for _, required := range []string{"recording +today", "--from", "--to", "Never"} {
-			if !strings.Contains(text, required) {
-				t.Errorf("%s missing date-query safeguard %q", file, required)
-			}
+	const file = "skills/yoooclaw-context-query/references/recordings.md"
+	raw, err := fs.ReadFile(assets.SkillsFS, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"recording +today", "--from", "--to", "Never"} {
+		if !strings.Contains(string(raw), required) {
+			t.Errorf("%s missing date-query safeguard %q", file, required)
 		}
 	}
 }
@@ -404,7 +398,7 @@ func TestInstallMediaSkillIncludesScripts(t *testing.T) {
 	}
 }
 
-func TestInstallRemovesMergedLegacySkills(t *testing.T) {
+func TestInstallRemovesDeprecatedBundledSkills(t *testing.T) {
 	t.Parallel()
 	target := filepath.Join(t.TempDir(), "skills")
 	if err := os.MkdirAll(target, 0o700); err != nil {

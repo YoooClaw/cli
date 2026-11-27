@@ -249,8 +249,7 @@ type InstallResult struct {
 	Dest   string `json:"dest"`
 }
 
-// deprecatedBundledSkills 是已并入统一 Skill 的旧目录名。
-// 安装新版 Skill 时清理这些精确名称，避免 Agent 同时发现新旧路由。
+// deprecatedBundledSkills 列出安装新版 Skill 时需要清理的旧内置目录名。
 var deprecatedBundledSkills = []string{
 	"yoooclaw-lightrule-create",
 	"yoooclaw-notification-query",
@@ -260,6 +259,7 @@ var deprecatedBundledSkills = []string{
 	"yoooclaw-recording-mindmap",
 	"yoooclaw-recording-query",
 	"yoooclaw-recording-translation",
+	"yoooclaw-recordings-process",
 }
 
 // Install 把内嵌 Skill 复制到 target；force 时覆盖已存在目录。
@@ -287,7 +287,7 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 			return nil, nil, err
 		}
 		results = append(results, InstallResult{
-			Name: name, Status: "removed", Reason: "已并入统一 Skill", Dest: dest,
+			Name: name, Status: "removed", Reason: "此 Skill 已停止随 CLI 提供", Dest: dest,
 		})
 	}
 	for _, s := range skills {

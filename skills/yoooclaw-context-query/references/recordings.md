@@ -124,8 +124,3 @@ Never edit `recordings/index.json` directly and never `rm`/trash files under the
 (`audio/`, `transcripts/`, `transcript-data/`, `summaries/`). The daemon keeps the index in memory
 and rewrites the whole file on its next change, so a direct edit appears to work and then reverts.
 Only the command above reaches the daemon's write path.
-
-## Boundary
-
-Query steps in this branch are read-only. Recording transformations use
-`yoooclaw-recordings-process`.
