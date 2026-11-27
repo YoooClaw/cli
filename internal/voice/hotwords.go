@@ -21,8 +21,7 @@ type HotwordClient struct {
 }
 
 type Hotword struct {
-	Text   string `json:"text"`
-	Weight int    `json:"weight"`
+	Text string `json:"text"`
 }
 
 type HotwordPage struct {
@@ -51,20 +50,16 @@ func (c HotwordClient) List(ctx context.Context, limit int, cursor int64) (Hotwo
 }
 
 // Mutate sends one word. Janus acknowledges both changes and idempotent no-ops with 204.
-func (c HotwordClient) Mutate(ctx context.Context, action, text string, weight int) *errs.Error {
+func (c HotwordClient) Mutate(ctx context.Context, action, text string) *errs.Error {
 	body, err := json.Marshal(struct {
 		Action string `json:"action"`
 		Text   string `json:"text"`
-		Weight int    `json:"weight,omitempty"`
-	}{action, text, weight})
+	}{action, text})
 	if err != nil {
 		return errs.New(errs.CodeInvalidArgument, err.Error())
 	}
 	resp, requestErr := c.request(ctx, http.MethodPost, "", bytes.NewReader(body), http.StatusNoContent)
 	if requestErr != nil {
-		if action == "update" && requestErr.Details["http_status"] == http.StatusNotFound {
-			requestErr.Code = errs.CodeNotFound
-		}
 		return requestErr
 	}
 	resp.Body.Close()
