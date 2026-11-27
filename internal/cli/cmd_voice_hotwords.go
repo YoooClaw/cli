@@ -12,9 +12,12 @@ import (
 )
 
 const hotwordWeights = `权重表示语音识别遇到相近读音时优先选用该词的程度。取值为 1 到 5 的整数。
-  1–2  轻微偏好，适合偶尔使用、容易与普通词混淆的词。
-  3–4  较强偏好，常用的人名、产品名和专业词通常用 4。
-  5    最强偏好，适合希望优先识别为该专名的同音词。`
+  1  最轻。专名很少出现，而同音的日常词更常用时可选。
+  2  轻微。偶尔会说到这个专名，希望给它一点优先级时可选。
+  3  适中。专名和读音相近的日常词都经常用到时可选。
+  4  较强。新增热词的默认值，适合常用的人名、产品名和专业词。
+  5  最强。常用专名在权重 4 时仍反复被识别成同音词，可试 5。
+例如，项目名“云舟”总被写成“云州”，可以调高权重。如果说地名“云州”时也经常被写成“云舟”，就调低权重。`
 
 const hotwordBatchHelp = `多个词用空格分隔，含空格的词用引号括起。CLI 按输入顺序逐词提交。
 调权时找不到词（404）、词条冲突（409）或校验失败（422）时继续处理后续词。鉴权、网络或服务异常时停止。
@@ -24,7 +27,7 @@ func newVoiceHotwordsCmd() *cobra.Command {
 	group := &cobra.Command{
 		Use:   "hotwords",
 		Short: "管理当前账号的云端语音识别热词",
-		Long:  "查询、添加、调权或删除当前账号的云端语音识别热词。用 yoooclaw env show 查看环境，使用 yoooclaw auth 配置的默认 API Key。\n\n" + hotwordWeights + "\n新增词默认权重为 4。调整已有词的权重时，须用 --weight 指定新值。\n\n" + hotwordBatchHelp,
+		Long:  "查询、添加、调权或删除当前账号的云端语音识别热词。\n\n" + hotwordWeights + "\n调整已有词的权重时，须用 --weight 指定新值。\n\n" + hotwordBatchHelp,
 		Example: `  yoooclaw voice hotwords list --format json
   yoooclaw voice hotwords add "星桥" "YoooClaw Capture"
   yoooclaw voice hotwords update "星桥" "YoooClaw Capture" --weight 5
@@ -50,7 +53,7 @@ func newVoiceHotwordsCmd() *cobra.Command {
 		Example: `  yoooclaw voice hotwords add "星桥" "YoooClaw Capture"
   yoooclaw voice hotwords add "云舟" --weight 5`,
 	}
-	add.Flags().Int("weight", 4, "本次新增热词的识别权重（1–2 轻微，3–4 较强，5 最强）")
+	add.Flags().Int("weight", 4, "本次新增热词的识别权重，1 到 5 的整数")
 	update := &cobra.Command{
 		Use:     "update <词> [词...] --weight <1-5>",
 		Short:   "调整一个或多个已有热词的识别权重",
@@ -59,7 +62,7 @@ func newVoiceHotwordsCmd() *cobra.Command {
 		Long:    "用 --weight 指定这批已有热词的新权重。词文本保持原样。找不到的词按失败返回。\n\n" + hotwordWeights + "\n\n" + hotwordBatchHelp,
 		Example: `  yoooclaw voice hotwords update "星桥" "YoooClaw Capture" --weight 5`,
 	}
-	update.Flags().Int("weight", 0, "必填，所有指定热词的新权重（1–2 轻微，3–4 较强，5 最强）")
+	update.Flags().Int("weight", 0, "必填，所有指定热词的新权重，1 到 5 的整数")
 	del := &cobra.Command{
 		Use:     "delete <词> [词...]",
 		Aliases: []string{"remove"},

@@ -1,28 +1,40 @@
 ---
 name: yoooclaw-voice-hotwords
-description: 管理 YoooClaw 云端语音识别热词。用户要查看词库、从指定内容提取候选热词、添加或删除热词、调整已有词的识别权重时使用。
+description: Manage YoooClaw speech-recognition hotwords. Use when asked to list the dictionary, suggest hotwords from a source, add or remove terms, or adjust their recognition weights.
 ---
 
-# YoooClaw 语音识别热词
+# Speech-recognition hotwords
 
-用 `yoooclaw voice hotwords` 操作当前环境中默认 API Key 所属账号的词库。如果用户指定了环境，先用 `yoooclaw env show` 核对。
+If you're unsure which command to use, run `yoooclaw voice hotwords --help`. For an option or example, open the relevant command's help, such as `yoooclaw voice hotwords update --help`.
 
-## 查看词库
+## Look up a term
 
-运行 `yoooclaw voice hotwords list --format json`，从 `items` 读取 `text` 和 `weight`。有下一页时，把 `next_cursor` 原样传给 `--cursor`。查某个词时，找到精确匹配即可返回。列出全部或判定词不存在时，读到省略 `next_cursor` 的末页。
+Run `yoooclaw voice hotwords list --format json` and read `text` and `weight` from `items`. Pass each `next_cursor` unchanged to `--cursor`. For a single term, stop at an exact match. To list the whole dictionary or establish that a term is absent, continue until the response omits `next_cursor`.
 
-## 选择词条
+## Select terms from a source
 
-用户给了词文本时，保留拼写、大小写和内部空格，每个词作为一个参数传入。若要求从材料提取热词，只使用指定的来源，优先选取容易被误识别的人名、产品名、缩写和专业术语，按原文去重。需要读取指定录音的转写时，使用 `yoooclaw-context-query`。只要求推荐时，交付候选词。要求加入词库时，再提交选定的词。
+Use the source the user specified. For a recording transcript, use `yoooclaw-context-query`. Look for names, products, acronyms, and technical terms that speech recognition is likely to mishear. Deduplicate exact matches and preserve spelling, case, and spaces. A request for suggestions ends with the candidate list. Write the terms when the user asks to add them.
 
-## 写入与调权
+## Choose a weight
 
-| 用户意图 | 命令示例 | 服务行为 |
+Weight is an integer from 1 to 5. It controls how strongly recognition favors the hotword when several spellings or words fit the sound. Use the user's requested value when given.
+
+| Weight | When to use it |
+| --- | --- |
+| 1 | The lightest preference. Use for a rare name when its everyday homophone is usually what the speaker means. |
+| 2 | A slight preference. Use for an occasional term when ordinary speech still needs to come through reliably. |
+| 3 | A moderate preference. Use when both a term and its sound-alike occur regularly. |
+| 4 | The default for new terms. A good starting point for a name, product, or technical term the speaker uses often. |
+| 5 | The strongest preference. Use when a recurring term still comes back as its sound-alike at 4. |
+
+For example, if the project name “Sail” keeps appearing as “sale” at 4, try 5. If ordinary mentions of “sale” start appearing as “Sail”, lower the weight with `update`.
+
+## Change the dictionary
+
+| Intent | Command | Result |
 | --- | --- | --- |
-| 加入词库 | `yoooclaw voice hotwords add "星桥" "YoooClaw Capture" --format json` | 新词默认权重为 4，可用 `--weight` 指定。已有词保留原权重。 |
-| 调整已有词的权重 | `yoooclaw voice hotwords update "星桥" "YoooClaw Capture" --weight 5 --format json` | 必须显式给出新权重。缺失的词返回 404。 |
-| 从词库移除 | `yoooclaw voice hotwords delete "星桥" "YoooClaw Capture" --format json` | 只传要删除的词。词已不存在也算成功。 |
+| Add terms | `yoooclaw voice hotwords add "Sail" "North Star" --format json` | New terms get the default weight unless you pass `--weight`. Existing terms keep their weight. |
+| Adjust weights | `yoooclaw voice hotwords update "Sail" "North Star" --weight 5 --format json` | Sets the explicit weight on existing terms. A missing term returns HTTP 404. |
+| Remove terms | `yoooclaw voice hotwords delete "Sail" "North Star" --format json` | A term that is already absent also counts as success. |
 
-权重是识别相近读音时对该词的偏好，取 1 到 5 的整数。1–2 轻微，3–4 较强，5 最强。一次调用中的词共用一个权重，目标权重不同就分组调用。
-
-批量写入按参数顺序逐词执行。成功时读 `results`，部分失败时读 `error.results`，按词报告 `ok`、`error` 和 `not_attempted`。已成功的词会保留。遇到网络中断，用 `list` 核对受影响词的实际状态，再决定哪些词仍需处理。
+Pass each term as one argument. Group additions or updates by target weight. The CLI submits each term in order, so a failed batch can include successful writes. Read `results` on success or `error.results` on partial failure and report which terms were `ok`, `error`, or `not_attempted`. If the connection drops, check the affected terms with `list` before retrying.
