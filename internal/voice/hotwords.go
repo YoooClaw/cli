@@ -41,7 +41,10 @@ func (c HotwordClient) List(ctx context.Context, limit int, cursor int64) (Hotwo
 	}
 	defer resp.Body.Close()
 	var page HotwordPage
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&page); err != nil || page.Items == nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&page); err != nil {
+		return HotwordPage{}, errs.Newf(errs.CodeNetworkError, "热词列表 JSON 解码失败（%v）", err)
+	}
+	if page.Items == nil {
 		return HotwordPage{}, errs.New(errs.CodeNetworkError, "热词列表响应格式异常，缺少有效的 items 数组")
 	}
 	return page, nil

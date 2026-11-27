@@ -203,3 +203,20 @@ func TestVoiceHotwordPagination(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+func TestVoiceHotwordListExplainsInvalidResponses(t *testing.T) {
+	for _, tc := range []struct{ body, detail string }{
+		{`{"items":[`, "unexpected EOF"},
+		{`{}`, "缺少有效的 items 数组"},
+	} {
+		t.Run(tc.detail, func(t *testing.T) {
+			serveHotwords(t, func(w http.ResponseWriter, _ *http.Request) {
+				io.WriteString(w, tc.body)
+			})
+			out, code := execCLI(t, "voice", "hotwords", "list")
+			if code == 0 || !strings.Contains(out, tc.detail) {
+				t.Fatal(out)
+			}
+		})
+	}
+}

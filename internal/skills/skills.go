@@ -249,17 +249,17 @@ type InstallResult struct {
 	Dest   string `json:"dest"`
 }
 
-// deprecatedBundledSkills 列出安装新版 Skill 时需要清理的旧内置目录名。
-var deprecatedBundledSkills = []string{
-	"yoooclaw-lightrule-create",
-	"yoooclaw-notification-query",
-	"yoooclaw-recording-entity-extraction",
-	"yoooclaw-recording-interview",
-	"yoooclaw-recording-meeting-minutes",
-	"yoooclaw-recording-mindmap",
-	"yoooclaw-recording-query",
-	"yoooclaw-recording-translation",
-	"yoooclaw-recordings-process",
+// A retired Skill has an empty replacement. Keep the order of cleanup results stable.
+var deprecatedBundledSkills = []struct{ name, replacement string }{
+	{"yoooclaw-lightrule-create", "yoooclaw-light"},
+	{"yoooclaw-notification-query", "yoooclaw-context-query"},
+	{"yoooclaw-recording-entity-extraction", ""},
+	{"yoooclaw-recording-interview", ""},
+	{"yoooclaw-recording-meeting-minutes", ""},
+	{"yoooclaw-recording-mindmap", ""},
+	{"yoooclaw-recording-query", "yoooclaw-context-query"},
+	{"yoooclaw-recording-translation", ""},
+	{"yoooclaw-recordings-process", ""},
 }
 
 // Install 把内嵌 Skill 复制到 target；force 时覆盖已存在目录。
@@ -278,16 +278,20 @@ func Install(target string, force bool) ([]InstallResult, []string, error) {
 	legacyMemory := filepath.Join(target, "yoooclaw-notification-to-memory")
 	legacyRaw, _ := os.ReadFile(filepath.Join(legacyMemory, "SKILL.md"))
 	legacyCommand := wuyingCommandRE.Find(legacyRaw)
-	for _, name := range deprecatedBundledSkills {
-		dest := filepath.Join(target, name)
+	for _, old := range deprecatedBundledSkills {
+		dest := filepath.Join(target, old.name)
 		if !fsutil.Exists(dest) {
 			continue
 		}
 		if err := os.RemoveAll(dest); err != nil {
 			return nil, nil, err
 		}
+		reason := "此 Skill 已停止随 CLI 提供"
+		if old.replacement != "" {
+			reason = "已并入 " + old.replacement
+		}
 		results = append(results, InstallResult{
-			Name: name, Status: "removed", Reason: "此 Skill 已停止随 CLI 提供", Dest: dest,
+			Name: old.name, Status: "removed", Reason: reason, Dest: dest,
 		})
 	}
 	for _, s := range skills {

@@ -19,8 +19,11 @@ func lastDaysWindow(cmd *cobra.Command) (time.Duration, error) {
 	}
 	days, err := strconv.ParseInt(flagStr(cmd, "last-days"), 10, 64)
 	const day = 24 * time.Hour
-	if err != nil || days <= 0 || days > math.MaxInt64/int64(day) {
-		return 0, errs.Newf(errs.CodeInvalidArgument, "--last-days 须为 1 到 %d 的整数", math.MaxInt64/int64(day))
+	if days > math.MaxInt64/int64(day) {
+		return 0, errs.New(errs.CodeInvalidArgument, "--last-days 指定的时间范围过大，请缩短天数")
+	}
+	if err != nil || days <= 0 {
+		return 0, errs.New(errs.CodeInvalidArgument, "--last-days 须为正整数")
 	}
 	for _, flag := range []string{"from", "to", "date", "from-date", "to-date"} {
 		if cmd.Flags().Changed(flag) {

@@ -6,13 +6,13 @@ Apply the parent `yoooclaw-context-query` rules.
 
 ```bash
 yoooclaw image storage-path --format json
-yoooclaw image list --format json
+yoooclaw image list --last-days 7 --format json
 yoooclaw image status <id> --format json
 yoooclaw image path <id> --format json
 yoooclaw image path <id> --thumbnail --format json
 ```
 
-Useful list filters include `--status`, `--app`, `--client`, `--from`, `--to`, and `--limit`.
+Useful list filters include `--status`, `--app`, `--client`, and `--limit`. For the last N days of image creation times, pass `--last-days N`. For explicit bounds, use `--from` and `--to`.
 
 The index supports metadata lookup and local-file access. It does not provide OCR or semantic pixel search.
 

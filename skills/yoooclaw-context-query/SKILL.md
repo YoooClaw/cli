@@ -1,7 +1,7 @@
 ---
 name: yoooclaw-context-query
 description: |
-  Query synchronized local context and YoooClaw App todos: things/plans/tasks (“今天有什么事情/安排/待办”) from system calendars, system reminders and YoooClaw App todo; location history (“我去过哪里”), health metrics/sleep/trends, medication, workouts, water/caffeine intake and mood records (“今天的健康数据/吃药记录/喝了多少水”); notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
+  Query synchronized local context and YoooClaw App todos: things/plans/tasks (“今天有什么事情/安排/待办”) from system calendars, system reminders and YoooClaw App todo; location history (“我去过哪里”), health metrics/sleep/trends, medication, workouts, water/caffeine intake and mood records (“今天的健康数据/吃药记录/喝了多少水”); notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web.
 ---
 
 # YoooClaw context query
@@ -88,6 +88,8 @@ Do not apply a shared per-source result cap. Process large scopes in batches ins
 - Include useful source labels: notification timestamp/app/sender, voice timestamp/App/ID, recording name/ID, page title/canonical URL, or image ID/path.
 
 ## Boundaries
+
+- For recording questions, locate the recording and answer from its transcript or stored summary.
 
 - Creating, editing, completing, reopening or deleting YoooClaw App todos uses `yoooclaw-todo`; this skill only queries. System calendars and reminders are read-only through these commands.
 

@@ -20,7 +20,7 @@ const hotwordWeights = `权重表示语音识别遇到相近读音时优先选�
 例如，项目名“云舟”总被写成“云州”，可以调高权重。如果说地名“云州”时也经常被写成“云舟”，就调低权重。`
 
 const hotwordBatchHelp = `多个词用空格分隔，含空格的词用引号括起。CLI 按输入顺序逐词提交。
-调权时找不到词（404）、词条冲突（409）或校验失败（422）时继续处理后续词。鉴权、网络或服务异常时停止。
+遇到词条冲突（409）或校验失败（422）时继续处理后续词。update 遇到词条不存在（404）也会继续。鉴权失败（401/403）、网络或服务异常时停止。
 已写入的词会保留。部分失败时退出码非零，结果按词标记 ok（成功）、error（出错）或 not_attempted（未执行）。`
 
 func newVoiceHotwordsCmd() *cobra.Command {
@@ -38,7 +38,7 @@ func newVoiceHotwordsCmd() *cobra.Command {
 		Short: "按页查看有效热词及其权重",
 		Args:  cobra.NoArgs,
 		RunE:  run(voiceHotwordList),
-		Long:  "每次读取一页有效热词。JSON 输出中，count 是本页实际返回的词数，空页为 0。items 包含词文本 text 和权重 weight。\n有下一页时，将 next_cursor 原样传给 --cursor。末页省略 next_cursor。查询词库总数时，累加各页的 count。NDJSON 每行输出一个词条。",
+		Long:  "每次读取一页有效热词。JSON 输出中，count 是本页实际返回的词数，空页为 0。items 包含词文本 text 和权重 weight。\n有下一页时，将 next_cursor 原样传给 --cursor。末页省略 next_cursor。查询词库总数时，累加各页的 count。NDJSON 仅逐行输出当前页的词条。需要翻页或统计数量时，请用 --format json 获取 next_cursor 和 count。",
 		Example: `  yoooclaw voice hotwords list --limit 20 --format json
   yoooclaw voice hotwords list --limit 20 --cursor 42 --format json`,
 	}

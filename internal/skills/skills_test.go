@@ -404,8 +404,8 @@ func TestInstallRemovesDeprecatedBundledSkills(t *testing.T) {
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range deprecatedBundledSkills {
-		dir := filepath.Join(target, name)
+	for _, old := range deprecatedBundledSkills {
+		dir := filepath.Join(target, old.name)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -422,18 +422,24 @@ func TestInstallRemovesDeprecatedBundledSkills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	removed := map[string]bool{}
+	removed := map[string]string{}
 	for _, result := range results {
 		if result.Status == "removed" {
-			removed[result.Name] = true
+			removed[result.Name] = result.Reason
 		}
 	}
-	for _, name := range deprecatedBundledSkills {
-		if fsutil.Exists(filepath.Join(target, name)) {
-			t.Errorf("deprecated skill %q was not removed", name)
+	for _, old := range deprecatedBundledSkills {
+		if fsutil.Exists(filepath.Join(target, old.name)) || removed[old.name] == "" {
+			t.Errorf("missing cleanup for %q", old.name)
 		}
-		if !removed[name] {
-			t.Errorf("deprecated skill %q missing removed result", name)
+	}
+	for name, want := range map[string]string{
+		"yoooclaw-notification-query": "已并入 yoooclaw-context-query",
+		"yoooclaw-lightrule-create":   "已并入 yoooclaw-light",
+		"yoooclaw-recordings-process": "此 Skill 已停止随 CLI 提供",
+	} {
+		if removed[name] != want {
+			t.Errorf("%s removal reason = %q, want %q", name, removed[name], want)
 		}
 	}
 	if !fsutil.Exists(unrelated) {

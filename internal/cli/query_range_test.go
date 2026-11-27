@@ -78,3 +78,44 @@ func TestLastDaysRejectsInvalidAndConflictingFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestImageAndCalendarListsUseRollingBoundaries(t *testing.T) {
+	dirs := paths.ForRoot(sandbox(t), "default")
+	oldNow := contextQueryNow
+	contextQueryNow = func() time.Time { return time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { contextQueryNow = oldNow })
+	for _, dir := range []string{dirs.Images, dirs.Calendars} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	images := `{"images":[
+		{"imageId":"before","metadata":{"created_at":"2026-11-20T19:59:59+08:00"}},
+		{"imageId":"start","metadata":{"created_at":"2026-11-20T20:00:00+08:00"}},
+		{"imageId":"end","metadata":{"created_at":"2026-11-27T20:00:00+08:00"}}]}`
+	if err := os.WriteFile(filepath.Join(dirs.Images, "index.json"), []byte(images), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := execCLI(t, "image", "list", "--last-days", "7")
+	rows := decode(t, out)["images"].([]any)
+	if code != 0 || len(rows) != 1 || rows[0].(map[string]any)["imageId"] != "start" {
+		t.Fatal(out)
+	}
+
+	events := `{"title":"ended","startAt":"2026-11-20T10:00:00Z","endAt":"2026-11-20T12:00:00Z","timeZone":"UTC"}
+{"title":"overlap","startAt":"2026-11-20T11:00:00Z","endAt":"2026-11-20T13:00:00Z","timeZone":"UTC"}
+`
+	if err := os.WriteFile(filepath.Join(dirs.Calendars, "2026-11-20.jsonl"), []byte(events), 0600); err != nil {
+		t.Fatal(err)
+	}
+	atEnd := `{"title":"future","startAt":"2026-11-27T12:00:00Z","endAt":"2026-11-27T13:00:00Z","timeZone":"UTC"}`
+	if err := os.WriteFile(filepath.Join(dirs.Calendars, "2026-11-27.jsonl"), []byte(atEnd), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, code = execCLI(t, "calendar", "list", "--last-days", "7")
+	result := decode(t, out)
+	rows = result["items"].([]any)
+	if code != 0 || result["scope"] != "rolling_window" || len(rows) != 1 || rows[0].(map[string]any)["data"].(map[string]any)["title"] != "overlap" {
+		t.Fatal(out)
+	}
+}

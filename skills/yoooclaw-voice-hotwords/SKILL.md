@@ -11,7 +11,7 @@ If you're unsure which command to use, run `yoooclaw voice hotwords --help`. For
 
 Run `yoooclaw voice hotwords list --format json` and read `text` and `weight` from `items`. Pass each `next_cursor` unchanged to `--cursor`. For a single term, stop at an exact match. To list the whole dictionary or establish that a term is absent, continue until the response omits `next_cursor`.
 
-Each page's `count` is the number of terms in its `items` array. To report the dictionary size, sum `count` once per page in code. If reporting a breakdown by weight, tally the items from those same pages and verify the subtotals add up to the dictionary size.
+Use JSON for pagination and counts. NDJSON streams the current page's term records. Each JSON page's `count` is the number of terms in its `items` array. To report the dictionary size, sum `count` once per page in code. If reporting a breakdown by weight, tally the items from those same pages and verify the subtotals add up to the dictionary size.
 
 ## Select terms from a source
 

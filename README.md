@@ -186,7 +186,7 @@ This repo bundles several Skills under [skills/](skills/) that teach agents to c
 | `yoooclaw-media-generate`     | Generates images and videos up to 30 seconds with Python 3; reads `MODEL_PROXY_API_KEY` from `~/.config/yoooclaw/credentials` |
 | `yoooclaw-context-query`        | The sole query Skill for fresh notifications, calendars, location history, health statistics, voice input, recordings/transcripts, captured web pages, synchronized images, and cross-source local context |
 | `yoooclaw-context-to-memory` | Distills notifications, calendars, locations, health snapshots, and web pages into attributed persistent memory; confirms exact batches after verification |
-| `yoooclaw-voice-hotwords`        | Lists, adds, reweights, and removes cloud speech-recognition hotwords |
+| `yoooclaw-voice-hotwords`       | Lists, adds, reweights, and removes cloud speech-recognition hotwords |
 | `yoooclaw-light`                | Plays one-shot light effects and manages persistent “notification → light effect” rules through the standalone CLI |
 | `yoooclaw-todo`                 | Query, create, edit, complete / reopen and delete personal todos; default for generic schedule / todo requests, confirms before deletion |
 | `yoooclaw-data-transfer`        | Migrates data via OSS task IDs or local packages (notifications, recordings, web pages, optional audio/images) between environments; packages interoperate with the OpenClaw plugin `ntf transfer` |
