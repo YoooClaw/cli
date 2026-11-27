@@ -393,6 +393,9 @@ yoooclaw recording setup-asr --mode api --language zh-Hant --non-interactive # T
 yoooclaw voice list [--from <ISO_TIME_OR_DATE>] [--to <ISO_TIME_OR_DATE>]
 yoooclaw voice apps                                # Deduplicated App IDs/names from the recent 7 days
 yoooclaw voice search "project" --app com.microsoft.VSCode
+yoooclaw voice hotwords list --format json
+yoooclaw voice hotwords add "Hermes" "YoooClaw Capture" --weight 4
+yoooclaw voice hotwords delete "Hermes" "YoooClaw Capture"
 yoooclaw synced-web-page list [--from <ISO_TIME>] [--to <ISO_TIME>]
 yoooclaw synced-web-page search "JavaScript" --limit 20
 yoooclaw synced-web-page path <url-hash>

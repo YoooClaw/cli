@@ -22,7 +22,7 @@ const (
 func newVoiceCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "voice",
-		Short: "查询本机语音输入历史 🟢",
+		Short: "查询本机语音输入历史，管理云端识别热词",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
@@ -85,7 +85,7 @@ func newVoiceCmd() *cobra.Command {
 		RunE:  run(voiceStoragePath),
 	}
 
-	c.AddCommand(list, search, show, apps, latest, today, storagePath)
+	c.AddCommand(list, search, show, apps, latest, today, storagePath, newVoiceHotwordsCmd())
 	return c
 }
 
