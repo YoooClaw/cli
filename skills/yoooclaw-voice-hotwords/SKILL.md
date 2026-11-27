@@ -11,6 +11,8 @@ If you're unsure which command to use, run `yoooclaw voice hotwords --help`. For
 
 Run `yoooclaw voice hotwords list --format json` and read `text` and `weight` from `items`. Pass each `next_cursor` unchanged to `--cursor`. For a single term, stop at an exact match. To list the whole dictionary or establish that a term is absent, continue until the response omits `next_cursor`.
 
+Each page's `count` is the number of terms in its `items` array. To report the dictionary size, sum `count` once per page in code. If reporting a breakdown by weight, tally the items from those same pages and verify the subtotals add up to the dictionary size.
+
 ## Select terms from a source
 
 Use the source the user specified. For requests based on “my last N days of context”, use `yoooclaw-context-query` to read the relevant sources with `--last-days N`. For example, `yoooclaw recording list --last-days 7 --format json` selects recordings from the past 168 hours. Read transcripts for the selected recordings. Look for names, products, acronyms, and technical terms that speech recognition is likely to mishear. Deduplicate exact matches and preserve spelling, case, and spaces. A request for suggestions ends with the candidate list. Write the terms when the user asks to add them.

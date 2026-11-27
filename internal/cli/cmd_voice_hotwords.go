@@ -38,7 +38,7 @@ func newVoiceHotwordsCmd() *cobra.Command {
 		Short: "按页查看有效热词及其权重",
 		Args:  cobra.NoArgs,
 		RunE:  run(voiceHotwordList),
-		Long:  "每次读取一页有效热词。JSON 输出的 items 包含词文本 text 和权重 weight。\n有下一页时，将 next_cursor 原样传给 --cursor。末页省略 next_cursor。",
+		Long:  "每次读取一页有效热词。JSON 输出中，count 是本页实际返回的词数，空页为 0。items 包含词文本 text 和权重 weight。\n有下一页时，将 next_cursor 原样传给 --cursor。末页省略 next_cursor。查询词库总数时，累加各页的 count。NDJSON 每行输出一个词条。",
 		Example: `  yoooclaw voice hotwords list --limit 20 --format json
   yoooclaw voice hotwords list --limit 20 --cursor 42 --format json`,
 	}
@@ -97,7 +97,7 @@ func voiceHotwordList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any,
 	if ctx.Format == output.NDJSON {
 		return rows, nil
 	}
-	result := map[string]any{"ok": true, "items": rows}
+	result := map[string]any{"ok": true, "count": len(rows), "items": rows}
 	if page.NextCursor != nil {
 		result["next_cursor"] = *page.NextCursor
 	}

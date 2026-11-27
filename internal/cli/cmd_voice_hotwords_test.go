@@ -178,22 +178,28 @@ func TestVoiceHotwordPagination(t *testing.T) {
 			if q.Get("limit") != "50" {
 				t.Error(q)
 			}
-			io.WriteString(w, `{"items":[{"text":"old","weight":0}],"next_cursor":`+cursor+`}`)
+			io.WriteString(w, `{"items":[{"text":"old","weight":0},{"text":"new","weight":4}],"next_cursor":`+cursor+`}`)
 		case cursor:
 			if q.Get("limit") != "1" {
 				t.Error(q)
 			}
+			io.WriteString(w, `{"items":[{"text":"last","weight":5}]}`)
+		case "9007199254740994":
 			io.WriteString(w, `{"items":[]}`)
 		default:
 			t.Error(q)
 		}
 	})
 	out, code := execCLI(t, "voice", "hotwords", "list", "--format", "json")
-	if code != 0 || !strings.Contains(out, cursor) || !strings.Contains(out, `"weight":0`) {
+	if code != 0 || decode(t, out)["count"] != 2.0 || !strings.Contains(out, cursor) || !strings.Contains(out, `"weight":0`) {
 		t.Fatal(out)
 	}
 	out, code = execCLI(t, "voice", "hotwords", "list", "--cursor", cursor, "--limit", "1", "--format", "json")
-	if code != 0 || !strings.Contains(out, `"items":[]`) || strings.Contains(out, "next_cursor") {
+	if code != 0 || decode(t, out)["count"] != 1.0 || strings.Contains(out, "next_cursor") {
+		t.Fatal(out)
+	}
+	out, code = execCLI(t, "voice", "hotwords", "list", "--cursor", "9007199254740994", "--format", "json")
+	if code != 0 || decode(t, out)["count"] != 0.0 || !strings.Contains(out, `"items":[]`) || strings.Contains(out, "next_cursor") {
 		t.Fatal(out)
 	}
 }
