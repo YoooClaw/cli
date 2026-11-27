@@ -20,6 +20,7 @@ func addQueryFlagsWithLimit(cmd *cobra.Command, defaultLimit string) {
 	f := cmd.Flags()
 	f.String("from", "", "开始时间，如 2026-03-01T09:00:00+08:00")
 	f.String("to", "", "结束时间")
+	addLastDaysFlag(cmd)
 	f.String("app", "", "按应用过滤（支持中英文别名）")
 	f.String("sender", "", "按发送人/标题过滤")
 	f.String("conversation-type", "", "会话类型 group|private")
@@ -28,12 +29,16 @@ func addQueryFlagsWithLimit(cmd *cobra.Command, defaultLimit string) {
 	f.String("limit", defaultLimit, "最大返回条数")
 }
 
-func rawQueryFromCmd(cmd *cobra.Command) notif.RawQueryOpts {
+func rawQueryFromCmd(cmd *cobra.Command) (notif.RawQueryOpts, error) {
+	from, to, err := queryBoundaryFlags(cmd)
+	if err != nil {
+		return notif.RawQueryOpts{}, err
+	}
 	return notif.RawQueryOpts{
-		From: flagStr(cmd, "from"), To: flagStr(cmd, "to"), App: flagStr(cmd, "app"),
+		From: from, To: to, ToExclusive: cmd.Flags().Changed("last-days"), App: flagStr(cmd, "app"),
 		Sender: flagStr(cmd, "sender"), ConversationType: flagStr(cmd, "conversation-type"),
 		Keyword: flagStr(cmd, "keyword"), Client: flagStr(cmd, "client"), Limit: flagStr(cmd, "limit"),
-	}
+	}, nil
 }
 
 func newNotificationCmd() *cobra.Command {
@@ -50,6 +55,7 @@ func newNotificationCmd() *cobra.Command {
 	stats := &cobra.Command{Use: "stats", Short: "按维度聚合统计", Args: cobra.NoArgs, RunE: run(notificationStats)}
 	stats.Flags().String("from", "", "YYYY-MM-DD 或 ISO 8601，默认 7 天前")
 	stats.Flags().String("to", "", "YYYY-MM-DD 或 ISO 8601，默认今天")
+	addLastDaysFlag(stats)
 	stats.Flags().String("app", "", "仅统计指定应用")
 	stats.Flags().String("sender", "", "仅统计指定发送人/标题")
 	stats.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
@@ -68,7 +74,11 @@ func newNotificationCmd() *cobra.Command {
 }
 
 func notificationSearch(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	opts, err := notif.BuildQueryOptions(rawQueryFromCmd(cmd), 100)
+	raw, err := rawQueryFromCmd(cmd)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := notif.BuildQueryOptions(raw, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +88,10 @@ func notificationSearch(ctx *clictx.Context, cmd *cobra.Command, _ []string) (an
 func notificationSummary(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
 	sample := atoiDefault(flagStr(cmd, "sample"), 30)
 	top := atoiDefault(flagStr(cmd, "top"), 10)
-	raw := rawQueryFromCmd(cmd)
+	raw, err := rawQueryFromCmd(cmd)
+	if err != nil {
+		return nil, err
+	}
 	// 显式传 --limit 时聚合最近 N 条（供「总结约 X 条」场景）；
 	// 不传时维持原行为：聚合范围内全部通知。
 	limitRaw := raw.Limit
@@ -106,11 +119,13 @@ func notificationSummary(ctx *clictx.Context, cmd *cobra.Command, _ []string) (a
 }
 
 func notificationStats(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	fromRaw := flagStr(cmd, "from")
+	fromRaw, toRaw, err := queryBoundaryFlags(cmd)
+	if err != nil {
+		return nil, err
+	}
 	if fromRaw == "" {
 		fromRaw = localDaysAgo(7)
 	}
-	toRaw := flagStr(cmd, "to")
 	if toRaw == "" {
 		toRaw = localToday()
 	}
@@ -135,7 +150,7 @@ func notificationStats(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any
 	}
 	opts := notif.QueryOptions{
 		App: flagStr(cmd, "app"), Sender: flagStr(cmd, "sender"), Client: flagStr(cmd, "client"),
-		Limit: maxLimit, FromTs: from.ExactTs, ToTs: to.ExactTs,
+		Limit: maxLimit, FromTs: from.ExactTs, ToTs: to.ExactTs, ToExclusive: cmd.Flags().Changed("last-days"),
 		FromDateKey: from.MinDateKey, ToDateKey: to.MaxDateKey,
 	}
 	items := notif.Query(ctx.Paths.Notifications, opts)

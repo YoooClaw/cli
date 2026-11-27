@@ -12,13 +12,14 @@ import (
 )
 
 type Options struct {
-	All    bool   `json:"all"`
-	Date   string `json:"date,omitempty"`
-	From   string `json:"fromDate,omitempty"`
-	To     string `json:"toDate,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
-	Metric string `json:"metric,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
+	Window time.Duration `json:"window,omitempty"`
+	All    bool          `json:"all"`
+	Date   string        `json:"date,omitempty"`
+	From   string        `json:"fromDate,omitempty"`
+	To     string        `json:"toDate,omitempty"`
+	Cursor string        `json:"cursor,omitempty"`
+	Metric string        `json:"metric,omitempty"`
+	Limit  int           `json:"limit,omitempty"`
 }
 
 type cursor struct {
@@ -73,7 +74,10 @@ func Query(p paths.Paths, source, mode, id string, o Options, now time.Time) (ma
 	}
 	scope := "all_synced"
 	desc := "全部已同步数据；不代表设备完整历史"
-	if o.Date != "" || o.From != "" || o.To != "" {
+	if o.Window > 0 {
+		scope = "rolling_window"
+		desc = "与指定滚动时间范围重叠的已同步日程"
+	} else if o.Date != "" || o.From != "" || o.To != "" {
 		scope = "date_range"
 		desc = "显式日期范围内的已同步数据"
 	} else if source == "calendars" && !o.All && mode == "list" {
@@ -86,6 +90,18 @@ func Query(p paths.Paths, source, mode, id string, o Options, now time.Time) (ma
 			continue
 		}
 		include := o.Includes(v.Date)
+		if scope == "rolling_window" {
+			start, err := calendarStart(v.Data)
+			if err != nil {
+				return nil, err
+			}
+			end, err := time.Parse(time.RFC3339Nano, Str(v.Data, "endAt"))
+			if err != nil {
+				return nil, err
+			}
+			from := c.AsOf.Add(-o.Window)
+			include = start.Before(c.AsOf) && (!start.Before(from) || end.After(from))
+		}
 		if source == "calendars" && scope == "date_range" {
 			// Calendar ranges select overlapping source-local days, including an event
 			// whose start lies before the requested date.
@@ -148,7 +164,7 @@ func Query(p paths.Paths, source, mode, id string, o Options, now time.Time) (ma
 		Source, Mode, ID, Scope string
 		Options                 Options
 		Items                   []Item
-	}{source, mode, id, scope, Options{All: o.All, Date: o.Date, From: o.From, To: o.To, Metric: o.Metric}, items})
+	}{source, mode, id, scope, Options{All: o.All, Date: o.Date, From: o.From, To: o.To, Metric: o.Metric, Window: o.Window}, items})
 	if o.Cursor != "" && c.Digest != digest {
 		return nil, fmt.Errorf("source or query changed; restart pagination")
 	}

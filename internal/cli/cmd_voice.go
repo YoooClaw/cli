@@ -22,7 +22,7 @@ const (
 func newVoiceCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "voice",
-		Short: "查询本机语音输入历史 🟢",
+		Short: "查询本机语音输入历史，管理云端识别热词",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
@@ -61,6 +61,7 @@ func newVoiceCmd() *cobra.Command {
 	}
 	apps.Flags().String("from", "", "开始时间（含，带时区 ISO 8601 或 YYYY-MM-DD）")
 	apps.Flags().String("to", "", "结束时间（不含，带时区 ISO 8601 或 YYYY-MM-DD）")
+	addLastDaysFlag(apps)
 	apps.Flags().Bool("all", false, "明确扫描全部历史中的 App")
 
 	latest := &cobra.Command{
@@ -85,13 +86,14 @@ func newVoiceCmd() *cobra.Command {
 		RunE:  run(voiceStoragePath),
 	}
 
-	c.AddCommand(list, search, show, apps, latest, today, storagePath)
+	c.AddCommand(list, search, show, apps, latest, today, storagePath, newVoiceHotwordsCmd())
 	return c
 }
 
 func addVoiceHistoryFlags(cmd *cobra.Command) {
 	cmd.Flags().String("from", "", "开始时间（含，带时区 ISO 8601 或 YYYY-MM-DD）")
 	cmd.Flags().String("to", "", "结束时间（不含，带时区 ISO 8601 或 YYYY-MM-DD）")
+	addLastDaysFlag(cmd)
 	cmd.Flags().String("app", "", "按完整 app_id 或 app_name 过滤")
 	cmd.Flags().String("status", "", "按输入结果状态过滤")
 	cmd.Flags().String("language", "", "按识别语言过滤")
@@ -100,11 +102,7 @@ func addVoiceHistoryFlags(cmd *cobra.Command) {
 }
 
 func voiceQueryFromFlags(cmd *cobra.Command) (voice.Query, error) {
-	from, err := voice.ParseBoundary(flagStr(cmd, "from"), "--from")
-	if err != nil {
-		return voice.Query{}, err
-	}
-	to, err := voice.ParseBoundary(flagStr(cmd, "to"), "--to")
+	from, to, err := parseQueryBounds(cmd, voice.ParseBoundary)
 	if err != nil {
 		return voice.Query{}, err
 	}
@@ -250,11 +248,7 @@ func voiceShow(ctx *clictx.Context, cmd *cobra.Command, args []string) (any, err
 }
 
 func voiceApps(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	from, err := voice.ParseBoundary(flagStr(cmd, "from"), "--from")
-	if err != nil {
-		return nil, err
-	}
-	to, err := voice.ParseBoundary(flagStr(cmd, "to"), "--to")
+	from, to, err := parseQueryBounds(cmd, voice.ParseBoundary)
 	if err != nil {
 		return nil, err
 	}

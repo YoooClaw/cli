@@ -133,6 +133,43 @@ func TestVoiceCLIReadsJSONLUsesVoiceIDAndExactAppIdentity(t *testing.T) {
 	}
 }
 
+func TestVoiceListLastDaysUsesHalfOpenWeek(t *testing.T) {
+	home := sandbox(t)
+	end := time.Date(2026, 11, 27, 12, 34, 56, 0, time.UTC)
+	start := end.Add(-168 * time.Hour)
+	oldNow := contextQueryNow
+	contextQueryNow = func() time.Time { return end }
+	t.Cleanup(func() { contextQueryNow = oldNow })
+
+	createCLIVoiceJSONL(t, home, map[string][]map[string]any{
+		start.Format(time.DateOnly): {
+			cliVoiceRow("before", start.Add(-time.Second), "test", "Test", "before"),
+			cliVoiceRow("start", start, "test", "Test", "start"),
+		},
+		end.Format(time.DateOnly): {
+			cliVoiceRow("inside", end.Add(-time.Second), "test", "Test", "inside"),
+			cliVoiceRow("end", end, "test", "Test", "end"),
+		},
+	})
+	out, code := execCLI(t, "voice", "list", "--last-days", "7", "--format", "json")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	var page struct {
+		Range struct{ From, To time.Time }
+		Items []struct{ ID string }
+	}
+	if err := json.Unmarshal([]byte(out), &page); err != nil {
+		t.Fatal(err)
+	}
+	if !page.Range.From.Equal(start) || !page.Range.To.Equal(end) {
+		t.Fatalf("unexpected --last-days 7 window: %+v", page.Range)
+	}
+	if len(page.Items) != 2 || page.Items[0].ID != "inside" || page.Items[1].ID != "start" {
+		t.Fatalf("unexpected voice records in half-open window: %+v", page.Items)
+	}
+}
+
 func TestVoiceAppsDefaultsToRecentWeekAndSupportsAll(t *testing.T) {
 	home := sandbox(t)
 	fixedNow := time.Date(2026, 8, 21, 12, 0, 0, 0, time.Local)

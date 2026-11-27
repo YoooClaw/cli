@@ -27,6 +27,7 @@ func newRecordingCmd() *cobra.Command {
 	list.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	list.Flags().String("from", "", "录音时间起点（含，ISO 8601 或 YYYY-MM-DD）")
 	list.Flags().String("to", "", "录音时间终点（不含，ISO 8601 或 YYYY-MM-DD）")
+	addLastDaysFlag(list)
 	list.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
 	status := &cobra.Command{Use: "status <id>", Short: "查看单条录音详情 🟢", Args: cobra.ExactArgs(1), RunE: run(recordingStatusCmd)}
 	status.Flags().String("source", "all", "录音来源：all | mobile_app | capture_app（smart_hardware 为 mobile_app 别名）")
@@ -169,11 +170,7 @@ func parseRecordingSource(raw string) (string, error) {
 }
 
 func recordingList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	from, err := parseRecordingBoundary(flagStr(cmd, "from"), "--from")
-	if err != nil {
-		return nil, err
-	}
-	to, err := parseRecordingBoundary(flagStr(cmd, "to"), "--to")
+	from, to, err := parseQueryBounds(cmd, parseRecordingBoundary)
 	if err != nil {
 		return nil, err
 	}

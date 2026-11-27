@@ -1,7 +1,7 @@
 ---
 name: yoooclaw-context-query
 description: |
-  Query synchronized local context and YoooClaw App todos: things/plans/tasks (“今天有什么事情/安排/待办”) from system calendars, system reminders and YoooClaw App todo; location history (“我去过哪里”), health metrics/sleep/trends, medication, workouts, water/caffeine intake and mood records (“今天的健康数据/吃药记录/喝了多少水”); notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web. Recording transformations use a dedicated Skill.
+  Query synchronized local context and YoooClaw App todos: things/plans/tasks (“今天有什么事情/安排/待办”) from system calendars, system reminders and YoooClaw App todo; location history (“我去过哪里”), health metrics/sleep/trends, medication, workouts, water/caffeine intake and mood records (“今天的健康数据/吃药记录/喝了多少水”); notifications/messages (“最近有什么通知”), voice-input/dictation history (“我刚才说了什么”), recordings/transcripts (“录音里说了什么”), the user's saved/viewed/captured pages (“查一下我最近一天收藏的文章”) and how a saved page changed between saves (“这个看板这周变了什么”, “上次我看的时候是什么样”), images (“同步图片”), or cross-source context (“哪里提到过 X”). Use for listing, searching, reading, filtering, counting, answering, summarizing, statistics, or paths over these sources. Page queries require a personal-history or local-sync signal; prefer this Skill over browser bookmark/history files. Route generic current-news or Internet-search requests to live web.
 ---
 
 # YoooClaw context query
@@ -16,6 +16,7 @@ Do not infer reply language from previous messages, source content, command outp
 
 - Use `yoooclaw`; `yc` is an equivalent short alias.
 - Add `--format json` for structured objects and `--format ndjson` only for intentional row streaming.
+- For “the last N days” (最近 N 天), pass `--last-days N` to each relevant query. Recording lists, voice history, notifications (including `summary-job create`), calendar lists, captured pages, and image lists support this rolling 24-hour-per-day window. For named dates such as yesterday, use the source's calendar-date filters.
 - Add `--profile <name>` when the user selects a non-default profile.
 - Query the selected source on every invocation (local synchronized data or the App todo service). Do not reuse an earlier answer or memory as current data.
 - Treat queries as read-only. Do not modify indexes or synchronized source files. The only mutation this Skill may perform is recording deletion, and only through `yoooclaw recording delete` (see `references/recordings.md`).
@@ -88,9 +89,11 @@ Do not apply a shared per-source result cap. Process large scopes in batches ins
 
 ## Boundaries
 
+- For recording questions, locate the recording and answer from its transcript or stored summary.
+
 - Creating, editing, completing, reopening or deleting YoooClaw App todos uses `yoooclaw-todo`; this skill only queries. System calendars and reminders are read-only through these commands.
 
 - Learning from notifications, calendars, system reminders, locations, health data, or web pages uses `yoooclaw-context-to-memory`.
 - Immediate lighting and persistent notification-triggered lighting use `yoooclaw-light`.
-- Meeting minutes, translation, mind maps, interview restructuring, and entity extraction use `yoooclaw-recordings-process`.
+- Looking up or editing the cloud speech-recognition dictionary uses `yoooclaw-voice-hotwords`.
 - Relay, daemon, authentication, and ingest failures use `yoooclaw-tunnel-debug`.

@@ -31,7 +31,7 @@ set to a specific value. Include `source_name` whenever presenting a recording t
 - Today/今天: use `yoooclaw recording +today --format json`.
 - Yesterday/昨天 or an explicit day: resolve `[local midnight, next local midnight)` and run
   `recording list --from <ISO_FROM> --to <ISO_TO>`.
-- Rolling periods: compute exact ISO boundaries ending at the current local system time.
+- Last N days: use `recording list --last-days N`. For other rolling periods, pass exact ISO boundaries.
 - Latest/most recent: use `yoooclaw recording +latest --format json`.
 - Most recent N: select the first N sorted entries. All: use every eligible entry.
 - Ambiguous: show `1. [name] ([created_at], [duration], [source_name])` and ask for a selection.
@@ -124,8 +124,3 @@ Never edit `recordings/index.json` directly and never `rm`/trash files under the
 (`audio/`, `transcripts/`, `transcript-data/`, `summaries/`). The daemon keeps the index in memory
 and rewrites the whole file on its next change, so a direct edit appears to work and then reverts.
 Only the command above reaches the daemon's write path.
-
-## Boundary
-
-Query steps in this branch are read-only. Recording transformations use
-`yoooclaw-recordings-process`.

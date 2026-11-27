@@ -52,7 +52,10 @@ func parsePositiveInt(cmd *cobra.Command, flag string, def int) (int, error) {
 }
 
 func summaryJobCreate(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
-	raw := rawQueryFromCmd(cmd)
+	raw, err := rawQueryFromCmd(cmd)
+	if err != nil {
+		return nil, err
+	}
 	if raw.Limit == "" {
 		raw.Limit = strconv.Itoa(summaryjob.DefaultJobLimit)
 	}

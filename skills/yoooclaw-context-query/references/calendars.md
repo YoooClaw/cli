@@ -6,6 +6,7 @@ Apply the parent query skill. These commands read local synchronized files witho
 yoooclaw calendar list --format json
 yoooclaw calendar list --all --format json
 yoooclaw calendar list --date YYYY-MM-DD --format json
+yoooclaw calendar list --last-days 7 --format json
 yoooclaw calendar list --from-date YYYY-MM-DD --to-date YYYY-MM-DD --format json
 yoooclaw calendar get <id-from-list> --format json
 ```

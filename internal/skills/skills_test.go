@@ -69,9 +69,9 @@ func TestList(t *testing.T) {
 		"yoooclaw-data-transfer",
 		"yoooclaw-light",
 		"yoooclaw-media-generate",
-		"yoooclaw-recordings-process",
 		"yoooclaw-todo",
 		"yoooclaw-tunnel-debug",
+		"yoooclaw-voice-hotwords",
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("bundled skills = %v, want %v", names, want)
@@ -171,21 +171,16 @@ func TestContextQueryHidesNestedNotificationStatisticsRoute(t *testing.T) {
 	}
 }
 
-func TestRecordingReferencesDoNotFallbackDateRangesToLatest(t *testing.T) {
+func TestRecordingReferenceDoesNotFallbackDateRangesToLatest(t *testing.T) {
 	t.Parallel()
-	for _, file := range []string{
-		"skills/yoooclaw-context-query/references/recordings.md",
-		"skills/yoooclaw-recordings-process/references/recording-source.md",
-	} {
-		raw, err := fs.ReadFile(assets.SkillsFS, file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(raw)
-		for _, required := range []string{"recording +today", "--from", "--to", "Never"} {
-			if !strings.Contains(text, required) {
-				t.Errorf("%s missing date-query safeguard %q", file, required)
-			}
+	const file = "skills/yoooclaw-context-query/references/recordings.md"
+	raw, err := fs.ReadFile(assets.SkillsFS, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"recording +today", "--from", "--to", "Never"} {
+		if !strings.Contains(string(raw), required) {
+			t.Errorf("%s missing date-query safeguard %q", file, required)
 		}
 	}
 }
@@ -403,14 +398,14 @@ func TestInstallMediaSkillIncludesScripts(t *testing.T) {
 	}
 }
 
-func TestInstallRemovesMergedLegacySkills(t *testing.T) {
+func TestInstallRemovesDeprecatedBundledSkills(t *testing.T) {
 	t.Parallel()
 	target := filepath.Join(t.TempDir(), "skills")
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range deprecatedBundledSkills {
-		dir := filepath.Join(target, name)
+	for _, old := range deprecatedBundledSkills {
+		dir := filepath.Join(target, old.name)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -427,18 +422,24 @@ func TestInstallRemovesMergedLegacySkills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	removed := map[string]bool{}
+	removed := map[string]string{}
 	for _, result := range results {
 		if result.Status == "removed" {
-			removed[result.Name] = true
+			removed[result.Name] = result.Reason
 		}
 	}
-	for _, name := range deprecatedBundledSkills {
-		if fsutil.Exists(filepath.Join(target, name)) {
-			t.Errorf("deprecated skill %q was not removed", name)
+	for _, old := range deprecatedBundledSkills {
+		if fsutil.Exists(filepath.Join(target, old.name)) || removed[old.name] == "" {
+			t.Errorf("missing cleanup for %q", old.name)
 		}
-		if !removed[name] {
-			t.Errorf("deprecated skill %q missing removed result", name)
+	}
+	for name, want := range map[string]string{
+		"yoooclaw-notification-query": "已并入 yoooclaw-context-query",
+		"yoooclaw-lightrule-create":   "已并入 yoooclaw-light",
+		"yoooclaw-recordings-process": "此 Skill 已停止随 CLI 提供",
+	} {
+		if removed[name] != want {
+			t.Errorf("%s removal reason = %q, want %q", name, removed[name], want)
 		}
 	}
 	if !fsutil.Exists(unrelated) {
