@@ -15,10 +15,7 @@ Use JSON for pagination and counts. NDJSON streams the current page's term recor
 
 ## Select terms from a source
 
-Use `yoooclaw-context-query` within the requested time range. For “my last N days of context”, pass `--last-days N` to each query.
-
-- **Default sources.** For a general context request, search original written sources only, such as message senders and text, calendar event titles, and saved web pages. Skip recordings, transcripts, recording summaries, dictation history, and excerpts copied from them. This also applies when the written sources are empty.
-- **Explicit sources.** Honor the sources the user names. For “use my meeting recordings”, read the selected recordings' transcripts. For “use my recording summaries” or “use my dictation history”, query the named source. Flag uncertain spellings from speech recognition when presenting candidates.
+Use the source the user specified. For a general context request, use `yoooclaw-context-query` to search original written sources only, such as message senders and text, calendar event titles, and saved web pages. For “my last N days of context”, pass `--last-days N` to each query. Keep recordings, transcripts, recording summaries, dictation history, and excerpts copied from them out of this default search, even when written sources are empty.
 
 Select people, companies, products, acronyms, and industry terms from the selected sources. Deduplicate exact matches and preserve spelling, case, and spaces. A request for suggestions ends with the candidate list. Write the terms when the user asks to add them.
 
