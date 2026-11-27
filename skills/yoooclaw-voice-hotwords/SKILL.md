@@ -13,7 +13,7 @@ Run `yoooclaw voice hotwords list --format json` and read `text` and `weight` fr
 
 ## Select terms from a source
 
-Use the source the user specified. For a recording transcript, use `yoooclaw-context-query`. Look for names, products, acronyms, and technical terms that speech recognition is likely to mishear. Deduplicate exact matches and preserve spelling, case, and spaces. A request for suggestions ends with the candidate list. Write the terms when the user asks to add them.
+Use the source the user specified. For requests based on “my last N days of context”, use `yoooclaw-context-query` to read the relevant sources with `--last-days N`. For example, `yoooclaw recording list --last-days 7 --format json` selects recordings from the past 168 hours. Read transcripts for the selected recordings. Look for names, products, acronyms, and technical terms that speech recognition is likely to mishear. Deduplicate exact matches and preserve spelling, case, and spaces. A request for suggestions ends with the candidate list. Write the terms when the user asks to add them.
 
 ## Choose a weight
 

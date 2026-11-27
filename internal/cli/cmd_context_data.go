@@ -40,6 +40,10 @@ func newContextDataCmd(name, source string) *cobra.Command {
 				return nil, errs.New(errs.CodeInvalidArgument, e.Error())
 			}
 			o := contextdata.Options{All: flagBool(c, "all"), Date: flagStr(c, "date"), From: flagStr(c, "from-date"), To: flagStr(c, "to-date"), Limit: limit, Cursor: flagStr(c, "cursor"), Metric: flagStr(c, "metric")}
+			o.Window, e = lastDaysWindow(c)
+			if e != nil {
+				return nil, e
+			}
 			if mode == "get" && source == "health-data" && o.Date == "" {
 				return nil, errs.New(errs.CodeInvalidArgument, "--date is required")
 			}
@@ -54,6 +58,7 @@ func newContextDataCmd(name, source string) *cobra.Command {
 		})}
 		if name == "calendar" && mode == "list" {
 			c.Short = "默认查询尚未开始的日程；--all 查询全部已同步日程"
+			addLastDaysFlag(c)
 		}
 		c.Flags().Bool("all", false, "全部已同步数据，含过去、进行中和未来；与日期范围互斥")
 		c.Flags().String("date", "", "来源日期 YYYY-MM-DD（位置按接收日）")

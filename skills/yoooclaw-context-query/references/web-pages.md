@@ -35,7 +35,7 @@ yoooclaw synced-web-page diff <urlHash> [--from <N>] [--to <N>] [--context <line
    - 最近一天/24 小时: rolling 24-hour window ending now;
    - 今天/昨天: local calendar day;
    - 近 N 天/周/月: rolling interval ending now.
-2. Run `yoooclaw synced-web-page list --from <ISO_FROM> --to <ISO_TO> --format json`. Omit one flag for an open-ended range.
+2. For the last N days, run `yoooclaw synced-web-page list --last-days N --format json`. For specific bounds, run `yoooclaw synced-web-page list --from <ISO_FROM> --to <ISO_TO> --format json`. Omit one flag for an open-ended range.
 3. Return the command's matching metadata in its existing `capturedAt` descending order.
 
 Generic collection words such as “收藏”, “保存”, “看过”, or “文章” describe the collection operation; do not pass them literally to `yoooclaw synced-web-page search` unless the user is searching those words inside page content.

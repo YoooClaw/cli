@@ -56,7 +56,8 @@ Treat samples and top senders as representative, not as the entire result.
 
 ### 1. Map filters
 
-- Time range → `--from` / `--to` with ISO 8601 values.
+- Last N days → `--last-days N` on search, summary, stats, or summary-job create.
+- Explicit time range → `--from` / `--to` with ISO 8601 values.
 - App wording → `--app`; keep the user’s wording because aliases are resolved by the CLI.
 - Named person → `--sender`.
 - Content phrase → `--keyword`.

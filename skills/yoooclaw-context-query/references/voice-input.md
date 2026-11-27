@@ -44,6 +44,8 @@ the current time, then call `voice list --from <FROM> --to <TO>`. Do not use `vo
 latest stored item could be old. If the one-hour range is empty, report that directly and never
 substitute an earlier item. Use `+latest` only for an explicit unbounded “最新一条” request.
 
+For the last N days of dictation, use `voice list --last-days N` or `voice search <keyword> --last-days N`. Apply the same day count to `voice apps` when resolving an App in that window.
+
 Use `voice +today` for today. Resolve yesterday or another calendar day as
 `[local midnight, next local midnight)` and pass `--from/--to`.
 

@@ -72,6 +72,26 @@ func TestCalendarScopesPaginationAndOverlap(t *testing.T) {
 		t.Fatal("changed snapshot accepted")
 	}
 }
+func TestCalendarRollingWindowKeepsFirstPageTime(t *testing.T) {
+	p := paths.ForRoot(t.TempDir(), "default")
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	fixture(t, filepath.Join(p.Calendars, "2026-11-20.jsonl"),
+		event("2026-11-20T09:00:00Z", "2026-11-20T12:00:00Z"),
+		event("2026-11-20T11:00:00Z", "2026-11-20T13:00:00Z"),
+		event("2026-11-20T12:00:00Z", "2026-11-20T12:00:00Z"),
+		event("2026-11-27T12:00:00Z", "2026-11-27T13:00:00Z"))
+	opts := Options{Window: 7 * 24 * time.Hour, Limit: 1}
+	first, err := Query(p, "calendars", "list", "", opts, now)
+	if err != nil || first["total"] != 2 {
+		t.Fatal(first, err)
+	}
+	opts.Cursor = first["nextCursor"].(string)
+	next, err := Query(p, "calendars", "list", "", opts, now.Add(24*time.Hour))
+	if err != nil || next["total"] != 2 || next["nextCursor"] != nil || next["asOf"] != first["asOf"] {
+		t.Fatal(next, err)
+	}
+}
+
 func health(t *testing.T, p paths.Paths, updated string, steps int) {
 	fixture(t, filepath.Join(p.HealthData, "2026-10-22.jsonl"), map[string]any{"schemaVersion": 3, "date": "2026-10-22", "timeZone": "Asia/Shanghai", "provider": "test", "updatedAt": updated}, map[string]any{"metric": "steps", "name": "Steps", "value": steps, "unit": "count"})
 }

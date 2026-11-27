@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"time"
+
 	"github.com/YoooClaw/cli/internal/clictx"
 	"github.com/YoooClaw/cli/internal/errs"
 	"github.com/YoooClaw/cli/internal/image"
@@ -17,6 +19,7 @@ func newImageCmd() *cobra.Command {
 	list.Flags().String("client", "", "按 clientLabel 过滤；all 为全部")
 	list.Flags().String("from", "", "created_at 起")
 	list.Flags().String("to", "", "created_at 止")
+	addLastDaysFlag(list)
 	list.Flags().String("limit", "100", "最大返回条数")
 
 	status := &cobra.Command{Use: "status <id>", Short: "查看单张图片详情", Args: cobra.ExactArgs(1), RunE: run(imageStatus)}
@@ -32,6 +35,15 @@ func newImageCmd() *cobra.Command {
 func imageEntryAsAny(e image.Entry) any { return e }
 
 func imageList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error) {
+	window, err := lastDaysWindow(cmd)
+	if err != nil {
+		return nil, err
+	}
+	var start, end time.Time
+	if window > 0 {
+		end = contextQueryNow()
+		start = end.Add(-window)
+	}
 	items := image.ReadIndex(ctx.Paths.Images)
 	status := flagStr(cmd, "status")
 	client := flagStr(cmd, "client")
@@ -49,6 +61,12 @@ func imageList(ctx *clictx.Context, cmd *cobra.Command, _ []string) (any, error)
 		}
 		if app != "" && !notif.MatchesAppFilter(notif.StoredNotification{AppName: it.Metadata.SourceApp}, app) {
 			continue
+		}
+		if window > 0 {
+			created, ok := notif.ParseTime(it.Metadata.CreatedAt)
+			if !ok || created.Before(start) || !created.Before(end) {
+				continue
+			}
 		}
 		if from != "" && it.Metadata.CreatedAt < from {
 			continue

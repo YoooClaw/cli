@@ -15,6 +15,7 @@ var isoRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})
 
 // QueryOptions 是解析后的查询条件。
 type QueryOptions struct {
+	ToExclusive      bool
 	App              string
 	Sender           string
 	ConversationType string
@@ -29,6 +30,7 @@ type QueryOptions struct {
 
 // RawQueryOpts 是命令行原始字符串参数。
 type RawQueryOpts struct {
+	ToExclusive      bool
 	From             string
 	To               string
 	App              string
@@ -81,7 +83,7 @@ func BuildQueryOptions(opts RawQueryOpts, defaultLimit int) (QueryOptions, error
 	}
 	out := QueryOptions{
 		App: opts.App, Sender: opts.Sender, ConversationType: opts.ConversationType,
-		Keyword: opts.Keyword, Client: opts.Client,
+		Keyword: opts.Keyword, Client: opts.Client, ToExclusive: opts.ToExclusive,
 	}
 	if opts.From != "" {
 		t, err := parseIso(opts.From, "--from")
@@ -244,7 +246,7 @@ func MatchesQuery(item StoredNotification, opts QueryOptions) bool {
 	if opts.FromTs != nil && ts.Before(*opts.FromTs) {
 		return false
 	}
-	if opts.ToTs != nil && ts.After(*opts.ToTs) {
+	if opts.ToTs != nil && (ts.After(*opts.ToTs) || (opts.ToExclusive && ts.Equal(*opts.ToTs))) {
 		return false
 	}
 	return true

@@ -10,7 +10,7 @@ Map the request to:
 - app/sender/client filter;
 - dimension: `date`, `app`, `sender`, `hour`, `client`, or `all`.
 
-Default to the last 7 days and `all` only when the user did not specify them. Resolve relative dates from the local system date.
+Default to the last 7 days and `all` only when the user did not specify them. Pass `--last-days N` for a rolling day count.
 
 ## 2. Run one aggregate command
 

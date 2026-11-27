@@ -16,6 +16,7 @@ Do not infer reply language from previous messages, source content, command outp
 
 - Use `yoooclaw`; `yc` is an equivalent short alias.
 - Add `--format json` for structured objects and `--format ndjson` only for intentional row streaming.
+- For “the last N days” (最近 N 天), pass `--last-days N` to each relevant query. Recording lists, voice history, notifications (including `summary-job create`), calendar lists, captured pages, and image lists support this rolling 24-hour-per-day window. For named dates such as yesterday, use the source's calendar-date filters.
 - Add `--profile <name>` when the user selects a non-default profile.
 - Query the selected source on every invocation (local synchronized data or the App todo service). Do not reuse an earlier answer or memory as current data.
 - Treat queries as read-only. Do not modify indexes or synchronized source files. The only mutation this Skill may perform is recording deletion, and only through `yoooclaw recording delete` (see `references/recordings.md`).

@@ -31,7 +31,7 @@ set to a specific value. Include `source_name` whenever presenting a recording t
 - Today/今天: use `yoooclaw recording +today --format json`.
 - Yesterday/昨天 or an explicit day: resolve `[local midnight, next local midnight)` and run
   `recording list --from <ISO_FROM> --to <ISO_TO>`.
-- Rolling periods: compute exact ISO boundaries ending at the current local system time.
+- Last N days: use `recording list --last-days N`. For other rolling periods, pass exact ISO boundaries.
 - Latest/most recent: use `yoooclaw recording +latest --format json`.
 - Most recent N: select the first N sorted entries. All: use every eligible entry.
 - Ambiguous: show `1. [name] ([created_at], [duration], [source_name])` and ask for a selection.
